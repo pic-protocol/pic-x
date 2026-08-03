@@ -6,6 +6,7 @@
 
 <p align="center">
   Provenance Identity Continuity Exchange.<br>
-  Verifiable Authority Continuity across execution boundaries.<br>
-  ⚠️ **Experimental — not production-ready.** Coming soon.
+  Verifiable Authority Continuity across execution boundaries.
 </p>
+
+> ⚠️ **Experimental — not production-ready.** Coming soon.
