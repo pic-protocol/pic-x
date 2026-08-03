@@ -1,7 +1,12 @@
-# PIC-X
+<p align="center">
+  <img src="assets/pic-x-logo.png" alt="PIC-X logo" width="50%">
+</p>
 
-<img src="assets/pic-x-logo.png" alt="PIC-X logo" width="160">
+<h1 align="center">PIC-X</h1>
 
-Provenance Identity Continuity Exchange. Verifiable Authority Continuity across execution boundaries.
+<p align="center">
+  Provenance Identity Continuity Exchange.<br>
+  Verifiable Authority Continuity across execution boundaries.
+</p>
 
 > ⚠️ **Experimental — not production-ready.** Coming soon.
