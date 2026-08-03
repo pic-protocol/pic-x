@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/pic-x-logo.png" alt="PIC-X logo" width="90%">
+  <img src="assets/pic-x-logo.png" alt="PIC-X logo" width="100%">
 </p>
 
 <h1 align="center">PIC-X</h1>
