@@ -529,5 +529,6 @@ $RECYCLE.BIN/
 # Everything a local run needs and nothing a repository should hold: generated keys, generated
 # certificates, and whatever the server writes while it is running. It is a volume in the container
 # sense — state that belongs to one machine and is recreated with `task local:init`, never shared.
+.tokensave/
 .volume/
 .volume-docker/
