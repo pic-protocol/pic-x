@@ -1,0 +1,23 @@
+[package]
+name = "pic-x-keys"
+description = "A key ring on the local filesystem: Ed25519 signing keys, published before they sign and kept after they stop."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+pic-x-core.workspace = true
+# The same implementation `rustls` already links, so this adds an algorithm rather than a second
+# cryptographic stack to keep an eye on.
+ring.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
+tracing.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

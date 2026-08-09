@@ -1,0 +1,29 @@
+[package]
+name = "pic-x-admin"
+description = "The PIC-X administrative gRPC surface."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+repository.workspace = true
+build = "build.rs"
+
+[dependencies]
+anyhow.workspace = true
+async-stream.workspace = true
+axum.workspace = true
+futures-core.workspace = true
+pic-x-core.workspace = true
+pic-x-transport.workspace = true
+prost.workspace = true
+tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "sync"] }
+tonic.workspace = true
+tonic-prost.workspace = true
+tracing.workspace = true
+
+[build-dependencies]
+tonic-prost-build.workspace = true
+
+[dev-dependencies]
+pic-x-audit.workspace = true
+pic-x-storage.workspace = true

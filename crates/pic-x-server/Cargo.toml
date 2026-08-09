@@ -1,0 +1,32 @@
+[package]
+name = "pic-x-server"
+description = "The PIC-X server host, its service registry, and the command line that drives them."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+repository.workspace = true
+autobenches = false
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+pic-x-core.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+pic-x-audit.workspace = true
+# A real keyed pseudonymiser, so the test that says a key never reaches the disk is asserting about
+# a keyed pseudonymiser rather than about a stub written to satisfy it.
+pic-x-pseudonym.workspace = true
+pic-x-storage.workspace = true
+serde.workspace = true
+# `start_paused` lets the shutdown-budget test exhaust a thirty second budget instantly.
+tokio = { workspace = true, features = ["test-util"] }
+
+[[bench]]
+name = "server_host"
+path = "benches/server_host.rs"
+harness = false

@@ -1,0 +1,11 @@
+# Build output and VCS metadata never belong in the build context.
+target/
+.git/
+.gitignore
+
+# The image is built from source; the recipe itself is not an input.
+Dockerfile
+.dockerignore
+
+# Large files the build does not read.
+assets/

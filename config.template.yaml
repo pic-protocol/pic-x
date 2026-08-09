@@ -1,0 +1,270 @@
+## PIC-X — every setting there is, what it does, and what happens if you get it wrong.
+##
+## Nothing here runs. This is the catalogue you copy from; the files that run are:
+##
+##   config.local.yaml      development, no transport security  — `task run`
+##   config.local-tls.yaml  development, TLS and mutual TLS     — `task run-as-local-tls`
+##   config.prod.yaml       production, and what the image ships — `task run-as-prod`
+##
+## ## How to read this file
+##
+## Lines starting with `##` are prose. Lines starting with `# ` are settings, commented out. Removing
+## the `# ` from every one of them yields a valid configuration — and a test does exactly that, then
+## starts a server from it. That is what stops this file from drifting away from the code: it cannot
+## document a setting that no longer exists, or miss one that does.
+##
+## ## Where a value can come from
+##
+## Five layers, each overwriting only what it actually declares: built-in defaults, build metadata,
+## the environment, this file, then the command line. So a setting written here beats the same
+## setting in the environment, and a `--flag` beats both.
+
+## ---------------------------------------------------------------------------------------------
+## The volume
+## ---------------------------------------------------------------------------------------------
+##
+## Everything this deployment keeps lives inside one directory, and every relative path below is
+## resolved against it. The server creates it on start. One setting instead of one per kind of file,
+## because they were never independent: a deployment that moved its secrets moved all of it.
+##
+##   <working_dir>/secrets   material resolved by the `directory` secret provider
+##   <working_dir>/tls       certificates and keys the listeners present
+##   <working_dir>/keys      the signing key ring, which maintains itself
+##   <working_dir>/audit     the trail, when it is kept here rather than in the log stream
+##   <working_dir>/state     what the server remembers about its own configuration
+##   <working_dir>/data      whatever the store keeps
+
+# working_dir: /var/lib/pic-x
+
+## Whether this deployment is somebody's laptop.
+##
+## The single switch every relaxation is justified against, so there is one place to read which of
+## the two kinds of deployment you are looking at. It permits: generating missing material, admitting
+## any client the authority signed, and key windows shorter than a verifier's cache.
+
+# development_mode: false
+
+## Whether the server may create material it was not given — a pseudonymisation secret, a local
+## certificate authority, a server certificate, a client certificate.
+##
+## Refused unless `development_mode` is also on. A server that mints its own authority is trusted by
+## nobody, and that must not be one variable away from production.
+
+# autogenerate: false
+
+## The public URL clients are told to reach this deployment at.
+##
+## What clients are told, not what the process binds: a deployment behind a proxy is reached at a name
+## the process never sees, and no header a proxy sets is trustworthy enough to derive it from. Only a
+## loopback address may be plain http.
+##
+## Left unset, the discovery document advertises relative paths, which is never wrong.
+
+# issuer: https://pic-x.example.com
+
+## ---------------------------------------------------------------------------------------------
+## The public surface
+## ---------------------------------------------------------------------------------------------
+##
+## The only surface that faces the world, and therefore the one with the least on it: discovery
+## documents and the published key set. Anything that changes state lives on the administrative
+## surface, on another port, behind mutual TLS.
+##
+## One address. Whether it is plain HTTP or HTTPS is decided by the `tls` block below, not by a second
+## address — the ports are deliberately not Dex's 5556/5557/5558, so both can run on one host.
+
+# web:
+#   http: 0.0.0.0:7556
+
+##   Where the surface is mounted. Empty — the root — unless a proxy forwards a path unstripped, which
+##   most do not: they strip it, and the advertised URL comes from `issuer` instead.
+
+#   path_prefix: ""
+
+##   The certificate this surface presents. Relative paths resolve inside the volume.
+##
+##   `client_ca` turns TLS into mutual TLS: a client that presents no certificate, or one that
+##   authority did not sign, never reaches the application. `crl` is what lets the authority take a
+##   certificate back before it expires — without it, a compromised client stays valid until its
+##   expiry date, which is exactly the window an attacker was hoping for.
+##
+##   Naming a `crl` without a `client_ca` is refused: it reads as stricter than it is.
+
+#   tls:
+#     cert: tls/server.pem
+#     key: tls/server.key
+#     client_ca: tls/ca.pem
+#     crl: tls/ca.crl
+##     1.2 is available and has to be asked for by name. The default is 1.3.
+#     min_version: "1.3"
+
+## ---------------------------------------------------------------------------------------------
+## Telemetry
+## ---------------------------------------------------------------------------------------------
+##
+## Liveness, readiness and metrics, on a port of its own so a scrape never travels through whatever
+## the public surface is behind. It offers no `client_ca`, on purpose: it is read by a collector and
+## probed by a kubelet, and neither of those has a client identity to present.
+
+# telemetry:
+#   addr: 0.0.0.0:7558
+#   tls:
+#     cert: tls/server.pem
+#     key: tls/server.key
+#     min_version: "1.3"
+
+## ---------------------------------------------------------------------------------------------
+## The administrative surface
+## ---------------------------------------------------------------------------------------------
+##
+## gRPC, and everything that changes the state of a deployment. Two questions are answered here, in
+## two places, and conflating them is the mistake this section exists to prevent.
+##
+## The handshake answers *who is this*: mutual TLS, so a client with no certificate never reaches the
+## application. `allow` answers *may they* — because one authority signs every client it was built
+## for, and a surface that stops at the handshake has admitted all of them.
+##
+## Binding this to an address outside the host without `tls.client_ca` is refused before anything
+## binds. Loopback is allowed, and is what the shipped production file uses.
+
+# grpc:
+#   addr: 127.0.0.1:7557
+#   tls:
+#     cert: tls/server.pem
+#     key: tls/server.key
+#     client_ca: tls/ca.pem
+#     crl: tls/ca.crl
+#     min_version: "1.3"
+
+##   Who may administer this deployment. Each entry is one of:
+##
+##     cn:local-operator            the common name — survives renewal, and trusts the authority not
+##                                  to issue that name to somebody else
+##     dn:CN=operator,O=PIC-X       the whole subject, exactly
+##     sha256:<64 hex>              one certificate and nothing else — cannot be impersonated, and has
+##                                  to be updated every time it is renewed
+##
+##   Leaving it empty while mutual TLS is on is refused outside development mode.
+
+#   allow:
+#     - cn:local-operator
+
+## ---------------------------------------------------------------------------------------------
+## Transport material while the server runs
+## ---------------------------------------------------------------------------------------------
+##
+## Certificates are renewed on a schedule nobody controls from inside this process. Re-reading is on
+## by default because the alternative is a restart every ninety days — or, far more often, a
+## certificate that quietly expires because nobody wanted the restart.
+##
+## SIGHUP re-reads everything immediately, which is what a renewal hook should send. A reload that
+## cannot build the new material keeps the material already in use: a warning, never an outage.
+
+# tls:
+#   reload: true
+#   reload_interval: 30s
+
+## ---------------------------------------------------------------------------------------------
+## Logging
+## ---------------------------------------------------------------------------------------------
+##
+## `json` is for a log pipeline and suppresses the banner; `terminal` is for a human watching it.
+## `debug` adds the starting/stopping transitions that `info` leaves out.
+
+# log:
+#   level: info
+#   format: json
+
+## ---------------------------------------------------------------------------------------------
+## Shutdown
+## ---------------------------------------------------------------------------------------------
+##
+## How long everything gets to be released before the process exits regardless. Thirty seconds is
+## what Kubernetes gives a pod between SIGTERM and SIGKILL, so a longer budget is one the orchestrator
+## never honours.
+
+# shutdown:
+#   timeout: 30s
+
+## ---------------------------------------------------------------------------------------------
+## Secrets
+## ---------------------------------------------------------------------------------------------
+##
+## Where secret material is resolved from. Nothing in this section is itself a secret: it says where
+## to look, and the store says what is there.
+##
+##   directory    one file per key, named after it — which is both what a mounted Kubernetes secret
+##                looks like from inside a container and what the server writes when it generates one
+##   environment  one variable per key. Weaker: the environment of a process is readable by anything
+##                that can read /proc and is inherited by every child
+##   none         no store at all, and anything that needs one refuses to start
+##
+## `directory` defaults to `<working_dir>/secrets`, so the same file works whether the material was
+## mounted or generated. Set it only to read from somewhere outside the volume. A build that needs
+## Vault, a KMS or an HSM adds it in its own composition root — nothing here changes.
+
+# secrets:
+#   provider: directory
+#   directory: secrets
+#   env_prefix: PIC_X_SECRET
+
+## ---------------------------------------------------------------------------------------------
+## The audit trail
+## ---------------------------------------------------------------------------------------------
+##
+##   sink: tracing   records go into the log stream, and from there wherever it goes. Right when
+##                   something else is already responsible for keeping them; it has no integrity of
+##                   its own
+##   sink: file      records are kept here: one file per UTC day, each carrying the digest of the one
+##                   before it, so an edit, a removed line or a missing day stops the chain verifying
+##
+## That is tamper *evidence*, not prevention: anyone who can write the files can rewrite the chain
+## from where they changed it. What it catches is the ordinary case — and the head of the chain is
+## one digest that stands for everything before it, which is what makes attesting to it elsewhere
+## possible later. `pic-x audit verify --directory <dir>` checks a trail and prints that head.
+
+# audit:
+#   sink: file
+#   directory: audit
+#   retention: 90d
+
+##   Audit subjects that are people can be recorded as pseudonyms instead of masked. Masking hides a
+##   person and loses the trail with them; a pseudonym keeps the trail and drops the identity.
+##
+##   `key_ref` is the *name* of the key in the secret store, never the key — which is what keeps this
+##   file free of anything worth stealing and moves rotation to where keys live.
+##
+##   Rotating means changing the key **and** `key_version` together. The server remembers what each
+##   version produces for one fixed input and refuses to start if a version ever produces something
+##   else, because doing one without the other fails silently and ruins the trail slowly.
+
+#   pseudonym:
+#     enabled: true
+#     key_ref: audit-pseudonym
+#     key_version: "v1"
+
+## ---------------------------------------------------------------------------------------------
+## Signing keys
+## ---------------------------------------------------------------------------------------------
+##
+## What this deployment signs with, published at /.well-known/jwks.json. A key is published before it
+## signs and stays published after it stops, because a verifier caches the set: a signature naming a
+## key nobody has fetched fails for as long as that cache lasts, and a signature made yesterday has to
+## keep verifying tomorrow.
+##
+##   publish_ahead  how long a new key sits in the set before it signs. Must be at least as long as
+##                  the cache the set is served with (300s), or verifiers reject good signatures for
+##                  the difference. Refused outside development mode
+##   rotate_every   how long a key signs before it is replaced. Must be longer than publish_ahead
+##   retain         how long a retired key stays published — the answer to "how far back must a
+##                  signature still verify". Must be at least rotate_every, or there is a gap
+##
+## The first key of a fresh deployment signs immediately: publishing ahead protects verifiers that
+## already cached something, and a deployment starting for the first time has none.
+
+# keys:
+#   enabled: true
+#   directory: keys
+#   publish_ahead: 1h
+#   rotate_every: 30d
+#   retain: 365d

@@ -1,0 +1,1222 @@
+//! Config class: typed runtime settings assembled from layered inputs.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::Duration;
+
+use anyhow::{Context, Result, anyhow, bail};
+
+use crate::audit::AuditDestination;
+use crate::config_section::{AnyConfigSection, ConfigSection};
+use crate::keys::KEY_SET_MAX_AGE;
+use crate::logging::{LogFormat, LogLevel};
+use crate::peer::AllowedPeer;
+use crate::secrets::{SecretProvider, SecretRef};
+use crate::tls::TlsSettings;
+
+/// Runtime setting key for the product version.
+pub const SETTING_VERSION: &str = "PIC_X_VERSION";
+
+/// Runtime setting key for the banner copyright year.
+pub const SETTING_COPYRIGHT_YEAR: &str = "PIC_X_COPYRIGHT_YEAR";
+
+/// Runtime setting key for the banner copyright holder.
+pub const SETTING_COPYRIGHT_HOLDER: &str = "PIC_X_COPYRIGHT_HOLDER";
+
+/// Runtime setting key for the directory this deployment keeps everything in.
+///
+/// This is the volume: secrets, transport material and whatever the server writes all live inside
+/// it, and every relative path in the configuration resolves against it. A container points it at a
+/// mount; a developer leaves it at the default and finds `.volume` beside the repository.
+///
+/// One setting instead of three, because the three were never independent: a deployment that moved
+/// its secrets somewhere else moved all of it.
+pub const SETTING_WORKING_DIR: &str = "PIC_X_WORKING_DIR";
+
+/// Runtime setting key for whether the server may create material it was not given.
+pub const SETTING_AUTOGENERATE: &str = "PIC_X_AUTOGENERATE";
+
+/// Runtime setting key for whether this deployment is somebody's laptop.
+///
+/// One switch, stated once, that every other relaxation has to be justified against. Without it a
+/// build ends up with a handful of individually reasonable conveniences — generate what is missing,
+/// accept any client the authority signed, warn instead of refuse — each of which is right in
+/// development and none of which is right in production, and no single place to read which of the
+/// two you are looking at.
+pub const SETTING_DEVELOPMENT_MODE: &str = "PIC_X_DEVELOPMENT_MODE";
+
+/// Runtime setting key for the public URL this deployment is reached at.
+pub const SETTING_ISSUER: &str = "PIC_X_ISSUER";
+
+/// Runtime setting key for the path the public surface is mounted under.
+pub const SETTING_WEB_PATH_PREFIX: &str = "PIC_X_WEB_PATH_PREFIX";
+
+/// Runtime setting key for the web HTTP listen address.
+pub const SETTING_WEB_HTTP_ADDR: &str = "PIC_X_WEB_HTTP_ADDR";
+
+/// Runtime setting key for the telemetry listen address.
+pub const SETTING_TELEMETRY_ADDR: &str = "PIC_X_TELEMETRY_ADDR";
+
+/// Runtime setting key for the gRPC listen address.
+pub const SETTING_GRPC_ADDR: &str = "PIC_X_GRPC_ADDR";
+
+/// Runtime setting keys for the TLS material of each surface.
+///
+/// Three surfaces, three sets, because they answer different questions. The public one and the
+/// administrative one can demand a client certificate; telemetry cannot, and that is deliberate — it
+/// is scraped by a collector and probed by a kubelet, neither of which should need a client identity
+/// to ask whether the process is alive.
+pub const SETTING_WEB_TLS_CERT: &str = "PIC_X_WEB_TLS_CERT";
+/// Private key of [`SETTING_WEB_TLS_CERT`].
+pub const SETTING_WEB_TLS_KEY: &str = "PIC_X_WEB_TLS_KEY";
+/// Authority client certificates on the public surface must be signed by.
+pub const SETTING_WEB_TLS_CLIENT_CA: &str = "PIC_X_WEB_TLS_CLIENT_CA";
+/// Revocation list client certificates on the public surface are checked against.
+pub const SETTING_WEB_TLS_CRL: &str = "PIC_X_WEB_TLS_CRL";
+/// Lowest protocol version the public surface accepts.
+pub const SETTING_WEB_TLS_MIN_VERSION: &str = "PIC_X_WEB_TLS_MIN_VERSION";
+
+/// Certificate chain the administrative surface presents.
+pub const SETTING_GRPC_TLS_CERT: &str = "PIC_X_GRPC_TLS_CERT";
+/// Private key of [`SETTING_GRPC_TLS_CERT`].
+pub const SETTING_GRPC_TLS_KEY: &str = "PIC_X_GRPC_TLS_KEY";
+/// Authority client certificates on the administrative surface must be signed by.
+pub const SETTING_GRPC_TLS_CLIENT_CA: &str = "PIC_X_GRPC_TLS_CLIENT_CA";
+/// Revocation list client certificates on the administrative surface are checked against.
+pub const SETTING_GRPC_TLS_CRL: &str = "PIC_X_GRPC_TLS_CRL";
+/// Lowest protocol version the administrative surface accepts.
+pub const SETTING_GRPC_TLS_MIN_VERSION: &str = "PIC_X_GRPC_TLS_MIN_VERSION";
+
+/// Runtime setting key for the peers the administrative surface answers.
+///
+/// One entry per line — see [`AllowedPeer`](crate::peer::AllowedPeer) for the forms. A newline
+/// rather than a comma because a distinguished name contains commas, and a separator that appears
+/// inside the values it separates is a parser waiting to split somebody's identity in half.
+pub const SETTING_GRPC_ALLOW: &str = "PIC_X_GRPC_ALLOW";
+
+/// Certificate chain the telemetry surface presents.
+pub const SETTING_TELEMETRY_TLS_CERT: &str = "PIC_X_TELEMETRY_TLS_CERT";
+/// Private key of [`SETTING_TELEMETRY_TLS_CERT`].
+pub const SETTING_TELEMETRY_TLS_KEY: &str = "PIC_X_TELEMETRY_TLS_KEY";
+/// Lowest protocol version the telemetry surface accepts.
+pub const SETTING_TELEMETRY_TLS_MIN_VERSION: &str = "PIC_X_TELEMETRY_TLS_MIN_VERSION";
+
+/// Runtime setting key for whether transport material is re-read while the server runs.
+///
+/// On by default. Certificates are renewed on a schedule nobody controls from inside the process,
+/// and the alternative to noticing is a restart — which means either an outage every ninety days or,
+/// far more often, a certificate that quietly expires because nobody wanted the outage.
+pub const SETTING_TLS_RELOAD: &str = "PIC_X_TLS_RELOAD";
+
+/// Runtime setting key for how often transport material is re-read.
+pub const SETTING_TLS_RELOAD_INTERVAL: &str = "PIC_X_TLS_RELOAD_INTERVAL";
+
+/// Runtime setting key for how much the build says.
+pub const SETTING_LOG_LEVEL: &str = "PIC_X_LOG_LEVEL";
+
+/// Runtime setting key for the shape records are written in.
+pub const SETTING_LOG_FORMAT: &str = "PIC_X_LOG_FORMAT";
+
+/// Runtime setting key for how long shutdown is given before the process exits anyway.
+pub const SETTING_SHUTDOWN_TIMEOUT: &str = "PIC_X_SHUTDOWN_TIMEOUT";
+
+/// Runtime setting key for where secrets are resolved from.
+pub const SETTING_SECRETS_PROVIDER: &str = "PIC_X_SECRETS_PROVIDER";
+
+/// Runtime setting key for the directory the `directory` provider reads.
+pub const SETTING_SECRETS_DIRECTORY: &str = "PIC_X_SECRETS_DIRECTORY";
+
+/// Runtime setting key for the variable prefix the `environment` provider reads.
+pub const SETTING_SECRETS_ENV_PREFIX: &str = "PIC_X_SECRETS_ENV_PREFIX";
+
+/// Runtime setting key for whether audit subjects are pseudonymised.
+pub const SETTING_AUDIT_PSEUDONYM_ENABLED: &str = "PIC_X_AUDIT_PSEUDONYM_ENABLED";
+
+/// Runtime setting key for the secret the pseudonymisation key is resolved from.
+///
+/// A *reference*, not the key. A configuration file that carries key material is a file that has to
+/// be protected like a key — encrypted at rest, kept out of version control, redacted in every bug
+/// report — and every deployment gets that wrong eventually. Naming the secret instead means the file
+/// carries nothing worth stealing, the same file works against a directory in development and a vault
+/// in production, and rotating happens where keys live rather than by editing YAML.
+pub const SETTING_AUDIT_PSEUDONYM_KEY_REF: &str = "PIC_X_AUDIT_PSEUDONYM_KEY_REF";
+
+/// Runtime setting key for the version every pseudonym names.
+pub const SETTING_AUDIT_PSEUDONYM_KEY_VERSION: &str = "PIC_X_AUDIT_PSEUDONYM_KEY_VERSION";
+
+/// Runtime setting key for where the audit trail is written.
+pub const SETTING_AUDIT_SINK: &str = "PIC_X_AUDIT_SINK";
+
+/// Runtime setting key for the directory the file sink writes to.
+pub const SETTING_AUDIT_DIRECTORY: &str = "PIC_X_AUDIT_DIRECTORY";
+
+/// Runtime setting key for how long the file sink keeps a day of records.
+pub const SETTING_AUDIT_RETENTION: &str = "PIC_X_AUDIT_RETENTION";
+
+/// Runtime setting key for whether this deployment publishes signing keys at all.
+pub const SETTING_KEYS_ENABLED: &str = "PIC_X_KEYS_ENABLED";
+
+/// Runtime setting key for the directory the key ring lives in.
+pub const SETTING_KEYS_DIRECTORY: &str = "PIC_X_KEYS_DIRECTORY";
+
+/// Runtime setting key for how long a new key is published before it starts signing.
+///
+/// This is the one setting an operator gets wrong in the direction that causes an outage: it has to
+/// be longer than the longest cache a verifier might be holding, because a signature naming a key
+/// that a verifier has not fetched yet fails for exactly as long as that cache lasts.
+pub const SETTING_KEYS_PUBLISH_AHEAD: &str = "PIC_X_KEYS_PUBLISH_AHEAD";
+
+/// Runtime setting key for how long a key signs before it is replaced.
+pub const SETTING_KEYS_ROTATE_EVERY: &str = "PIC_X_KEYS_ROTATE_EVERY";
+
+/// Runtime setting key for how long a retired key stays published.
+///
+/// The answer to "how far back must a signature still verify". A key dropped sooner than that makes
+/// perfectly good signatures unverifiable, which is indistinguishable from forgery to whoever is
+/// holding one.
+pub const SETTING_KEYS_RETAIN: &str = "PIC_X_KEYS_RETAIN";
+
+/// The key version a deployment that never rotated is on.
+const DEFAULT_KEY_VERSION: &str = "v1";
+
+/// How often transport material is re-read when nothing says otherwise.
+///
+/// Thirty seconds is short enough that a renewal is picked up before a monitoring system notices,
+/// and long enough that four `stat` calls at that cadence are not worth measuring.
+const DEFAULT_TLS_RELOAD_INTERVAL: Duration = Duration::from_secs(30);
+
+/// How long a new key waits in the key set before it signs anything.
+const DEFAULT_KEYS_PUBLISH_AHEAD: Duration = Duration::from_secs(60 * 60);
+
+/// How long a key signs before it is replaced.
+const DEFAULT_KEYS_ROTATE_EVERY: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+
+/// How long a retired key stays published.
+///
+/// A year, which is longer than most products would choose and deliberately so: PIC-X is about
+/// authority that continues, and a signature that stops verifying because the key ring was tidied is
+/// the failure this product exists to prevent.
+const DEFAULT_KEYS_RETAIN: Duration = Duration::from_secs(365 * 24 * 60 * 60);
+
+/// How long a day of audit records is kept when nothing says otherwise.
+const DEFAULT_AUDIT_RETENTION: Duration = Duration::from_secs(90 * 24 * 60 * 60);
+
+/// Where the key ring lives inside the volume when nothing says otherwise.
+const DEFAULT_KEYS_SUBDIRECTORY: &str = "keys";
+
+/// Where the audit trail is written inside the volume when nothing says otherwise.
+const DEFAULT_AUDIT_SUBDIRECTORY: &str = "audit";
+
+/// How long shutdown gets before the process exits regardless.
+///
+/// Thirty seconds is what Kubernetes gives a pod by default between SIGTERM and SIGKILL, so a longer
+/// budget here would be a budget the orchestrator never honours.
+const DEFAULT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Where a deployment that says nothing keeps everything.
+///
+/// Relative on purpose: it resolves beside whatever started the process, which for a developer is the
+/// repository and for a container is the working directory the image sets.
+const DEFAULT_WORKING_DIR: &str = ".volume";
+
+/// Where secrets live inside the volume when nothing says otherwise.
+const DEFAULT_SECRETS_SUBDIRECTORY: &str = "secrets";
+
+const DEFAULT_VERSION: &str = "0.0.0";
+const DEFAULT_COPYRIGHT_YEAR: &str = "0000";
+const DEFAULT_COPYRIGHT_HOLDER: &str = "PIC-X";
+
+/// Build-time values that participate in runtime configuration.
+///
+/// Every value is `&'static str`: these come from the compiled binary, and the command-line parser
+/// needs the version string to outlive the parse.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BuildSettings {
+    version: &'static str,
+    copyright_year: &'static str,
+    copyright_holder: &'static str,
+}
+
+impl BuildSettings {
+    /// Builds the configuration layer supplied by the compiled binary.
+    pub fn new(
+        version: &'static str,
+        copyright_year: &'static str,
+        copyright_holder: &'static str,
+    ) -> Self {
+        Self {
+            version,
+            copyright_year,
+            copyright_holder,
+        }
+    }
+
+    /// Returns the version the binary was compiled with.
+    pub fn version(&self) -> &'static str {
+        self.version
+    }
+}
+
+/// Runtime settings combined from defaults, build metadata, environment, config files, and CLI.
+///
+/// Listen addresses have no built-in default: they come from the configuration file the command
+/// names, optionally overridden by a command-line flag. Logging does have defaults, and they are the
+/// production ones.
+///
+/// Beyond the typed settings, a binary can declare additional setting keys it understands. Declared
+/// keys travel through the same precedence layers and are read back with [`Config::setting`]. An
+/// undeclared key is discarded at every layer, so no ambient environment variable can ever reach the
+/// configuration of a build that does not ask for it.
+///
+/// Beyond both of those, a build can add whole typed sections of its own — see
+/// [`ConfigSection`](crate::config_section::ConfigSection) — which is how configuration that this
+/// crate has never heard of travels to the code that understands it.
+///
+/// The type is deliberately not `PartialEq`: it carries sections whose types it does not know, and
+/// comparing two configurations by equality would either be a lie or a comparison of pointers.
+#[derive(Debug, Clone)]
+pub struct Config {
+    version: String,
+    copyright_year: String,
+    copyright_holder: String,
+    working_dir: Option<String>,
+    autogenerate: bool,
+    development_mode: bool,
+    issuer: Option<String>,
+    web_path_prefix: String,
+    web_http_addr: Option<String>,
+    telemetry_addr: Option<String>,
+    grpc_addr: Option<String>,
+    grpc_allow: Vec<AllowedPeer>,
+    log_level: LogLevel,
+    log_format: LogFormat,
+    web_tls: Option<TlsSettings>,
+    grpc_tls: Option<TlsSettings>,
+    telemetry_tls: Option<TlsSettings>,
+    tls_reload: bool,
+    tls_reload_interval: Duration,
+    shutdown_timeout: Duration,
+    secrets_provider: SecretProvider,
+    secrets_directory: Option<String>,
+    secrets_env_prefix: String,
+    audit_destination: AuditDestination,
+    audit_directory: Option<String>,
+    audit_retention: Duration,
+    audit_pseudonym_enabled: bool,
+    audit_pseudonym_key_ref: Option<SecretRef>,
+    audit_pseudonym_key_version: String,
+    keys_enabled: bool,
+    keys_directory: Option<String>,
+    keys_publish_ahead: Duration,
+    keys_rotate_every: Duration,
+    keys_retain: Duration,
+    declared: BTreeSet<String>,
+    declared_values: BTreeMap<String, String>,
+    sections: BTreeMap<&'static str, Arc<dyn AnyConfigSection>>,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            version: DEFAULT_VERSION.to_owned(),
+            copyright_year: DEFAULT_COPYRIGHT_YEAR.to_owned(),
+            copyright_holder: DEFAULT_COPYRIGHT_HOLDER.to_owned(),
+            working_dir: None,
+            autogenerate: false,
+            development_mode: false,
+            issuer: None,
+            web_path_prefix: String::new(),
+            web_http_addr: None,
+            telemetry_addr: None,
+            grpc_addr: None,
+            grpc_allow: Vec::new(),
+            log_level: LogLevel::default(),
+            log_format: LogFormat::default(),
+            web_tls: None,
+            grpc_tls: None,
+            telemetry_tls: None,
+            tls_reload: true,
+            tls_reload_interval: DEFAULT_TLS_RELOAD_INTERVAL,
+            shutdown_timeout: DEFAULT_SHUTDOWN_TIMEOUT,
+            secrets_provider: SecretProvider::None,
+            secrets_directory: None,
+            secrets_env_prefix: "PIC_X_SECRET".to_owned(),
+            audit_destination: AuditDestination::default(),
+            audit_directory: None,
+            audit_retention: DEFAULT_AUDIT_RETENTION,
+            audit_pseudonym_enabled: false,
+            audit_pseudonym_key_ref: None,
+            audit_pseudonym_key_version: DEFAULT_KEY_VERSION.to_owned(),
+            keys_enabled: false,
+            keys_directory: None,
+            keys_publish_ahead: DEFAULT_KEYS_PUBLISH_AHEAD,
+            keys_rotate_every: DEFAULT_KEYS_ROTATE_EVERY,
+            keys_retain: DEFAULT_KEYS_RETAIN,
+            declared: BTreeSet::new(),
+            declared_values: BTreeMap::new(),
+            sections: BTreeMap::new(),
+        }
+    }
+}
+
+impl Config {
+    /// Builds the config from all precedence layers.
+    ///
+    /// Later layers overwrite only settings they actually contain:
+    ///
+    /// 1. typed defaults;
+    /// 2. build metadata;
+    /// 3. runtime environment;
+    /// 4. configuration file;
+    /// 5. command-line inputs.
+    ///
+    /// `declared_settings` names the extra keys this build understands on top of the typed ones.
+    ///
+    /// A value a layer cannot be read as its type is an error rather than a silent fallback: a build
+    /// asked for `debug` and given `verbose` should say so, not quietly log less than it was told to.
+    pub fn from_layers<D, S, E, F, C>(
+        build_settings: BuildSettings,
+        declared_settings: D,
+        env_inputs: E,
+        file_inputs: F,
+        cli_inputs: C,
+    ) -> Result<Self>
+    where
+        D: IntoIterator<Item = S>,
+        S: Into<String>,
+        E: IntoIterator<Item = (String, String)>,
+        F: IntoIterator<Item = (String, String)>,
+        C: IntoIterator<Item = (String, String)>,
+    {
+        let mut config = Self {
+            declared: declared_settings.into_iter().map(Into::into).collect(),
+            ..Self::default()
+        };
+
+        config.apply_build_settings(build_settings);
+        config.apply_pairs(env_inputs)?;
+        config.apply_pairs(file_inputs)?;
+        config.apply_pairs(cli_inputs)?;
+
+        Ok(config)
+    }
+
+    /// Checks that the assembled config can actually start a server.
+    ///
+    /// Validation runs after every layer has been applied, so a command-line override can satisfy a
+    /// requirement the configuration file left out.
+    pub fn validate(&self) -> Result<()> {
+        if self.web_http_addr.is_none() {
+            bail!(
+                "the configuration defines no web listen address: set `web.http`, or pass \
+                 --web-http-addr"
+            );
+        }
+
+        for (label, addr) in self.declared_addresses() {
+            if addr.trim().is_empty() {
+                bail!("the {label} listen address is empty");
+            }
+        }
+
+        if let Some(issuer) = self.issuer() {
+            // The issuer is what a client is told to trust, so a scheme that offers no protection is
+            // refused rather than warned about — except against a loopback address, where there is
+            // nothing between the client and the process to protect it from.
+            let local = ["http://localhost", "http://127.0.0.1", "http://[::1]"]
+                .iter()
+                .any(|prefix| issuer.starts_with(prefix));
+
+            if !issuer.starts_with("https://") && !local {
+                bail!(
+                    "the issuer {issuer} is not https: clients are told to trust this URL, and only \
+                     a loopback address may be plain http"
+                );
+            }
+        }
+
+        if !self.web_path_prefix.is_empty() && !self.web_path_prefix.starts_with('/') {
+            bail!(
+                "the web path prefix {} does not start with a slash",
+                self.web_path_prefix
+            );
+        }
+
+        for (surface, tls) in [
+            ("web", self.web_tls.as_ref()),
+            ("gRPC", self.grpc_tls.as_ref()),
+            ("telemetry", self.telemetry_tls.as_ref()),
+        ] {
+            if let Some(tls) = tls {
+                tls.validate_in(self.working_dir())
+                    .with_context(|| format!("validating the {surface} TLS material"))?;
+            }
+        }
+
+        self.validate_development()?;
+        self.validate_admin_access()?;
+        self.validate_key_lifecycle()?;
+
+        // Turning pseudonymisation on and leaving the key out is a misconfiguration, not a reason to
+        // record less carefully than the deployment asked for. It stops the start.
+        if self.audit_pseudonym_enabled {
+            if self.secrets_provider == SecretProvider::None {
+                bail!(
+                    "audit pseudonymisation is enabled but no secret provider is configured: the key \
+                     is named by `audit.pseudonym.key_ref` and has to be resolved from somewhere"
+                );
+            }
+
+            if self.audit_pseudonym_key_ref.is_none() {
+                bail!(
+                    "audit pseudonymisation is enabled but names no secret: set \
+                     `audit.pseudonym.key_ref` to the name of the key in the secret store"
+                );
+            }
+
+            if self.audit_pseudonym_key_version.trim().is_empty() {
+                bail!("the audit pseudonymisation key version is empty");
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Refuses the conveniences of development to a deployment that has not said it is one.
+    ///
+    /// A server that mints its own certificate authority is trusted by nobody but itself. That is
+    /// exactly right on a laptop and never right anywhere else, and the difference must not be one
+    /// variable away from being wrong — so it takes two, and the second one is the one an operator
+    /// reads in the log and in the banner.
+    fn validate_development(&self) -> Result<()> {
+        if self.autogenerate && !self.development_mode {
+            bail!(
+                "generating missing material is only offered in development: set \
+                 `development_mode: true` if this is one, or supply the material this deployment is \
+                 missing"
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Refuses an administrative surface that anybody can reach and nobody has been named for.
+    ///
+    /// Mutual TLS answers *was this signed by an authority we trust*. It does not answer *may this
+    /// client administer this deployment*, and a surface that stops at the first question hands
+    /// administration to every client that authority ever signed — which, for the authority that
+    /// also issues ordinary service certificates, is usually all of them.
+    fn validate_admin_access(&self) -> Result<()> {
+        let Some(address) = self.grpc_addr() else {
+            return Ok(());
+        };
+
+        let mutual = self.grpc_tls.as_ref().is_some_and(TlsSettings::is_mutual);
+
+        if !mutual {
+            if is_loopback(address) || self.development_mode {
+                return Ok(());
+            }
+
+            bail!(
+                "the administrative surface is bound to {address}, which is reachable from outside \
+                 this host, and demands no client certificate: set `grpc.tls.client_ca`, bind it to \
+                 a loopback address, or say `development_mode: true`"
+            );
+        }
+
+        if self.grpc_allow.is_empty() && !self.development_mode {
+            bail!(
+                "the administrative surface demands a client certificate but names nobody: list the \
+                 peers that may administer it under `grpc.allow`, because a certificate authority \
+                 signs every client it was built for and mutual TLS alone would admit all of them"
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Refuses a key lifecycle whose windows do not overlap.
+    ///
+    /// Both mistakes here are silent for weeks and then break everything at once, which is why they
+    /// are checked at startup rather than discovered at the first rotation.
+    fn validate_key_lifecycle(&self) -> Result<()> {
+        if !self.keys_enabled {
+            return Ok(());
+        }
+
+        if self.keys_publish_ahead >= self.keys_rotate_every {
+            bail!(
+                "a key would be replaced after {:?} but is only published {:?} before it signs: it \
+                 would never get a turn",
+                self.keys_rotate_every,
+                self.keys_publish_ahead
+            );
+        }
+
+        if self.keys_retain < self.keys_rotate_every {
+            bail!(
+                "a retired key is kept for {:?} but keys are replaced every {:?}, which leaves \
+                 signatures made in between with no published key to verify against",
+                self.keys_retain,
+                self.keys_rotate_every
+            );
+        }
+
+        // The half of the pair that is easy to miss: a verifier is told it may keep the key set for
+        // `KEY_SET_MAX_AGE`, so a key that starts signing sooner than that is verified against a set
+        // that does not contain it. Development wants short windows to watch a rotation happen, and
+        // has no verifiers to break.
+        if self.keys_publish_ahead < KEY_SET_MAX_AGE && !self.development_mode {
+            bail!(
+                "a key would start signing {:?} after it is published, but the key set is served \
+                 with a cache of {:?}: every verifier holding a cached copy would reject the \
+                 signatures made in between. Set `keys.publish_ahead` to at least {:?}",
+                self.keys_publish_ahead,
+                KEY_SET_MAX_AGE,
+                KEY_SET_MAX_AGE
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Returns the effective product version.
+    pub fn version(&self) -> &str {
+        &self.version
+    }
+
+    /// Returns the effective copyright year.
+    pub fn copyright_year(&self) -> &str {
+        &self.copyright_year
+    }
+
+    /// Returns the effective copyright holder.
+    pub fn copyright_holder(&self) -> &str {
+        &self.copyright_holder
+    }
+
+    /// Returns the directory this deployment keeps everything in.
+    pub fn working_dir(&self) -> &Path {
+        self.working_dir
+            .as_deref()
+            .map_or_else(|| Path::new(DEFAULT_WORKING_DIR), Path::new)
+    }
+
+    /// Resolves `path` against the working directory, leaving absolute paths alone.
+    pub fn resolve(&self, path: impl AsRef<Path>) -> PathBuf {
+        let path = path.as_ref();
+
+        if path.is_absolute() {
+            return path.to_path_buf();
+        }
+
+        self.working_dir().join(path)
+    }
+
+    /// Reports whether the server may create material it was not given.
+    ///
+    /// False unless a deployment says otherwise, and deliberately so. A server that can mint its own
+    /// certificate authority is a server whose trust nobody vouched for, and the difference between
+    /// development and production must not be one variable away from being wrong. Development turns
+    /// it on explicitly; nothing turns it on by accident.
+    pub fn autogenerate(&self) -> bool {
+        self.autogenerate
+    }
+
+    /// Reports whether this deployment has said it is somebody's laptop.
+    ///
+    /// Nothing reads this to decide whether something is *possible*. It decides whether a
+    /// configuration that would be indefensible in production is refused or merely complained about
+    /// — and every place that consults it says so in its own message, so an operator reading a log
+    /// can tell which of the two they are running.
+    pub fn development_mode(&self) -> bool {
+        self.development_mode
+    }
+
+    /// Returns the peers the administrative surface answers, in the order they were listed.
+    ///
+    /// Empty is a real answer and not a missing one: it means nobody is on the list, which
+    /// [`Config::validate`] refuses outside development because mutual TLS on its own authorises
+    /// every client the authority ever signed.
+    pub fn grpc_allow(&self) -> &[AllowedPeer] {
+        &self.grpc_allow
+    }
+
+    /// Reports whether transport material is re-read while the server runs.
+    pub fn tls_reload(&self) -> bool {
+        self.tls_reload
+    }
+
+    /// Returns how often transport material is re-read.
+    pub fn tls_reload_interval(&self) -> Duration {
+        self.tls_reload_interval
+    }
+
+    /// Returns the public URL this deployment is reached at, when one is configured.
+    ///
+    /// This is what clients are told, not what the process binds. A deployment behind a reverse proxy
+    /// is reached at a name and possibly a path that the process itself never sees, and no header a
+    /// proxy sets is trustworthy enough to derive it from — so it is stated, not inferred.
+    pub fn issuer(&self) -> Option<&str> {
+        self.issuer.as_deref()
+    }
+
+    /// Returns the path the public surface is mounted under, empty when it is mounted at the root.
+    ///
+    /// Almost always empty. A proxy that serves this deployment under a path strips that path before
+    /// forwarding, which is one line of proxy configuration and leaves the process serving the root.
+    /// This exists for the proxies that do not strip, and setting it is a deliberate act.
+    pub fn web_path_prefix(&self) -> &str {
+        &self.web_path_prefix
+    }
+
+    /// Returns the absolute URL a client should use for `path`, when an issuer says what that is.
+    ///
+    /// Without an issuer the answer is the path itself: a deployment nobody told the public name of
+    /// cannot invent one, and a relative reference is at least never wrong.
+    pub fn public_url(&self, path: &str) -> String {
+        match self.issuer() {
+            Some(issuer) => format!("{}{path}", issuer.trim_end_matches('/')),
+            None => path.to_owned(),
+        }
+    }
+
+    /// Returns the effective web HTTP listen address, when one is configured.
+    pub fn web_http_addr(&self) -> Option<&str> {
+        self.web_http_addr.as_deref()
+    }
+
+    /// Returns the effective telemetry listen address, when one is configured.
+    pub fn telemetry_addr(&self) -> Option<&str> {
+        self.telemetry_addr.as_deref()
+    }
+
+    /// Returns the effective gRPC listen address, when one is configured.
+    pub fn grpc_addr(&self) -> Option<&str> {
+        self.grpc_addr.as_deref()
+    }
+
+    /// Returns how much this build says.
+    pub fn log_level(&self) -> LogLevel {
+        self.log_level
+    }
+
+    /// Returns the shape this build writes its records in.
+    pub fn log_format(&self) -> LogFormat {
+        self.log_format
+    }
+
+    /// Returns the TLS material of the public surface, with its paths already resolved.
+    pub fn web_tls(&self) -> Option<TlsSettings> {
+        self.resolved_tls(self.web_tls.as_ref())
+    }
+
+    /// Returns the TLS material of the administrative surface, with its paths already resolved.
+    pub fn grpc_tls(&self) -> Option<TlsSettings> {
+        self.resolved_tls(self.grpc_tls.as_ref())
+    }
+
+    /// Returns the TLS material of the telemetry surface, with its paths already resolved.
+    pub fn telemetry_tls(&self) -> Option<TlsSettings> {
+        self.resolved_tls(self.telemetry_tls.as_ref())
+    }
+
+    /// Resolves whatever paths a surface's material names against the volume, and attaches the
+    /// reload policy the deployment asked for.
+    ///
+    /// Both happen here so that no surface has to remember either. A listener that resolved its own
+    /// paths would find them relative to whatever directory the process started in, and one that had
+    /// to opt into reloading would be one renewal away from serving an expired certificate.
+    fn resolved_tls(&self, settings: Option<&TlsSettings>) -> Option<TlsSettings> {
+        settings.map(|settings| {
+            let resolved = settings.resolved_in(self.working_dir());
+
+            if self.tls_reload {
+                resolved.with_reload(self.tls_reload_interval)
+            } else {
+                resolved.without_reload()
+            }
+        })
+    }
+
+    /// Returns how long shutdown is given before the process exits anyway.
+    pub fn shutdown_timeout(&self) -> Duration {
+        self.shutdown_timeout
+    }
+
+    /// Keeps a parsed section a build added, replacing any section of the same type.
+    ///
+    /// Validation is the caller's business and happens before this point, so a config that holds a
+    /// section holds one that was already found to make sense.
+    pub fn with_section<T: ConfigSection>(mut self, section: T) -> Self {
+        self.sections.insert(T::NAME, Arc::new(section));
+
+        self
+    }
+
+    /// Returns the section of type `T`, when the configuration file declared one.
+    ///
+    /// Reads back as `None` for a build that registered the section but a file that did not declare
+    /// it, which is what lets a capability decide whether it was asked for at all.
+    pub fn section<T: ConfigSection>(&self) -> Option<&T> {
+        self.sections
+            .get(T::NAME)
+            .and_then(|section| section.as_any().downcast_ref::<T>())
+    }
+
+    /// Returns the names of the sections this configuration is carrying.
+    pub fn section_names(&self) -> impl Iterator<Item = &'static str> {
+        self.sections.keys().copied()
+    }
+
+    /// Returns where secrets are resolved from.
+    pub fn secrets_provider(&self) -> SecretProvider {
+        self.secrets_provider
+    }
+
+    /// Returns the directory the `directory` provider reads.
+    ///
+    /// Relative to the volume unless a deployment names an absolute path, and `secrets` inside it
+    /// when nothing is said — which is where provisioning puts them.
+    pub fn secrets_directory(&self) -> PathBuf {
+        self.resolve(
+            self.secrets_directory
+                .as_deref()
+                .unwrap_or(DEFAULT_SECRETS_SUBDIRECTORY),
+        )
+    }
+
+    /// Returns the variable prefix the `environment` provider reads.
+    pub fn secrets_env_prefix(&self) -> &str {
+        &self.secrets_env_prefix
+    }
+
+    /// Reports whether audit subjects are pseudonymised.
+    pub fn audit_pseudonym_enabled(&self) -> bool {
+        self.audit_pseudonym_enabled
+    }
+
+    /// Returns the secret the pseudonymisation key is resolved from.
+    ///
+    /// A reference is not sensitive: it names the material without carrying it, so unlike the key it
+    /// replaced it may appear in a log, a diagnostic, or a bug report.
+    pub fn audit_pseudonym_key_ref(&self) -> Option<&SecretRef> {
+        self.audit_pseudonym_key_ref.as_ref()
+    }
+
+    /// Returns the key version every pseudonym names.
+    ///
+    /// Rotating means changing the key and this version together: the version is what lets a later
+    /// question about an older record know which key to recompute with.
+    pub fn audit_pseudonym_key_version(&self) -> &str {
+        &self.audit_pseudonym_key_version
+    }
+
+    /// Returns where the audit trail is written.
+    pub fn audit_destination(&self) -> AuditDestination {
+        self.audit_destination
+    }
+
+    /// Returns the directory the file sink writes to, resolved against the volume.
+    pub fn audit_directory(&self) -> PathBuf {
+        self.resolve(
+            self.audit_directory
+                .as_deref()
+                .unwrap_or(DEFAULT_AUDIT_SUBDIRECTORY),
+        )
+    }
+
+    /// Returns how long a day of audit records is kept.
+    pub fn audit_retention(&self) -> Duration {
+        self.audit_retention
+    }
+
+    /// Reports whether this deployment publishes signing keys.
+    pub fn keys_enabled(&self) -> bool {
+        self.keys_enabled
+    }
+
+    /// Returns the directory the key ring lives in, resolved against the volume.
+    pub fn keys_directory(&self) -> PathBuf {
+        self.resolve(
+            self.keys_directory
+                .as_deref()
+                .unwrap_or(DEFAULT_KEYS_SUBDIRECTORY),
+        )
+    }
+
+    /// Returns how long a new key is published before it starts signing.
+    pub fn keys_publish_ahead(&self) -> Duration {
+        self.keys_publish_ahead
+    }
+
+    /// Returns how long a key signs before it is replaced.
+    pub fn keys_rotate_every(&self) -> Duration {
+        self.keys_rotate_every
+    }
+
+    /// Returns how long a retired key stays published.
+    pub fn keys_retain(&self) -> Duration {
+        self.keys_retain
+    }
+
+    /// Returns the effective value of a declared setting, when any layer supplied one.
+    ///
+    /// A key this build never declared reads back as `None` even when the environment defines it.
+    pub fn setting(&self, key: &str) -> Option<&str> {
+        self.declared_values.get(key).map(String::as_str)
+    }
+
+    /// Returns the extra setting keys this build declared.
+    pub fn declared_settings(&self) -> impl Iterator<Item = &str> {
+        self.declared.iter().map(String::as_str)
+    }
+
+    /// The listen addresses the assembled config actually declares, labelled for diagnostics.
+    fn declared_addresses(&self) -> Vec<(&'static str, &str)> {
+        [
+            ("web", self.web_http_addr()),
+            ("telemetry", self.telemetry_addr()),
+            ("gRPC", self.grpc_addr()),
+        ]
+        .into_iter()
+        .filter_map(|(label, addr)| addr.map(|addr| (label, addr)))
+        .collect()
+    }
+
+    fn apply_build_settings(&mut self, build_settings: BuildSettings) {
+        self.version = build_settings.version.to_owned();
+        self.copyright_year = build_settings.copyright_year.to_owned();
+        self.copyright_holder = build_settings.copyright_holder.to_owned();
+    }
+
+    fn apply_pairs<I>(&mut self, inputs: I) -> Result<()>
+    where
+        I: IntoIterator<Item = (String, String)>,
+    {
+        // An empty value means the setting was not supplied. Every tool that composes an environment
+        // — a shell, a Taskfile, a container runtime, a Kubernetes manifest — expresses "leave this
+        // alone" by setting the variable to nothing, and reading that as a configured empty path is
+        // how a deployment ends up refusing to start over a certificate nobody asked for.
+        //
+        // Whitespace is *not* empty: `"   "` as an address is a typo, and silently treating it as
+        // absent would hide the typo instead of reporting it.
+        let settings: BTreeMap<String, String> = inputs
+            .into_iter()
+            .filter(|(_, value)| !value.is_empty())
+            .collect();
+
+        if let Some(value) = settings.get(SETTING_VERSION) {
+            self.version.clone_from(value);
+        }
+
+        if let Some(value) = settings.get(SETTING_COPYRIGHT_YEAR) {
+            self.copyright_year.clone_from(value);
+        }
+
+        if let Some(value) = settings.get(SETTING_COPYRIGHT_HOLDER) {
+            self.copyright_holder.clone_from(value);
+        }
+
+        if let Some(value) = settings.get(SETTING_WORKING_DIR) {
+            self.working_dir = Some(value.clone());
+        }
+
+        if let Some(value) = settings.get(SETTING_AUTOGENERATE) {
+            self.autogenerate =
+                parse_bool(value).with_context(|| format!("reading {SETTING_AUTOGENERATE}"))?;
+        }
+
+        if let Some(value) = settings.get(SETTING_DEVELOPMENT_MODE) {
+            self.development_mode =
+                parse_bool(value).with_context(|| format!("reading {SETTING_DEVELOPMENT_MODE}"))?;
+        }
+
+        if let Some(value) = settings.get(SETTING_ISSUER) {
+            self.issuer = Some(value.trim_end_matches('/').to_owned());
+        }
+
+        if let Some(value) = settings.get(SETTING_WEB_PATH_PREFIX) {
+            self.web_path_prefix = value.trim_end_matches('/').to_owned();
+        }
+
+        if let Some(value) = settings.get(SETTING_WEB_HTTP_ADDR) {
+            self.web_http_addr = Some(value.clone());
+        }
+
+        if let Some(value) = settings.get(SETTING_TELEMETRY_ADDR) {
+            self.telemetry_addr = Some(value.clone());
+        }
+
+        if let Some(value) = settings.get(SETTING_GRPC_ADDR) {
+            self.grpc_addr = Some(value.clone());
+        }
+
+        if let Some(value) = settings.get(SETTING_GRPC_ALLOW) {
+            self.grpc_allow =
+                parse_allowed(value).with_context(|| format!("reading {SETTING_GRPC_ALLOW}"))?;
+        }
+
+        if let Some(value) = settings.get(SETTING_LOG_LEVEL) {
+            self.log_level = value
+                .parse()
+                .with_context(|| format!("reading {SETTING_LOG_LEVEL}"))?;
+        }
+
+        if let Some(value) = settings.get(SETTING_LOG_FORMAT) {
+            self.log_format = value
+                .parse()
+                .with_context(|| format!("reading {SETTING_LOG_FORMAT}"))?;
+        }
+
+        self.web_tls = tls_of(
+            &settings,
+            SETTING_WEB_TLS_CERT,
+            SETTING_WEB_TLS_KEY,
+            Some(SETTING_WEB_TLS_CLIENT_CA),
+            Some(SETTING_WEB_TLS_CRL),
+            SETTING_WEB_TLS_MIN_VERSION,
+            self.web_tls.take(),
+        )?;
+
+        self.grpc_tls = tls_of(
+            &settings,
+            SETTING_GRPC_TLS_CERT,
+            SETTING_GRPC_TLS_KEY,
+            Some(SETTING_GRPC_TLS_CLIENT_CA),
+            Some(SETTING_GRPC_TLS_CRL),
+            SETTING_GRPC_TLS_MIN_VERSION,
+            self.grpc_tls.take(),
+        )?;
+
+        self.telemetry_tls = tls_of(
+            &settings,
+            SETTING_TELEMETRY_TLS_CERT,
+            SETTING_TELEMETRY_TLS_KEY,
+            None,
+            None,
+            SETTING_TELEMETRY_TLS_MIN_VERSION,
+            self.telemetry_tls.take(),
+        )?;
+
+        if let Some(value) = settings.get(SETTING_TLS_RELOAD) {
+            self.tls_reload =
+                parse_bool(value).with_context(|| format!("reading {SETTING_TLS_RELOAD}"))?;
+        }
+
+        if let Some(value) = settings.get(SETTING_TLS_RELOAD_INTERVAL) {
+            self.tls_reload_interval = parse_duration(value)
+                .with_context(|| format!("reading {SETTING_TLS_RELOAD_INTERVAL}"))?;
+        }
+
+        if let Some(value) = settings.get(SETTING_SHUTDOWN_TIMEOUT) {
+            self.shutdown_timeout = parse_duration(value)
+                .with_context(|| format!("reading {SETTING_SHUTDOWN_TIMEOUT}"))?;
+        }
+
+        if let Some(value) = settings.get(SETTING_SECRETS_PROVIDER) {
+            self.secrets_provider = value
+                .parse()
+                .with_context(|| format!("reading {SETTING_SECRETS_PROVIDER}"))?;
+        }
+
+        if let Some(value) = settings.get(SETTING_SECRETS_DIRECTORY) {
+            self.secrets_directory = Some(value.clone());
+        }
+
+        if let Some(value) = settings.get(SETTING_SECRETS_ENV_PREFIX) {
+            self.secrets_env_prefix.clone_from(value);
+        }
+
+        if let Some(value) = settings.get(SETTING_AUDIT_PSEUDONYM_ENABLED) {
+            self.audit_pseudonym_enabled = parse_bool(value)
+                .with_context(|| format!("reading {SETTING_AUDIT_PSEUDONYM_ENABLED}"))?;
+        }
+
+        if let Some(value) = settings.get(SETTING_AUDIT_PSEUDONYM_KEY_REF) {
+            self.audit_pseudonym_key_ref = Some(SecretRef::new(value.clone()));
+        }
+
+        if let Some(value) = settings.get(SETTING_AUDIT_PSEUDONYM_KEY_VERSION) {
+            self.audit_pseudonym_key_version.clone_from(value);
+        }
+
+        if let Some(value) = settings.get(SETTING_AUDIT_SINK) {
+            self.audit_destination = value
+                .parse()
+                .with_context(|| format!("reading {SETTING_AUDIT_SINK}"))?;
+        }
+
+        if let Some(value) = settings.get(SETTING_AUDIT_DIRECTORY) {
+            self.audit_directory = Some(value.clone());
+        }
+
+        if let Some(value) = settings.get(SETTING_AUDIT_RETENTION) {
+            self.audit_retention = parse_duration(value)
+                .with_context(|| format!("reading {SETTING_AUDIT_RETENTION}"))?;
+        }
+
+        if let Some(value) = settings.get(SETTING_KEYS_ENABLED) {
+            self.keys_enabled =
+                parse_bool(value).with_context(|| format!("reading {SETTING_KEYS_ENABLED}"))?;
+        }
+
+        if let Some(value) = settings.get(SETTING_KEYS_DIRECTORY) {
+            self.keys_directory = Some(value.clone());
+        }
+
+        if let Some(value) = settings.get(SETTING_KEYS_PUBLISH_AHEAD) {
+            self.keys_publish_ahead = parse_duration(value)
+                .with_context(|| format!("reading {SETTING_KEYS_PUBLISH_AHEAD}"))?;
+        }
+
+        if let Some(value) = settings.get(SETTING_KEYS_ROTATE_EVERY) {
+            self.keys_rotate_every = parse_duration(value)
+                .with_context(|| format!("reading {SETTING_KEYS_ROTATE_EVERY}"))?;
+        }
+
+        if let Some(value) = settings.get(SETTING_KEYS_RETAIN) {
+            self.keys_retain =
+                parse_duration(value).with_context(|| format!("reading {SETTING_KEYS_RETAIN}"))?;
+        }
+
+        for key in &self.declared {
+            if let Some(value) = settings.get(key) {
+                self.declared_values.insert(key.clone(), value.clone());
+            }
+        }
+
+        Ok(())
+    }
+}
+
+/// Assembles the TLS material of one surface out of the flat settings that describe it.
+///
+/// A certificate without its key — or a key without its certificate — is refused rather than ignored:
+/// it is always a half-finished configuration change, and serving in the clear because one line was
+/// missing is the failure mode this check exists to prevent.
+fn tls_of(
+    settings: &BTreeMap<String, String>,
+    cert_key: &str,
+    key_key: &str,
+    client_ca_key: Option<&str>,
+    crl_key: Option<&str>,
+    min_version_key: &str,
+    previous: Option<TlsSettings>,
+) -> Result<Option<TlsSettings>> {
+    let certificate = settings.get(cert_key);
+    let key = settings.get(key_key);
+
+    let mut tls = match (certificate, key, previous) {
+        (Some(certificate), Some(key), _) => TlsSettings::new(certificate, key),
+        (None, None, previous) => return Ok(previous),
+        (Some(_), None, _) => bail!("{cert_key} is set but {key_key} is not"),
+        (None, Some(_), _) => bail!("{key_key} is set but {cert_key} is not"),
+    };
+
+    if let Some(client_ca_key) = client_ca_key
+        && let Some(client_ca) = settings.get(client_ca_key)
+    {
+        tls = tls.with_client_ca(client_ca);
+    }
+
+    if let Some(crl_key) = crl_key
+        && let Some(crl) = settings.get(crl_key)
+    {
+        tls = tls.with_crl(crl);
+    }
+
+    if let Some(value) = settings.get(min_version_key) {
+        tls = tls.with_min_version(
+            value
+                .parse()
+                .with_context(|| format!("reading {min_version_key}"))?,
+        );
+    }
+
+    Ok(Some(tls))
+}
+
+/// Reads a setting written as a duration: a plain number of seconds, or one suffixed `s`, `m`, `h`
+/// or `d`.
+///
+/// Zero is refused rather than accepted as "no budget": a shutdown budget of nothing would mean the
+/// process kills itself before anything can be released, which nobody configures on purpose.
+fn parse_duration(value: &str) -> Result<Duration> {
+    const SECOND: u64 = 1;
+    const MINUTE: u64 = 60;
+    const HOUR: u64 = 60 * MINUTE;
+    const DAY: u64 = 24 * HOUR;
+
+    let value = value.trim();
+    let (digits, multiplier) = match value.strip_suffix(['s', 'S']) {
+        Some(digits) => (digits, SECOND),
+        None => match value.strip_suffix(['m', 'M']) {
+            Some(digits) => (digits, MINUTE),
+            None => match value.strip_suffix(['h', 'H']) {
+                Some(digits) => (digits, HOUR),
+                None => match value.strip_suffix(['d', 'D']) {
+                    Some(digits) => (digits, DAY),
+                    None => (value, SECOND),
+                },
+            },
+        },
+    };
+
+    let amount: u64 = digits.trim().parse().map_err(|_| {
+        anyhow!("`{value}` is not a duration: expected something like 30s, 2m, 1h or 90d")
+    })?;
+
+    if amount == 0 {
+        bail!("a duration of zero leaves no budget at all");
+    }
+
+    // A retention of a thousand years is a typo — almost always a value in milliseconds that landed
+    // in a field counting seconds — and it is worth saying so rather than silently never expiring.
+    amount
+        .checked_mul(multiplier)
+        .map(Duration::from_secs)
+        .ok_or_else(|| anyhow!("`{value}` is longer than any deployment outlives"))
+}
+
+/// Reads the list of peers a surface answers, one entry per line.
+///
+/// Blank lines are skipped, because a YAML list rendered into a block of text ends with one and
+/// refusing it would make a correct configuration file an error.
+fn parse_allowed(value: &str) -> Result<Vec<AllowedPeer>> {
+    value
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::parse)
+        .collect()
+}
+
+/// Reports whether an address can only be reached from this host.
+///
+/// Text rather than a parsed address on purpose: this crate holds no socket types, and the question
+/// being asked — *did the deployment write something only this machine can reach* — is answered by
+/// what was written. Anything unrecognised is treated as reachable, which is the safe direction to
+/// be wrong in.
+fn is_loopback(address: &str) -> bool {
+    let host = match address.rsplit_once(':') {
+        Some((host, _)) => host,
+        None => address,
+    }
+    .trim()
+    .trim_start_matches('[')
+    .trim_end_matches(']');
+
+    host == "localhost" || host == "::1" || host.starts_with("127.")
+}
+
+/// Reads a setting written as a boolean.
+fn parse_bool(value: &str) -> Result<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "true" | "yes" | "on" | "1" => Ok(true),
+        "false" | "no" | "off" | "0" => Ok(false),
+        other => bail!("`{other}` is not a boolean: expected true or false"),
+    }
+}

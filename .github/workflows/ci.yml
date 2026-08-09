@@ -1,0 +1,50 @@
+# The checks this repository already had, made real.
+#
+# `task check` and the two structural checks existed before this file did, and ran only when somebody
+# remembered to type them. For a security product a check that is not enforced is not a check.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  # build.rs validates these and fails the build when they are missing.
+  PIC_X_COPYRIGHT_YEAR: "2026"
+  PIC_X_COPYRIGHT_HOLDER: "Nitro Agility Srl"
+
+jobs:
+  check:
+    name: lint, structure, tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: formatting
+        run: cargo fmt --all -- --check
+      - name: clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: only the binary composes collaborators
+        run: ./scripts/check-composition-root.sh
+      - name: pic-x-core keeps its dependency allowlist
+        run: ./scripts/check-core-dependencies.sh
+      - name: tests
+        run: cargo test --workspace --locked
+
+  supply-chain:
+    name: advisories, licences, sources
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories licenses bans sources

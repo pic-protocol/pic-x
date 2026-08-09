@@ -1,0 +1,28 @@
+[package]
+name = "pic-x-transport"
+description = "One listener for every PIC-X surface: TCP, TLS, mTLS, and a shutdown that drains."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+axum.workspace = true
+axum-server.workspace = true
+http.workspace = true
+pic-x-core.workspace = true
+rustls.workspace = true
+sha2.workspace = true
+tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
+tokio-rustls.workspace = true
+tower-service.workspace = true
+tracing.workspace = true
+x509-parser.workspace = true
+
+[dev-dependencies]
+axum.workspace = true
+rustls.workspace = true
+rcgen.workspace = true
+tokio-rustls.workspace = true

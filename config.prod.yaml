@@ -1,0 +1,91 @@
+# PIC-X — production, and what the container image ships.
+#
+#   task run-as-prod   starts the server against this file
+#   the image          copies it to /etc/pic-x/config.yaml and runs it by default
+#
+# It starts as it stands, and what it does is deliberately modest: it serves the public surface and
+# telemetry, keeps its administrative surface on loopback where nothing outside the host can reach
+# it, signs nothing, and sends its audit trail to the log stream for whatever is already collecting
+# it. Nothing here is generated: `development_mode` and `autogenerate` are absent, so a server that
+# is missing something says so instead of inventing it.
+#
+# Everything commented out below is a real deployment decision. Making it is what turns this into a
+# configuration rather than a starting point. Every setting there is, with its consequences, is in
+# config.template.yaml.
+
+working_dir: /var/lib/pic-x
+
+log:
+  level: info
+  format: json
+
+# The public URL clients are told to use — the one your proxy or ingress answers on, not the address
+# below. Without it the discovery document advertises relative paths, which is never wrong but is
+# also never useful to a client that found it through something else.
+#
+# issuer: https://pic-x.example.com
+
+web:
+  http: 0.0.0.0:7556
+
+  # Set these when nothing else terminates TLS in front of this process. Behind an ingress that
+  # already does, leaving them out is correct rather than lazy.
+  #
+  # tls:
+  #   cert: tls/server.pem
+  #   key: tls/server.key
+
+telemetry:
+  addr: 0.0.0.0:7558
+
+grpc:
+  # Loopback, so the administrative surface is reachable from inside this host and nowhere else.
+  #
+  # Moving it to 0.0.0.0 without `tls.client_ca` is refused before anything binds, and that is not a
+  # formality: one authority signs every client it was built for, so mutual TLS alone would admit all
+  # of them. To expose it, set all three of the blocks below.
+  addr: 127.0.0.1:7557
+
+  # tls:
+  #   cert: tls/server.pem
+  #   key: tls/server.key
+  #   client_ca: tls/operators.pem
+  #   # What the authority has taken back. Without it a compromised operator certificate stays valid
+  #   # until it expires on its own.
+  #   crl: tls/operators.crl
+  #
+  # allow:
+  #   - cn:platform-operator
+  #   - sha256:3f9a0c2e5b71d84a6c0f1e2d3a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d
+
+# Where secret material is resolved from. `directory` reads one file per key — which is what a mounted
+# Kubernetes secret looks like — and defaults to <working_dir>/secrets.
+#
+# secrets:
+#   provider: directory
+
+# The trail goes to the log stream, on the assumption that something is already collecting it durably.
+# Switch to `file` to keep it here instead, chained so that a later edit is detectable:
+#
+# audit:
+#   sink: file
+#   retention: 90d
+#
+# Recording people as pseudonyms rather than masking them keeps the trail answerable — "did this
+# account do that" — without putting an identifier in it. It needs a secret store to resolve the key
+# from, and rotating means changing the key and the version together.
+#
+#   pseudonym:
+#     enabled: true
+#     key_ref: audit-pseudonym
+#     key_version: "v1"
+
+# A deployment that signs nothing publishes nothing, which is the honest default. Turn this on when
+# something here signs, and leave `publish_ahead` at or above the 300s cache the key set is served
+# with — shorter is refused, because it makes verifiers reject good signatures.
+#
+# keys:
+#   enabled: true
+#   publish_ahead: 1h
+#   rotate_every: 30d
+#   retain: 365d

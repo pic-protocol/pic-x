@@ -1,0 +1,20 @@
+[package]
+name = "pic-x-core"
+description = "Layered configuration, configuration-file format, and product identity shared by every PIC-X crate."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_norway.workspace = true
+# Part of the `Secret` contract rather than a convenience: erasing key material on drop is a promise
+# the type makes, so it cannot live in whichever crate happens to construct one.
+zeroize.workspace = true
+
+[dev-dependencies]
+anyhow.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

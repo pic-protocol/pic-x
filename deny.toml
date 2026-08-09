@@ -1,0 +1,42 @@
+# Supply-chain gates for the PIC-X workspace.
+#
+# This file exists before the HTTP and gRPC stacks land on purpose. Turning `cargo deny` on after
+# pulling in axum, tonic, hyper and rustls means the first run reports a wall of findings and nobody
+# can tell which ones are ours. Turning it on while the tree is small means every later addition is
+# reviewed one at a time, which is the only way the review actually happens.
+
+[graph]
+all-features = true
+
+[advisories]
+# A crate with a known advisory stops the build. A deliberate exception goes in `ignore` with the
+# advisory id and a reason, so the exception is reviewable instead of invisible.
+yanked = "deny"
+ignore = []
+
+[licenses]
+# Permissive licences only. Anything copyleft reaching a binary a customer runs is a legal question,
+# and a legal question should not be answered by a transitive dependency bump.
+allow = [
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "MIT",
+    "MIT-0",
+    "Unicode-3.0",
+    "Zlib",
+]
+confidence-threshold = 0.9
+
+[bans]
+# Two versions of the same crate in one binary is usually harmless and occasionally a security
+# problem: it means one copy is patched and the other is not.
+multiple-versions = "warn"
+wildcards = "deny"
+deny = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

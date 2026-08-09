@@ -1,0 +1,22 @@
+[package]
+name = "pic-x-telemetry"
+description = "The PIC-X telemetry surface: liveness, readiness and metrics, on a port of its own."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+axum.workspace = true
+pic-x-core.workspace = true
+pic-x-transport.workspace = true
+tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "sync"] }
+tracing.workspace = true
+
+[dev-dependencies]
+pic-x-audit.workspace = true
+pic-x-storage.workspace = true
+# `oneshot` drives the router directly, so the route tests need no socket at all.
+tower = { workspace = true, features = ["util"] }

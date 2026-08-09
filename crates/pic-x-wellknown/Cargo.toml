@@ -1,0 +1,24 @@
+[package]
+name = "pic-x-wellknown"
+description = "The public PIC-X surface: discovery documents and whatever a client is meant to find on its own."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+axum = { workspace = true, features = ["json"] }
+pic-x-core.workspace = true
+pic-x-transport.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "sync"] }
+tower.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+pic-x-audit.workspace = true
+pic-x-storage.workspace = true
+tower = { workspace = true, features = ["util"] }

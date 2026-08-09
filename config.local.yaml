@@ -1,0 +1,63 @@
+# PIC-X — development, in the clear.
+#
+#   task run          starts the server against this file
+#   VS Code           "pic-x: serve (local)"
+#
+# Everything the product does is on, so a local run exercises it. Nothing has to be set up first: the
+# volume is created on start and whatever is missing inside it is generated.
+#
+# For the same thing over TLS and mutual TLS, use config.local-tls.yaml.
+# For what a real deployment looks like, use config.prod.yaml. Every setting is in config.template.yaml.
+
+# This is somebody's laptop, and says so. It is what permits the two lines below, and the key windows
+# further down that are far shorter than any deployment would use.
+development_mode: true
+
+# Create what is missing: a pseudonymisation secret, a local authority, a server certificate for
+# localhost, and a client certificate for reaching the administrative surface. Nothing already there
+# is ever overwritten.
+autogenerate: true
+
+# Beside the repository, and ignored by git.
+working_dir: .volume
+
+log:
+  # `debug` shows the starting/stopping transitions; `terminal` is readable by a human rather than by
+  # a log pipeline, and brings the banner with it.
+  level: debug
+  format: terminal
+
+web:
+  http: 127.0.0.1:7556
+
+telemetry:
+  addr: 127.0.0.1:7558
+
+grpc:
+  # Loopback, and no client certificate: the point of this file is to start with no ceremony. That is
+  # only defensible because nothing outside this machine can reach it — the same address on 0.0.0.0
+  # without `tls.client_ca` is refused before anything binds.
+  addr: 127.0.0.1:7557
+
+secrets:
+  # Resolves to <working_dir>/secrets, which is where the generated key lands.
+  provider: directory
+
+audit:
+  # Written under the volume and chained, so `task audit:verify` has something to check.
+  sink: file
+  retention: 7d
+  pseudonym:
+    enabled: true
+    key_ref: audit-pseudonym
+    key_version: "v1"
+
+keys:
+  enabled: true
+  # Minutes rather than months, so a rotation is something you can watch happen instead of something
+  # you find out about in thirty days. `publish_ahead` shorter than the 300s cache the key set is
+  # served with would break a real verifier; here there are none, and `development_mode` is what
+  # allows it.
+  publish_ahead: 1m
+  rotate_every: 10m
+  retain: 1h

@@ -1,0 +1,392 @@
+version: '3'
+
+tasks:
+  build:
+    desc: Build every component.
+    summary: |
+      Build every component.
+
+      Examples:
+        task build
+        task build PKG=pic-x-core
+        task build RELEASE=1
+        task build ARGS='--all-features'
+
+      Parameters:
+        PKG      Build only this workspace crate. Default: the whole workspace.
+        RELEASE  Build with the release profile when set to any value. Default: unset.
+        ARGS     Extra flags appended verbatim to `cargo build`. Default: empty.
+    vars:
+      PKG: '{{.PKG | default ""}}'
+      RELEASE: '{{.RELEASE | default ""}}'
+      ARGS: '{{.ARGS | default ""}}'
+    cmds:
+      - >-
+        cargo build {{if .PKG}}-p {{.PKG}}{{else}}--workspace{{end}}
+        {{if .RELEASE}}--release{{end}} {{.ARGS}}
+
+  run:
+    desc: Run the server locally — everything on, nothing to set up first.
+    summary: |
+      Start the server against config.local.yaml: development mode, readable output, the audit trail
+      written to files, signing keys publishing and rotating, and the volume created on first start.
+
+      The file says all of that. This task only names it — there is no environment to keep in step
+      with the editor, which is what used to make the two drift apart.
+
+      Serving is the binary's default action, so the invocation is `pic-x <CONFIG>`: there is no
+      `serve` command to name.
+
+      Examples:
+        task run
+        task run CONFIG=./my-config.yaml
+        task run LOG_LEVEL=trace
+        task run GRPC_ADDR=127.0.0.1:6000
+
+      Parameters:
+        CONFIG          Configuration file. Default: config.local.yaml.
+        LOG_LEVEL       error, warn, info, debug, or trace. Default: whatever CONFIG says.
+        LOG_FORMAT      json or terminal. Default: whatever CONFIG says.
+        RELEASE         Run the release build when set to any value. Default: unset.
+        WEB_HTTP_ADDR   Override the web listen address. Default: from CONFIG.
+        TELEMETRY_ADDR  Override the telemetry listen address. Default: from CONFIG.
+        GRPC_ADDR       Override the gRPC listen address. Default: from CONFIG.
+        ARGS            Extra flags appended verbatim to the invocation. Default: empty.
+    cmds:
+      - task: serve
+        vars:
+          CONFIG: '{{.CONFIG | default "config.local.yaml"}}'
+          LOG_LEVEL: '{{.LOG_LEVEL}}'
+          LOG_FORMAT: '{{.LOG_FORMAT}}'
+          RELEASE: '{{.RELEASE}}'
+          WEB_HTTP_ADDR: '{{.WEB_HTTP_ADDR}}'
+          TELEMETRY_ADDR: '{{.TELEMETRY_ADDR}}'
+          GRPC_ADDR: '{{.GRPC_ADDR}}'
+          ARGS: '{{.ARGS}}'
+
+  run-as-local-tls:
+    desc: The same local run, over TLS with mutual TLS on the administrative surface.
+    summary: |
+      Start the server against config.local-tls.yaml: everything `task run` does, plus the transport
+      security a real deployment has. Still nothing to set up — the authority, the server certificate
+      and the operator's client certificate are generated into the volume on the first start.
+
+      Once it is up:
+
+        curl --cacert .volume/tls/ca.pem https://localhost:7556/.well-known/jwks.json
+
+        grpcurl -cacert .volume/tls/ca.pem \
+                -cert .volume/tls/client.pem -key .volume/tls/client.key \
+                -import-path crates/pic-x-admin/proto -proto picx/admin/v1/admin.proto \
+                localhost:7557 picx.admin.v1.Admin/GetVersion
+
+      Examples:
+        task run-as-local-tls
+        task run-as-local-tls LOG_FORMAT=json
+
+      Parameters: the same as `task run`, with CONFIG defaulting to config.local-tls.yaml.
+    cmds:
+      - task: serve
+        vars:
+          CONFIG: '{{.CONFIG | default "config.local-tls.yaml"}}'
+          LOG_LEVEL: '{{.LOG_LEVEL}}'
+          LOG_FORMAT: '{{.LOG_FORMAT}}'
+          RELEASE: '{{.RELEASE}}'
+          WEB_HTTP_ADDR: '{{.WEB_HTTP_ADDR}}'
+          TELEMETRY_ADDR: '{{.TELEMETRY_ADDR}}'
+          GRPC_ADDR: '{{.GRPC_ADDR}}'
+          ARGS: '{{.ARGS}}'
+
+  run-as-prod:
+    desc: Run the server as a deployment runs it — the file the image ships.
+    summary: |
+      Start the server against config.prod.yaml, which is the file copied into the container image.
+      Nothing is generated, the administrative surface stays on loopback, and the log stream is what a
+      collector would receive.
+
+      Use it to see exactly what a deployment gets, and to find out what a configuration is missing
+      before a deployment does.
+
+      Note that it writes to /var/lib/pic-x, which on a developer machine usually does not exist:
+
+        task run-as-prod CONFIG=./my-config.yaml
+
+      is the usual way to try a real configuration of your own.
+
+      Examples:
+        task run-as-prod
+        task run-as-prod RELEASE=1
+
+      Parameters: the same as `task run`, with CONFIG defaulting to config.prod.yaml.
+    cmds:
+      - task: serve
+        vars:
+          CONFIG: '{{.CONFIG | default "config.prod.yaml"}}'
+          LOG_LEVEL: '{{.LOG_LEVEL}}'
+          LOG_FORMAT: '{{.LOG_FORMAT}}'
+          RELEASE: '{{.RELEASE}}'
+          WEB_HTTP_ADDR: '{{.WEB_HTTP_ADDR}}'
+          TELEMETRY_ADDR: '{{.TELEMETRY_ADDR}}'
+          GRPC_ADDR: '{{.GRPC_ADDR}}'
+          ARGS: '{{.ARGS}}'
+
+  serve:
+    internal: true
+    desc: Start the server against a named configuration file.
+    vars:
+      CONFIG: '{{.CONFIG | default "config.local.yaml"}}'
+      LOG_LEVEL: '{{.LOG_LEVEL | default ""}}'
+      LOG_FORMAT: '{{.LOG_FORMAT | default ""}}'
+      RELEASE: '{{.RELEASE | default ""}}'
+      WEB_HTTP_ADDR: '{{.WEB_HTTP_ADDR | default ""}}'
+      TELEMETRY_ADDR: '{{.TELEMETRY_ADDR | default ""}}'
+      GRPC_ADDR: '{{.GRPC_ADDR | default ""}}'
+      ARGS: '{{.ARGS | default ""}}'
+    cmds:
+      - >-
+        cargo run {{if .RELEASE}}--release{{end}} --bin pic-x -- {{.CONFIG}}
+        {{if .LOG_LEVEL}}--log-level {{.LOG_LEVEL}}{{end}}
+        {{if .LOG_FORMAT}}--log-format {{.LOG_FORMAT}}{{end}}
+        {{if .WEB_HTTP_ADDR}}--web-http-addr {{.WEB_HTTP_ADDR}}{{end}}
+        {{if .TELEMETRY_ADDR}}--telemetry-addr {{.TELEMETRY_ADDR}}{{end}}
+        {{if .GRPC_ADDR}}--grpc-addr {{.GRPC_ADDR}}{{end}}
+        {{.ARGS}}
+
+  version:
+    desc: Report the product version.
+    summary: |
+      Report the product version.
+
+      Example:
+        task version
+
+      Parameters: none.
+    cmds:
+      - task: cli
+        vars:
+          ARGS: version
+
+  cli:
+    desc: Run the pic-x binary with arbitrary arguments.
+    summary: |
+      Run the pic-x binary with arbitrary arguments.
+
+      This is the escape hatch for invocations the named tasks do not cover — a command added later,
+      or a flag combination worth trying once. `task run` stays the way to start the server.
+
+      Both spellings work and mean the same thing: everything after `--`, and whatever `ARGS` holds.
+      The `--` form is here because it is what fingers type; the named form is here because it is what
+      the other tasks use.
+
+      Examples:
+        task cli -- --help
+        task cli ARGS=--help
+        task cli ARGS=version
+        task cli -- ./my-config.yaml --grpc-addr 0.0.0.0:6000
+        task cli RELEASE=1 ARGS=--version
+
+      Parameters:
+        ARGS     Arguments passed verbatim to the binary. Default: empty, which prints usage.
+        RELEASE  Run the release build when set to any value. Default: unset.
+    vars:
+      ARGS: '{{.ARGS | default ""}}'
+      RELEASE: '{{.RELEASE | default ""}}'
+    cmds:
+      - cargo run {{if .RELEASE}}--release{{end}} --bin pic-x -- {{.CLI_ARGS}} {{.ARGS}}
+
+  test:
+    desc: Run the unit and use-case tests.
+    summary: |
+      Run the unit and use-case tests.
+
+      Examples:
+        task test
+        task test PKG=pic-x-core
+        task test FILTER=test_validate
+        task test FILTER=test_validate NOCAPTURE=1
+        task test RELEASE=1 ARGS='--all-features'
+
+      Parameters:
+        PKG        Test only this workspace crate. Default: the whole workspace.
+        FILTER     Only run tests whose name contains this string. Default: all tests.
+        NOCAPTURE  Show test stdout/stderr when set to any value. Default: unset.
+        RELEASE    Test the release profile when set to any value. Default: unset.
+        ARGS       Extra flags appended verbatim to `cargo test`. Default: empty.
+    vars:
+      PKG: '{{.PKG | default ""}}'
+      FILTER: '{{.FILTER | default ""}}'
+      NOCAPTURE: '{{.NOCAPTURE | default ""}}'
+      RELEASE: '{{.RELEASE | default ""}}'
+      ARGS: '{{.ARGS | default ""}}'
+    cmds:
+      - >-
+        cargo test {{if .PKG}}-p {{.PKG}}{{else}}--workspace{{end}}
+        {{if .RELEASE}}--release{{end}} {{.ARGS}} {{.FILTER}}
+        {{if .NOCAPTURE}}-- --nocapture{{end}}
+
+  bench:
+    desc: Run the benchmarks.
+    summary: |
+      Run the benchmarks.
+
+      Examples:
+        task bench
+        task bench BENCH=server_host
+        task bench PKG=pic-x-server
+        task bench ARGS='--all-features'
+
+      Parameters:
+        PKG     Benchmark only this workspace crate. Default: the whole workspace.
+        BENCH   Only run this benchmark target (`--bench <name>`). Default: all targets.
+        FILTER  Only run benchmarks whose name contains this string. Default: all benchmarks.
+        ARGS    Extra flags appended verbatim to `cargo bench`. Default: empty.
+    vars:
+      PKG: '{{.PKG | default ""}}'
+      BENCH: '{{.BENCH | default ""}}'
+      FILTER: '{{.FILTER | default ""}}'
+      ARGS: '{{.ARGS | default ""}}'
+    cmds:
+      - >-
+        cargo bench {{if .PKG}}-p {{.PKG}}{{else}}--workspace{{end}}
+        {{if .BENCH}}--bench {{.BENCH}}{{end}} {{.ARGS}} {{.FILTER}}
+
+  lint:
+    desc: Run clippy over every crate and target.
+    summary: |
+      Run clippy over every crate and target, failing on any warning.
+
+      Examples:
+        task lint
+        task lint PKG=pic-x-server
+        task lint ARGS=--fix
+
+      Parameters:
+        PKG   Lint only this workspace crate. Default: the whole workspace.
+        ARGS  Extra flags appended verbatim to `cargo clippy`. Default: empty.
+    vars:
+      PKG: '{{.PKG | default ""}}'
+      ARGS: '{{.ARGS | default ""}}'
+    cmds:
+      - >-
+        cargo clippy {{if .PKG}}-p {{.PKG}}{{else}}--workspace{{end}}
+        --all-targets {{.ARGS}} -- -D warnings
+
+  run-as-docker:
+    desc: Build the image and run what it actually ships.
+    summary: |
+      Build the image and run it against the configuration it ships — config.prod.yaml, copied to
+      /etc/pic-x/config.yaml. Nothing is overridden, so what you see is what a deployment gets.
+
+      The volume is a directory on the host mounted at /var/lib/pic-x, so whatever the run keeps
+      survives it and can be looked at afterwards.
+
+      The administrative port is not published, and that is not an oversight: the shipped
+      configuration binds it to loopback, so from outside the container there is nothing there. Moving
+      it needs mutual TLS and an allowlist — see config.prod.yaml.
+
+      For the full development experience, `task run` is local and instant.
+
+      Examples:
+        task run-as-docker
+        task run-as-docker VOLUME=/tmp/pic-x-docker
+        task run-as-docker TAG=pic-x:experiment
+
+      Parameters:
+        TAG     Image tag to build and run. Default: pic-x:local.
+        VOLUME  Host directory mounted as the volume. Default: .volume-docker.
+    vars:
+      TAG: '{{.TAG | default "pic-x:local"}}'
+      VOLUME: '{{.VOLUME | default ".volume-docker"}}'
+    cmds:
+      - docker build --tag {{.TAG}} .
+      - mkdir -p {{.VOLUME}}
+      - >-
+        docker run --rm --init
+        --publish 7556:7556 --publish 7558:7558
+        --volume "$(pwd)/{{.VOLUME}}:/var/lib/pic-x"
+        {{.TAG}}
+
+  audit:verify:
+    desc: Check that nothing in the audit trail has been altered.
+    summary: |
+      Read the whole trail and check it: every record against its own digest, every record against
+      the one before it, and the sequence across the whole thing including day boundaries.
+
+      A trail that verifies has not been edited in place, had a line removed, or lost a day. It is
+      evidence, not prevention — see the `audit` section of the configuration file for what that
+      distinction costs and what it buys.
+
+      Examples:
+        task audit:verify
+        task audit:verify VOLUME=/tmp/pic-x
+
+      Parameters:
+        VOLUME  Where everything lives. Default: .volume beside the repository.
+    vars:
+      VOLUME: '{{.VOLUME | default ".volume"}}'
+    cmds:
+      - cargo run --quiet --bin pic-x -- audit verify --directory {{.VOLUME}}/audit
+
+  check:seams:
+    desc: Check that only the binary constructs swappable collaborators.
+    summary: |
+      Check that only the binary constructs swappable collaborators.
+
+      Every crate here receives its collaborators instead of resolving them, which is what lets
+      another binary reuse these crates and replace the parts it needs. Nothing in the type system
+      enforces that, so it is checked here.
+
+      Example:
+        task check:seams
+
+      Parameters: none.
+    cmds:
+      - ./scripts/check-composition-root.sh
+
+  check:core-deps:
+    desc: Check that pic-x-core keeps its dependency list minimal.
+    summary: |
+      Check that pic-x-core keeps its dependency list minimal.
+
+      Every crate depends on pic-x-core, including the ones a downstream build writes. Whatever
+      lands in its dependency list lands in all of them, so the list is an allowlist.
+
+      Example:
+        task check:core-deps
+
+      Parameters: none.
+    cmds:
+      - ./scripts/check-core-dependencies.sh
+
+  check:supply-chain:
+    desc: Check the dependency tree for advisories, licences and unknown sources.
+    summary: |
+      Check every crate this workspace pulls in: known advisories, unmaintained crates, licences
+      outside the permissive set, and anything from a registry nobody named.
+
+      The rules live in deny.toml, and each of them exists for a reason written down beside it. An
+      exception belongs in that file with an id and a justification, so it is reviewable rather than
+      invisible.
+
+      Example:
+        task check:supply-chain
+
+      Parameters: none.
+    cmds:
+      - cargo deny check
+
+  check:
+    desc: Run every check the pipeline runs.
+    summary: |
+      Run lint, both structural checks, the supply-chain gates and the test suite, in that order.
+
+      Example:
+        task check
+
+      Parameters: none.
+    cmds:
+      - task: lint
+      - task: check:seams
+      - task: check:core-deps
+      - task: check:supply-chain
+      - task: test

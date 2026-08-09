@@ -1,0 +1,41 @@
+// The PIC-X administrative API.
+//
+// The package is versioned from the first day it exists, because a package name is the one thing a
+// client hard-codes and the one thing that cannot be changed later without breaking every client at
+// once. A build that adds administrative RPCs of its own declares its own package — `permguard.picx.admin.v1`
+// and so on — in its own crate, compiled by its own build script. Nothing is centralised here.
+
+syntax = "proto3";
+
+package picx.admin.v1;
+
+// Questions about the running server that change nothing.
+//
+// Everything that *does* change something belongs on this surface too, and behind the same mTLS, but
+// it does not exist yet: an administrative API with no authentication in front of it is the whole
+// game, and the authentication is the next piece.
+service Admin {
+  // Reports which build is answering.
+  rpc GetVersion(GetVersionRequest) returns (GetVersionResponse);
+
+  // Reports whether the server considers itself able to serve.
+  rpc GetHealth(GetHealthRequest) returns (GetHealthResponse);
+}
+
+message GetVersionRequest {}
+
+message GetVersionResponse {
+  // The product name this build presents as.
+  string product = 1;
+  // The version this build was compiled at.
+  string version = 2;
+}
+
+message GetHealthRequest {}
+
+message GetHealthResponse {
+  // Whether the process is alive: false means restarting it would help.
+  bool live = 1;
+  // Whether the process is willing to be sent work: false from the first instant of shutdown.
+  bool ready = 2;
+}
