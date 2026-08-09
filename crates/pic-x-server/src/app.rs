@@ -15,8 +15,8 @@ use clap::{Command as ClapCommand, CommandFactory, FromArgMatches};
 
 use pic_x_core::{
     AuditRecorder, AuditSink, BoxFuture, BuildSettings, Config, ConfigFile, ConfigSection,
-    KeyManager, Layers, LogFormat, ProductIdentity, Pseudonymizer, SecretStore, ServerContext,
-    ServerHost, Service, Storage, Value,
+    KeyManager, Layers, LogFormat, Metrics, ProductIdentity, Pseudonymizer, SecretStore,
+    ServerContext, ServerHost, Service, Storage, Value,
 };
 
 use crate::banner::Banner;
@@ -101,6 +101,9 @@ pub struct App {
     /// [`AuditRecorder`].
     audit: Arc<dyn AuditSink>,
     secrets: Option<Box<dyn SecretStore>>,
+    /// Where the numbers this process records about itself go. A handle that discards until a
+    /// build installs something, so nothing has to check whether it is there.
+    metrics: Metrics,
     services: Vec<Box<dyn Service>>,
     pseudonymizer_factory: Option<PseudonymizerFactory>,
     shutdown_factory: Option<ShutdownFactory>,
@@ -135,6 +138,7 @@ impl App {
             storage,
             audit: Arc::from(audit),
             secrets: None,
+            metrics: Metrics::none(),
             services: Vec::new(),
             pseudonymizer_factory: None,
             shutdown_factory: None,
@@ -162,6 +166,17 @@ impl App {
     ///
     /// A build that registers none and is then asked to pseudonymise refuses to start, rather than
     /// recording less carefully than it was told to.
+    /// Installs somewhere for the numbers this process records about itself to go.
+    ///
+    /// Without one, every measurement in every crate is a branch and a return, and `/metrics`
+    /// publishes liveness and readiness alone. Which registry it is, is a decision for the
+    /// composition root, exactly like the audit sink and the key ring.
+    pub fn with_metrics(mut self, metrics: Metrics) -> Self {
+        self.metrics = metrics;
+
+        self
+    }
+
     pub fn with_pseudonymizer_factory<F>(mut self, factory: F) -> Self
     where
         F: Fn(&[u8], &str) -> Box<dyn Pseudonymizer> + Send + Sync + 'static,
@@ -519,7 +534,8 @@ impl App {
             self.storage.as_ref(),
             self.audit.as_ref(),
         )
-        .with_services(&self.services);
+        .with_services(&self.services)
+        .with_metrics(self.metrics.clone());
 
         if let Some(secrets) = secrets.or(self.secrets.as_deref()) {
             context = context.with_secrets(secrets);

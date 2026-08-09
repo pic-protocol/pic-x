@@ -58,6 +58,19 @@ grpc:
   #   - cn:platform-operator
   #   - sha256:3f9a0c2e5b71d84a6c0f1e2d3a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d
 
+# What a surface refuses to spend, whoever is asking: sockets held at once, requests in flight, how
+# long one may take, and how much body it may carry. Every one has a default, so leaving this out is
+# still bounded — it is here to be lowered in front of a hostile network, or raised for a deployment
+# that genuinely serves more than this. The consequences of each are in config.template.yaml.
+#
+# limits:
+#   connections: 1024
+#   concurrent_requests: 256
+#   request_timeout: 30s
+#   handshake_timeout: 10s
+#   header_timeout: 10s
+#   body_bytes: 1M
+
 # Where secret material is resolved from. `directory` reads one file per key — which is what a mounted
 # Kubernetes secret looks like — and defaults to <working_dir>/secrets.
 #

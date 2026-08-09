@@ -41,13 +41,19 @@
 #![deny(clippy::all, clippy::unwrap_used, clippy::expect_used)]
 
 mod digest;
+mod guard;
 mod identity;
 mod material;
+mod measure;
 mod reload;
+mod request;
 mod surface;
 
 pub use digest::digest;
+pub use guard::LimitedAcceptor;
 pub use identity::{PeerAcceptor, WithPeer, fingerprint, identity_of};
 pub use material::{load_certificates, load_key, load_revocations, server_config};
+pub use measure::{ACCEPTED, CONNECTIONS, LATENCY, REFUSED, REQUESTS};
 pub use reload::{Reloaded, reload_all};
-pub use surface::Surface;
+pub use request::RequestId;
+pub use surface::{Listener, Surface};

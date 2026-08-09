@@ -170,6 +170,48 @@
 #   reload_interval: 30s
 
 ## ---------------------------------------------------------------------------------------------
+## Limits
+## ---------------------------------------------------------------------------------------------
+##
+## What a surface refuses to spend, whoever is asking. These apply to every surface — public,
+## administrative and telemetry — and every one of them has a default, so a deployment that says
+## nothing here is still bounded. They are here to be *lowered* in front of a hostile network, or
+## raised for a surface that genuinely serves more than this.
+##
+##   connections          sockets held at once. Stops a client opening thousands and leaving them:
+##                        each costs a task and a TLS session, and a client that sends nothing on
+##                        them spends none of the request budget. Over the limit is refused, never
+##                        queued — waiting for a slot would hold the socket that is the resource
+##   handshake_timeout    how long a client has to finish TLS. Stops a handshake started and never
+##                        completed. Shorter than request_timeout on purpose: a handshake that may
+##                        last as long as a whole request is a cheaper way to hold one open
+##   header_timeout       how long a client has to send a complete request head. This is the one that
+##                        answers slowloris — a client dribbling `GET / HTTP/1.1` one byte at a time
+##                        never reaches a handler, so nothing a handler is wrapped in can time it out
+##   request_timeout      how long one request may take once it has arrived, answered 408. Stops a
+##                        body, or a handler, that never ends
+##   concurrent_requests  requests in flight at once. Over it the answer is 503 immediately, not a
+##                        place in a queue — a queue under overload fails slowly for everybody
+##                        instead of quickly for the requests that were not going to be served
+##   body_bytes           bytes read from one body, answered 413. Stops a megabyte announced and a
+##                        gigabyte sent. Accepts `k`, `M` and `G`
+##
+## None of these is a rate limiter. Rate limiting needs to know who a client *is* over time, which
+## is a decision about identity rather than about resources, and belongs in front of this.
+##
+## `connections` is per surface, and this process runs three. A deployment raising it should raise the
+## file descriptor limit with it: three surfaces at 1024 is 3072 sockets, and a container whose
+## `RLIMIT_NOFILE` is 1024 will run out long before any of these limits is reached.
+
+# limits:
+#   connections: 1024
+#   concurrent_requests: 256
+#   request_timeout: 30s
+#   handshake_timeout: 10s
+#   header_timeout: 10s
+#   body_bytes: 1M
+
+## ---------------------------------------------------------------------------------------------
 ## Logging
 ## ---------------------------------------------------------------------------------------------
 ##

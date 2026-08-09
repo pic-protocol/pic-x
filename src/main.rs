@@ -13,12 +13,13 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use pic_x_admin::AdminService;
-use pic_x_core::{AuditDestination, AuditSink, JwkSet, KeyManager};
+use pic_x_core::{AuditDestination, AuditSink, JwkSet, KeyManager, Metrics};
 use pic_x_core::{BuildSettings, ProductIdentity};
 use pic_x_core::{Config, SecretProvider, SecretStore};
 use pic_x_server::{App, DefaultServerHost};
 use pic_x_std::audit::{FileAuditSink, TracingAuditSink};
 use pic_x_std::keys::{DirectoryKeyManager, KeyPolicy, KeyService};
+use pic_x_std::metrics::Registry;
 use pic_x_std::pseudonym::HmacPseudonymizer;
 use pic_x_std::secrets::{DirectorySecretStore, EnvironmentSecretStore};
 use pic_x_std::storage::MemoryStorage;
@@ -70,6 +71,10 @@ async fn main() -> ExitCode {
             env!("CARGO_PKG_VERSION"),
         )),
     )
+    // The numbers this process records about itself, kept in memory and published at /metrics. One
+    // registry for the whole process: which one it is, is a decision only this file makes, and a
+    // build that wants its measurements somewhere else changes this line and nothing more.
+    .with_metrics(Metrics::new(Arc::new(Registry::new())))
     .with_provisioner(pic_x_std::provision::prepare)
     .with_secrets_factory(secret_store_for)
     .with_audit_factory(audit_sink_for)

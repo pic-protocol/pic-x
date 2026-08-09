@@ -6,15 +6,28 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use axum::Router;
+use axum::error_handling::HandleErrorLayer;
+use axum::extract::DefaultBodyLimit;
 use axum_server::Handle;
+use axum_server::accept::DefaultAcceptor;
 use axum_server::tls_rustls::{RustlsAcceptor, RustlsConfig};
+use http::StatusCode;
+use hyper_util::rt::TokioTimer;
 use tokio::task::JoinHandle;
+use tower::limit::ConcurrencyLimitLayer;
+use tower::load_shed::LoadShedLayer;
+use tower::{BoxError, ServiceBuilder};
+use tower_http::limit::RequestBodyLimitLayer;
+use tower_http::timeout::TimeoutLayer;
 
-use pic_x_core::TlsSettings;
+use pic_x_core::{Limits, Metrics, TlsSettings};
 
+use crate::guard::LimitedAcceptor;
 use crate::identity::PeerAcceptor;
 use crate::material::server_config;
+use crate::measure;
 use crate::reload;
+use crate::request;
 
 /// A listener that is up, and the things needed to take it down again.
 pub struct Surface {
@@ -37,12 +50,57 @@ impl std::fmt::Debug for Surface {
     }
 }
 
-impl Surface {
-    /// Binds `address` and serves `router` on it, over TLS when `tls` says so.
+/// A listener being described, before it is bound.
+///
+/// A builder rather than a widening argument list: what a listener needs has grown from an address
+/// and a router to bounds, measurement and a name, and each of those arrived as one more positional
+/// argument that every call site had to get in the right order. Named, they read at the call site and
+/// the next one costs nothing.
+pub struct Listener<'a> {
+    surface: &'static str,
+    address: &'a str,
+    router: Router,
+    tls: Option<&'a TlsSettings>,
+    limits: Limits,
+    metrics: Metrics,
+}
+
+impl<'a> Listener<'a> {
+    /// Serves this listener over TLS as `tls` describes, or in the clear when it is `None`.
+    pub fn tls(mut self, tls: Option<&'a TlsSettings>) -> Self {
+        self.tls = tls;
+
+        self
+    }
+
+    /// Bounds what this listener will spend. Defaults to [`Limits::default`].
+    pub fn limits(mut self, limits: Limits) -> Self {
+        self.limits = limits;
+
+        self
+    }
+
+    /// Records what this listener does into `metrics`. Defaults to recording nothing.
+    pub fn metrics(mut self, metrics: Metrics) -> Self {
+        self.metrics = metrics;
+
+        self
+    }
+
+    /// Binds the address and starts serving.
     ///
-    /// Returns once the socket is bound and the server is running, so a caller that got a `Surface`
+    /// Returns once the socket is bound and the server is running, so a caller that got a [`Surface`]
     /// back knows the port is genuinely theirs.
-    pub async fn start(address: &str, router: Router, tls: Option<&TlsSettings>) -> Result<Self> {
+    pub async fn start(self) -> Result<Surface> {
+        let Self {
+            surface,
+            address,
+            router,
+            tls,
+            limits,
+            metrics,
+        } = self;
+
         let parsed: SocketAddr = address
             .parse()
             .with_context(|| format!("reading the listen address `{address}`"))?;
@@ -69,14 +127,51 @@ impl Surface {
         let serving = handle.clone();
         let accepting = secured.as_ref().map(|(_, config)| config.clone());
 
+        let measuring = metrics.clone();
         let task = tokio::spawn(async move {
-            let service = router.into_make_service();
+            // A ceiling on requests in flight, and a refusal rather than a queue once it is reached.
+            // The two belong together: a concurrency limit on its own makes an overloaded surface
+            // slow instead of full, which is worse — the client waits, the memory the wait costs is
+            // still spent, and nobody is told anything. Shedding turns that into an answer.
+            let overload = ServiceBuilder::new()
+                .layer(HandleErrorLayer::new(overloaded))
+                .layer(LoadShedLayer::new())
+                .layer(ConcurrencyLimitLayer::new(
+                    limits.concurrent_requests() as usize
+                ));
+
+            // Applied here rather than by each surface, so no surface can be added without them.
+            // Innermost first: the body limit sits closest to the handler, the identity outermost so
+            // even a request that is refused before reaching a handler is named in the log and in the
+            // answer the client gets.
+            let service = router
+                .layer(DefaultBodyLimit::max(limits.body_bytes()))
+                .layer(RequestBodyLimitLayer::new(limits.body_bytes()))
+                .layer(TimeoutLayer::with_status_code(
+                    StatusCode::REQUEST_TIMEOUT,
+                    limits.request_timeout(),
+                ))
+                .layer(overload)
+                .layer(measure::MeasureLayer::new(surface, measuring.clone()))
+                .layer(request::IdentityLayer::new())
+                .into_make_service();
 
             let served = match accepting {
                 Some(config) => match axum_server::from_tcp(listener) {
-                    Ok(server) => {
+                    Ok(mut server) => {
+                        bound_connections(&mut server, limits);
+
                         server
-                            .acceptor(PeerAcceptor::new(RustlsAcceptor::new(config)))
+                            .acceptor(
+                                LimitedAcceptor::new(
+                                    PeerAcceptor::new(
+                                        RustlsAcceptor::new(config)
+                                            .handshake_timeout(limits.handshake_timeout()),
+                                    ),
+                                    limits.connections(),
+                                )
+                                .measured(surface, measuring.clone()),
+                            )
                             .handle(serving)
                             .serve(service)
                             .await
@@ -84,7 +179,18 @@ impl Surface {
                     Err(error) => Err(error),
                 },
                 None => match axum_server::from_tcp(listener) {
-                    Ok(server) => server.handle(serving).serve(service).await,
+                    Ok(mut server) => {
+                        bound_connections(&mut server, limits);
+
+                        server
+                            .acceptor(
+                                LimitedAcceptor::new(DefaultAcceptor::new(), limits.connections())
+                                    .measured(surface, measuring.clone()),
+                            )
+                            .handle(serving)
+                            .serve(service)
+                            .await
+                    }
                     Err(error) => Err(error),
                 },
             };
@@ -115,13 +221,29 @@ impl Surface {
             None => (None, None),
         };
 
-        Ok(Self {
+        Ok(Surface {
             address: bound,
             handle,
             task,
             material,
             watcher,
         })
+    }
+}
+
+impl Surface {
+    /// Describes a listener called `surface`, on `address`, serving `router`.
+    ///
+    /// Nothing is bound until [`Listener::start`].
+    pub fn listener<'a>(surface: &'static str, address: &'a str, router: Router) -> Listener<'a> {
+        Listener {
+            surface,
+            address,
+            router,
+            tls: None,
+            limits: Limits::default(),
+            metrics: Metrics::none(),
+        }
     }
 
     /// Returns the address actually bound, which is what to log.
@@ -151,4 +273,57 @@ impl Surface {
 
         Ok(self.address)
     }
+}
+
+/// Bounds what a client may do to a connection before it becomes a request.
+///
+/// Everything a request goes through — the timeout, the body limit, the concurrency ceiling — starts
+/// once the protocol has a request to hand over. A client that never finishes sending one is therefore
+/// invisible to all of it, and the only thing bounding it is the connection limit. Spending a thousand
+/// sockets is not an attack, it is an afternoon.
+///
+/// # The timer that has to be here
+///
+/// hyper carries a thirty-second default for the header read, and **discards it unless a timer is
+/// installed** — it warns and serves without one. Nothing between this and hyper installs one, so
+/// without these lines the default is a line in someone else's documentation and the surface has no
+/// defence against a slow header at all. Setting it and forgetting the timer is worse: hyper panics.
+fn bound_connections<A: axum_server::Address>(server: &mut axum_server::Server<A>, limits: Limits) {
+    server
+        .http_builder()
+        .http1()
+        .timer(TokioTimer::new())
+        .header_read_timeout(limits.header_timeout());
+
+    server
+        .http_builder()
+        .http2()
+        .timer(TokioTimer::new())
+        // One connection may not open more streams than the whole surface will serve requests. A
+        // stream is cheaper than a connection and therefore a cheaper way to spend the same budget:
+        // without this, one socket can hold as much of the surface as a thousand.
+        .max_concurrent_streams(limits.concurrent_requests())
+        // A peer that stops answering keeps its streams and their buffers until something notices.
+        // These are what notice.
+        .keep_alive_interval(Some(limits.header_timeout()))
+        .keep_alive_timeout(limits.header_timeout());
+}
+
+/// What a client is told when the surface is already serving as much as it is allowed to.
+///
+/// 503 and not 500: the request was not wrong and nothing is broken. It is a "come back", and a
+/// client that reads status codes will treat it as one — which is the difference between a load spike
+/// that recovers and one that turns into a retry storm against an endpoint the client thinks is
+/// faulty.
+async fn overloaded(_error: BoxError) -> (StatusCode, &'static str) {
+    tracing::warn!(
+        event.name = "surface.shed",
+        component = "transport",
+        "refused a request: the surface is already serving as many as it is allowed to"
+    );
+
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        "the surface is serving as many requests as it is allowed to",
+    )
 }

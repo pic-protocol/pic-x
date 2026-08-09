@@ -12,11 +12,18 @@ anyhow.workspace = true
 axum.workspace = true
 axum-server.workspace = true
 http.workspace = true
+hyper-util.workspace = true
 pic-x-core.workspace = true
+# Naming each request. The same generator `rustls` already links, rather than a second one.
+ring.workspace = true
 rustls.workspace = true
 sha2.workspace = true
 tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
 tokio-rustls.workspace = true
+# `limit` is the concurrency ceiling, `load-shed` turns waiting for it into a refusal.
+tower = { workspace = true, features = ["limit", "load-shed"] }
+tower-http.workspace = true
+tower-layer.workspace = true
 tower-service.workspace = true
 tracing.workspace = true
 x509-parser.workspace = true

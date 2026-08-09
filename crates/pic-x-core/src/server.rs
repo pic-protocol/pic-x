@@ -19,6 +19,7 @@ use crate::config::Config;
 use crate::future::{BoxFuture, ready};
 use crate::identity::ProductIdentity;
 use crate::keys::KeyManager;
+use crate::metrics::Metrics;
 use crate::pseudonym::Pseudonymizer;
 use crate::secrets::SecretStore;
 use crate::storage::Storage;
@@ -162,6 +163,9 @@ pub struct ServerContext<'a> {
     recorder: Option<AuditRecorder>,
     services: &'a [Box<dyn Service>],
     health: Health,
+    /// Shared rather than borrowed, for the same reason the key ring is: what records a number is
+    /// usually work that outlives the call it was started from.
+    metrics: Metrics,
 }
 
 /// The empty service list a context starts from.
@@ -189,6 +193,7 @@ impl<'a> ServerContext<'a> {
             recorder: None,
             services: NO_SERVICES,
             health: Health::new(),
+            metrics: Metrics::none(),
         }
     }
 
@@ -245,6 +250,16 @@ impl<'a> ServerContext<'a> {
     /// Adds the services the host is expected to start.
     pub fn with_services(mut self, services: &'a [Box<dyn Service>]) -> Self {
         self.services = services;
+
+        self
+    }
+
+    /// Adds somewhere for the numbers this process records about itself to go.
+    ///
+    /// A context without one still runs, and every measurement in it becomes a branch and a return.
+    /// That is the honest default: a build that publishes nothing should not pay to collect it.
+    pub fn with_metrics(mut self, metrics: Metrics) -> Self {
+        self.metrics = metrics;
 
         self
     }
@@ -307,6 +322,14 @@ impl<'a> ServerContext<'a> {
     /// Returns the liveness and readiness state of the process.
     pub fn health(&self) -> &Health {
         &self.health
+    }
+
+    /// Returns where the numbers this process records about itself go.
+    ///
+    /// Always a handle, never an `Option`: a build that installed nothing gets one that discards, so
+    /// nothing has to guard a measurement.
+    pub fn metrics(&self) -> &Metrics {
+        &self.metrics
     }
 
     /// Records one audit event under the policy this context carries.

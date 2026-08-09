@@ -152,11 +152,15 @@ impl Service for AdminService {
             };
 
             let secured = context.config().grpc_tls();
-            let surface = Surface::start(
+            let surface = Surface::listener(
+                COMPONENT,
                 configured,
                 self.serving(context, secured.as_ref()),
-                secured.as_ref(),
             )
+            .tls(secured.as_ref())
+            .limits(context.config().limits())
+            .metrics(context.metrics().clone())
+            .start()
             .await
             .context("starting the administrative surface")?;
 

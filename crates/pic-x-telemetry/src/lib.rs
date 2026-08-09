@@ -20,7 +20,10 @@
 #![forbid(unsafe_code)]
 #![deny(clippy::all, clippy::unwrap_used, clippy::expect_used)]
 
+pub mod exposition;
 pub mod probes;
 pub mod service;
 
+pub use exposition::render;
+pub use probes::Reported;
 pub use service::TelemetryService;

@@ -40,6 +40,8 @@
 pub mod audit;
 #[cfg(feature = "keys")]
 pub mod keys;
+#[cfg(feature = "metrics")]
+pub mod metrics;
 #[cfg(feature = "provision")]
 pub mod provision;
 #[cfg(feature = "pseudonym")]

@@ -105,7 +105,8 @@ fn router() -> Router {
 
 #[tokio::test]
 async fn test_a_plain_listener_binds_serves_and_reports_the_port_it_got() {
-    let surface = Surface::start("127.0.0.1:0", router(), None)
+    let surface = Surface::listener("test", "127.0.0.1:0", router())
+        .start()
         .await
         .expect("the listener binds");
 
@@ -124,12 +125,14 @@ async fn test_a_plain_listener_binds_serves_and_reports_the_port_it_got() {
 
 #[tokio::test]
 async fn test_a_port_already_taken_is_a_failure_to_start() {
-    let taken = Surface::start("127.0.0.1:0", router(), None)
+    let taken = Surface::listener("test", "127.0.0.1:0", router())
+        .start()
         .await
         .expect("the first listener binds");
     let address = taken.address().to_string();
 
-    let error = Surface::start(&address, router(), None)
+    let error = Surface::listener("test", &address, router())
+        .start()
         .await
         .expect_err("the port is taken");
 
@@ -142,7 +145,8 @@ async fn test_a_port_already_taken_is_a_failure_to_start() {
 
 #[tokio::test]
 async fn test_an_unreadable_address_never_reaches_the_socket() {
-    let error = Surface::start("not-an-address", router(), None)
+    let error = Surface::listener("test", "not-an-address", router())
+        .start()
         .await
         .expect_err("the address is unreadable");
 
@@ -228,7 +232,9 @@ async fn test_mutual_tls_turns_away_a_client_with_no_certificate() {
     let settings = TlsSettings::new(&server_cert, &server_key).with_client_ca(&authority);
     assert!(settings.is_mutual());
 
-    let surface = Surface::start("127.0.0.1:0", router(), Some(&settings))
+    let surface = Surface::listener("test", "127.0.0.1:0", router())
+        .tls(Some(&settings))
+        .start()
         .await
         .expect("the listener binds");
     let address = surface.address();
@@ -269,7 +275,9 @@ async fn test_a_tls_listener_serves_a_client_that_trusts_it() {
     let (certificate, key) = self_signed(&pki, "server");
     let settings = TlsSettings::new(&certificate, &key);
 
-    let surface = Surface::start("127.0.0.1:0", router(), Some(&settings))
+    let surface = Surface::listener("test", "127.0.0.1:0", router())
+        .tls(Some(&settings))
+        .start()
         .await
         .expect("the listener binds");
     let address = surface.address();

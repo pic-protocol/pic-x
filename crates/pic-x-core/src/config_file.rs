@@ -22,21 +22,25 @@ use crate::config::{
     SETTING_AUTOGENERATE, SETTING_DEVELOPMENT_MODE, SETTING_GRPC_ADDR, SETTING_GRPC_ALLOW,
     SETTING_GRPC_TLS_CERT, SETTING_GRPC_TLS_CLIENT_CA, SETTING_GRPC_TLS_CRL, SETTING_GRPC_TLS_KEY,
     SETTING_GRPC_TLS_MIN_VERSION, SETTING_ISSUER, SETTING_KEYS_DIRECTORY, SETTING_KEYS_ENABLED,
-    SETTING_KEYS_PUBLISH_AHEAD, SETTING_KEYS_RETAIN, SETTING_KEYS_ROTATE_EVERY, SETTING_LOG_FORMAT,
-    SETTING_LOG_LEVEL, SETTING_SECRETS_DIRECTORY, SETTING_SECRETS_ENV_PREFIX,
-    SETTING_SECRETS_PROVIDER, SETTING_SHUTDOWN_TIMEOUT, SETTING_TELEMETRY_ADDR,
-    SETTING_TELEMETRY_TLS_CERT, SETTING_TELEMETRY_TLS_KEY, SETTING_TELEMETRY_TLS_MIN_VERSION,
-    SETTING_TLS_RELOAD, SETTING_TLS_RELOAD_INTERVAL, SETTING_WEB_HTTP_ADDR,
-    SETTING_WEB_PATH_PREFIX, SETTING_WEB_TLS_CERT, SETTING_WEB_TLS_CLIENT_CA, SETTING_WEB_TLS_CRL,
-    SETTING_WEB_TLS_KEY, SETTING_WEB_TLS_MIN_VERSION, SETTING_WORKING_DIR,
+    SETTING_KEYS_PUBLISH_AHEAD, SETTING_KEYS_RETAIN, SETTING_KEYS_ROTATE_EVERY,
+    SETTING_LIMITS_BODY_BYTES, SETTING_LIMITS_CONCURRENT_REQUESTS, SETTING_LIMITS_CONNECTIONS,
+    SETTING_LIMITS_HANDSHAKE_TIMEOUT, SETTING_LIMITS_HEADER_TIMEOUT,
+    SETTING_LIMITS_REQUEST_TIMEOUT, SETTING_LOG_FORMAT, SETTING_LOG_LEVEL,
+    SETTING_SECRETS_DIRECTORY, SETTING_SECRETS_ENV_PREFIX, SETTING_SECRETS_PROVIDER,
+    SETTING_SHUTDOWN_TIMEOUT, SETTING_TELEMETRY_ADDR, SETTING_TELEMETRY_TLS_CERT,
+    SETTING_TELEMETRY_TLS_KEY, SETTING_TELEMETRY_TLS_MIN_VERSION, SETTING_TLS_RELOAD,
+    SETTING_TLS_RELOAD_INTERVAL, SETTING_WEB_HTTP_ADDR, SETTING_WEB_PATH_PREFIX,
+    SETTING_WEB_TLS_CERT, SETTING_WEB_TLS_CLIENT_CA, SETTING_WEB_TLS_CRL, SETTING_WEB_TLS_KEY,
+    SETTING_WEB_TLS_MIN_VERSION, SETTING_WORKING_DIR,
 };
 
 /// The section names this crate parses into typed settings.
-const KNOWN_SECTIONS: [&str; 9] = [
+const KNOWN_SECTIONS: [&str; 10] = [
     "web",
     "telemetry",
     "grpc",
     "tls",
+    "limits",
     "log",
     "audit",
     "shutdown",
@@ -67,6 +71,8 @@ pub struct ConfigFile {
     grpc: GrpcSection,
     #[serde(default)]
     tls: TransportSection,
+    #[serde(default)]
+    limits: LimitsSection,
     #[serde(default)]
     log: LogSection,
     #[serde(default)]
@@ -128,6 +134,27 @@ struct TransportSection {
     reload: Option<String>,
     #[serde(default)]
     reload_interval: Option<String>,
+}
+
+/// What a surface refuses to spend on any one client.
+///
+/// Values are kept as text and read as types by `Config`, so an unreadable one is reported the same
+/// way whether it came from here, the environment or the command line.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LimitsSection {
+    #[serde(default)]
+    connections: Option<String>,
+    #[serde(default)]
+    concurrent_requests: Option<String>,
+    #[serde(default)]
+    request_timeout: Option<String>,
+    #[serde(default)]
+    handshake_timeout: Option<String>,
+    #[serde(default)]
+    header_timeout: Option<String>,
+    #[serde(default)]
+    body_bytes: Option<String>,
 }
 
 /// The keys this deployment signs with and publishes.
@@ -287,6 +314,24 @@ impl ConfigFile {
                 SETTING_TLS_RELOAD_INTERVAL,
                 self.tls.reload_interval.as_ref(),
             ),
+            (SETTING_LIMITS_CONNECTIONS, self.limits.connections.as_ref()),
+            (
+                SETTING_LIMITS_CONCURRENT_REQUESTS,
+                self.limits.concurrent_requests.as_ref(),
+            ),
+            (
+                SETTING_LIMITS_REQUEST_TIMEOUT,
+                self.limits.request_timeout.as_ref(),
+            ),
+            (
+                SETTING_LIMITS_HANDSHAKE_TIMEOUT,
+                self.limits.handshake_timeout.as_ref(),
+            ),
+            (
+                SETTING_LIMITS_HEADER_TIMEOUT,
+                self.limits.header_timeout.as_ref(),
+            ),
+            (SETTING_LIMITS_BODY_BYTES, self.limits.body_bytes.as_ref()),
             (SETTING_WEB_TLS_CRL, self.web.tls.crl.as_ref()),
             (SETTING_GRPC_TLS_CRL, self.grpc.tls.crl.as_ref()),
             (SETTING_AUDIT_SINK, self.audit.sink.as_ref()),

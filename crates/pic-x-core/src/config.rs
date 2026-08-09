@@ -10,6 +10,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use crate::audit::AuditDestination;
 use crate::config_section::{AnyConfigSection, ConfigSection};
 use crate::keys::KEY_SET_MAX_AGE;
+use crate::limits::Limits;
 use crate::logging::{LogFormat, LogLevel};
 use crate::peer::AllowedPeer;
 use crate::secrets::{SecretProvider, SecretRef};
@@ -111,6 +112,21 @@ pub const SETTING_TLS_RELOAD: &str = "PIC_X_TLS_RELOAD";
 
 /// Runtime setting key for how often transport material is re-read.
 pub const SETTING_TLS_RELOAD_INTERVAL: &str = "PIC_X_TLS_RELOAD_INTERVAL";
+
+/// Runtime setting keys for what a surface refuses to spend on any one client.
+///
+/// One set for every surface — see [`Limits`] for why, and for what each of them stops.
+pub const SETTING_LIMITS_CONNECTIONS: &str = "PIC_X_LIMITS_CONNECTIONS";
+/// How many requests one surface has in flight at once.
+pub const SETTING_LIMITS_CONCURRENT_REQUESTS: &str = "PIC_X_LIMITS_CONCURRENT_REQUESTS";
+/// How long one request may take before it is given up on.
+pub const SETTING_LIMITS_REQUEST_TIMEOUT: &str = "PIC_X_LIMITS_REQUEST_TIMEOUT";
+/// How long a client has to finish a TLS handshake.
+pub const SETTING_LIMITS_HANDSHAKE_TIMEOUT: &str = "PIC_X_LIMITS_HANDSHAKE_TIMEOUT";
+/// How long a client has to send a complete request head.
+pub const SETTING_LIMITS_HEADER_TIMEOUT: &str = "PIC_X_LIMITS_HEADER_TIMEOUT";
+/// How many bytes one request body may carry.
+pub const SETTING_LIMITS_BODY_BYTES: &str = "PIC_X_LIMITS_BODY_BYTES";
 
 /// Runtime setting key for how much the build says.
 pub const SETTING_LOG_LEVEL: &str = "PIC_X_LOG_LEVEL";
@@ -350,6 +366,7 @@ pub struct Config {
     telemetry_tls: Option<TlsSettings>,
     tls_reload: bool,
     tls_reload_interval: Duration,
+    limits: Limits,
     shutdown_timeout: Duration,
     secrets_provider: SecretProvider,
     secrets_directory: Option<String>,
@@ -392,6 +409,7 @@ impl Default for Config {
             telemetry_tls: None,
             tls_reload: true,
             tls_reload_interval: DEFAULT_TLS_RELOAD_INTERVAL,
+            limits: Limits::default(),
             shutdown_timeout: DEFAULT_SHUTDOWN_TIMEOUT,
             secrets_provider: SecretProvider::None,
             secrets_directory: None,
@@ -713,6 +731,11 @@ impl Config {
     /// Returns how often transport material is re-read.
     pub fn tls_reload_interval(&self) -> Duration {
         self.tls_reload_interval
+    }
+
+    /// Returns what every surface refuses to spend on any one client.
+    pub fn limits(&self) -> Limits {
+        self.limits
     }
 
     /// Returns the public URL this deployment is reached at, when one is configured.
@@ -1072,6 +1095,50 @@ impl Config {
                 .with_context(|| format!("reading {SETTING_TLS_RELOAD_INTERVAL}"))?;
         }
 
+        if let Some(value) = settings.get(SETTING_LIMITS_CONNECTIONS) {
+            self.limits = self.limits.with_connections(
+                parse_count(value)
+                    .with_context(|| format!("reading {SETTING_LIMITS_CONNECTIONS}"))?,
+            );
+        }
+
+        if let Some(value) = settings.get(SETTING_LIMITS_CONCURRENT_REQUESTS) {
+            self.limits =
+                self.limits
+                    .with_concurrent_requests(parse_count(value).with_context(|| {
+                        format!("reading {SETTING_LIMITS_CONCURRENT_REQUESTS}")
+                    })?);
+        }
+
+        if let Some(value) = settings.get(SETTING_LIMITS_REQUEST_TIMEOUT) {
+            self.limits = self.limits.with_request_timeout(
+                parse_duration(value)
+                    .with_context(|| format!("reading {SETTING_LIMITS_REQUEST_TIMEOUT}"))?,
+            );
+        }
+
+        if let Some(value) = settings.get(SETTING_LIMITS_HANDSHAKE_TIMEOUT) {
+            self.limits = self.limits.with_handshake_timeout(
+                parse_duration(value)
+                    .with_context(|| format!("reading {SETTING_LIMITS_HANDSHAKE_TIMEOUT}"))?,
+            );
+        }
+
+        if let Some(value) = settings.get(SETTING_LIMITS_HEADER_TIMEOUT) {
+            self.limits = self.limits.with_header_timeout(
+                parse_duration(value)
+                    .with_context(|| format!("reading {SETTING_LIMITS_HEADER_TIMEOUT}"))?,
+            );
+        }
+
+        if let Some(value) = settings.get(SETTING_LIMITS_BODY_BYTES) {
+            self.limits = self.limits.with_body_bytes(
+                parse_bytes(value)
+                    .with_context(|| format!("reading {SETTING_LIMITS_BODY_BYTES}"))?
+                    as usize,
+            );
+        }
+
         if let Some(value) = settings.get(SETTING_SHUTDOWN_TIMEOUT) {
             self.shutdown_timeout = parse_duration(value)
                 .with_context(|| format!("reading {SETTING_SHUTDOWN_TIMEOUT}"))?;
@@ -1240,6 +1307,57 @@ fn parse_duration(value: &str) -> Result<Duration> {
         .checked_mul(multiplier)
         .map(Duration::from_secs)
         .ok_or_else(|| anyhow!("`{value}` is longer than any deployment outlives"))
+}
+
+/// Reads a setting written as a count, refusing zero.
+///
+/// A limit of zero would mean a surface that accepts nothing, which nobody configures on purpose and
+/// which looks identical to a typo.
+fn parse_count(value: &str) -> Result<u32> {
+    let count: u32 = value
+        .trim()
+        .parse()
+        .map_err(|_| anyhow!("`{value}` is not a count"))?;
+
+    if count == 0 {
+        bail!("a limit of zero accepts nothing at all");
+    }
+
+    Ok(count)
+}
+
+/// Reads a setting written as a size: a plain number of bytes, or one suffixed `k`, `M` or `G`.
+fn parse_bytes(value: &str) -> Result<u64> {
+    const KIB: u64 = 1024;
+
+    let value = value.trim();
+    let (digits, multiplier) = match value.strip_suffix(['k', 'K']) {
+        Some(digits) => (digits, KIB),
+        None => match value.strip_suffix(['m', 'M']) {
+            Some(digits) => (digits, KIB * KIB),
+            None => match value.strip_suffix(['g', 'G']) {
+                Some(digits) => (digits, KIB * KIB * KIB),
+                None => (value, 1),
+            },
+        },
+    };
+
+    let amount: u64 = digits
+        .trim()
+        .trim_end_matches(['b', 'B'])
+        .trim()
+        .parse()
+        .map_err(|_| {
+            anyhow!("`{value}` is not a size: expected something like 1M, 512k or 4096")
+        })?;
+
+    if amount == 0 {
+        bail!("a size of zero accepts no request at all");
+    }
+
+    amount
+        .checked_mul(multiplier)
+        .ok_or_else(|| anyhow!("`{value}` is larger than any machine has"))
 }
 
 /// Reads the list of peers a surface answers, one entry per line.

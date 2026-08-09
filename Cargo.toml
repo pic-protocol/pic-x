@@ -27,6 +27,7 @@ pic-x-server.workspace = true
 pic-x-std = { workspace = true, features = [
     "audit",
     "keys",
+    "metrics",
     "pseudonym",
     "secrets",
     "storage",
@@ -82,6 +83,9 @@ dialoguer = "0.11"
 futures-core = "0.3"
 hmac = "0.12"
 http = "1"
+# The Tokio timer hyper needs before any of its own timeouts do anything. Already in the tree
+# beneath `axum-server`; named here because this workspace configures the connection builder.
+hyper-util = { version = "0.1", default-features = false, features = ["tokio"] }
 indicatif = "0.17"
 prost = "0.14"
 rcgen = "0.14"
@@ -101,6 +105,10 @@ tonic-build = "0.14"
 tonic-prost = "0.14"
 tonic-prost-build = "0.14"
 tower = "0.5"
+# The timeout and body-size layers. `default-features = false` because the crate's default set pulls
+# in tracing, compression and a good deal else that nothing here asks for.
+tower-http = { version = "0.6", default-features = false, features = ["limit", "timeout"] }
+tower-layer = "0.3"
 tower-service = "0.3"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json"] }

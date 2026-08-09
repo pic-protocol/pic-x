@@ -156,7 +156,9 @@ async fn test_the_life_of_a_renewal() {
     authority.issue_into(&certificate, &key);
 
     let settings = TlsSettings::new(&certificate, &key);
-    let surface = Surface::start("127.0.0.1:0", router(), Some(&settings))
+    let surface = Surface::listener("test", "127.0.0.1:0", router())
+        .tls(Some(&settings))
+        .start()
         .await
         .expect("the listener binds");
     let address = surface.address();

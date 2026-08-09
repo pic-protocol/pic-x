@@ -6,7 +6,7 @@ use anyhow::{Context, Result, anyhow};
 use axum::Router;
 use tracing::info;
 
-use pic_x_core::{BoxFuture, Health, ServerContext, Service, ready};
+use pic_x_core::{BoxFuture, ServerContext, Service, ready};
 use pic_x_transport::Surface;
 
 use crate::probes;
@@ -33,8 +33,8 @@ impl TelemetryService {
     ///
     /// Public so a build that assembles its own HTTP surface can mount the same handlers somewhere
     /// else rather than reimplement them.
-    pub fn routes(health: Health) -> Router {
-        probes::routes(health)
+    pub fn routes(reported: probes::Reported) -> Router {
+        probes::routes(reported)
     }
 }
 
@@ -58,11 +58,18 @@ impl Service for TelemetryService {
             };
 
             let secured = context.config().telemetry_tls();
-            let surface = Surface::start(
+            let surface = Surface::listener(
+                COMPONENT,
                 configured,
-                Self::routes(context.health().clone()),
-                secured.as_ref(),
+                Self::routes(probes::Reported::new(
+                    context.health().clone(),
+                    context.metrics().clone(),
+                )),
             )
+            .tls(secured.as_ref())
+            .limits(context.config().limits())
+            .metrics(context.metrics().clone())
+            .start()
             .await
             .context("starting the telemetry surface")?;
 

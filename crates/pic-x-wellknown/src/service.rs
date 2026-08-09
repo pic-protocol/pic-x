@@ -136,15 +136,19 @@ impl Service for WellKnownService {
             };
 
             let secured = context.config().web_tls();
-            let surface = Surface::start(
+            let surface = Surface::listener(
+                COMPONENT,
                 configured,
                 self.router(
                     context.identity(),
                     context.config(),
                     context.keys().map(Arc::clone),
                 ),
-                secured.as_ref(),
             )
+            .tls(secured.as_ref())
+            .limits(context.config().limits())
+            .metrics(context.metrics().clone())
+            .start()
             .await
             .context("starting the public surface")?;
 

@@ -12,9 +12,10 @@ repository.workspace = true
 # `provision` is out of the default set on purpose: it is the one implementation that can mint a
 # certificate authority, and a build should have to write it down rather than inherit it.
 [features]
-default = ["audit", "keys", "pseudonym", "secrets", "storage"]
+default = ["audit", "keys", "metrics", "pseudonym", "secrets", "storage"]
 audit = ["dep:serde", "dep:serde_json", "dep:sha2"]
 keys = ["dep:ring", "dep:serde", "dep:serde_json", "dep:tokio", "dep:zeroize"]
+metrics = []
 provision = ["dep:rcgen", "dep:ring"]
 pseudonym = ["dep:hmac", "dep:sha2", "dep:zeroize"]
 secrets = []

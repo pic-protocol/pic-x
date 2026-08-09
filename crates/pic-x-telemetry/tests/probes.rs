@@ -7,10 +7,13 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use tower::ServiceExt;
 
-use pic_x_core::{BuildSettings, Config, Health, Layers, ProductIdentity, ServerContext, Service};
+use pic_x_core::metrics::{Metric, Recorder};
+use pic_x_core::{
+    BuildSettings, Config, Health, Layers, Metrics, ProductIdentity, ServerContext, Service,
+};
 use pic_x_std::audit::RecordingAuditSink;
 use pic_x_std::storage::MemoryStorage;
-use pic_x_telemetry::TelemetryService;
+use pic_x_telemetry::{Reported, TelemetryService};
 
 fn health_of(ready: bool, live: bool) -> Health {
     let health = Health::new();
@@ -23,7 +26,12 @@ fn health_of(ready: bool, live: bool) -> Health {
 
 /// Asks the routes one question, the way a probe would.
 async fn ask(health: Health, path: &str) -> (StatusCode, String) {
-    let response = TelemetryService::routes(health)
+    scraped(Reported::new(health, Metrics::none()), path).await
+}
+
+/// Asks the routes one question, with a particular set of numbers behind them.
+async fn scraped(reported: Reported, path: &str) -> (StatusCode, String) {
+    let response = TelemetryService::routes(reported)
         .oneshot(
             Request::builder()
                 .uri(path)
@@ -81,6 +89,42 @@ async fn test_metrics_expose_both_states_in_the_prometheus_format() {
 
     let (_, body) = ask(health_of(false, true), "/metrics").await;
     assert!(body.contains("picx_ready 0"));
+}
+
+#[tokio::test]
+async fn test_a_scrape_publishes_what_the_rest_of_the_process_recorded() {
+    // The claim the registry exists to make: something elsewhere counts, and the number leaves the
+    // process without that code knowing anything about `/metrics`.
+    const SERVED: Metric = Metric::counter("picx_demo_total", "Something that happened.");
+    const LATENCY: Metric = Metric::histogram(
+        "picx_demo_seconds",
+        "How long it took.",
+        pic_x_core::metrics::SECONDS,
+    );
+
+    let registry = std::sync::Arc::new(pic_x_std::metrics::Registry::new());
+    registry.record(&SERVED, &[("outcome", "ok")], 3.0);
+    registry.record(&LATENCY, &[], 0.02);
+
+    let (status, body) = scraped(
+        Reported::new(
+            health_of(true, true),
+            Metrics::new(registry as std::sync::Arc<dyn Recorder>),
+        ),
+        "/metrics",
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    // Health still comes first, because it is read at the moment of the scrape rather than recorded.
+    assert!(body.contains("picx_up 1"), "{body}");
+    assert!(body.contains("# TYPE picx_demo_total counter"), "{body}");
+    assert!(body.contains("picx_demo_total{outcome=\"ok\"} 3"), "{body}");
+    assert!(
+        body.contains("picx_demo_seconds_bucket{le=\"0.025\"} 1"),
+        "{body}"
+    );
+    assert!(body.contains("picx_demo_seconds_count 1"), "{body}");
 }
 
 #[tokio::test]

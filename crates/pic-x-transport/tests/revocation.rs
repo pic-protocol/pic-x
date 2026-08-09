@@ -208,7 +208,9 @@ async fn test_a_revoked_client_is_turned_away_and_an_untouched_one_is_not() {
         .with_client_ca(&authority_pem)
         .with_crl(&crl);
 
-    let surface = Surface::start("127.0.0.1:0", router(), Some(&settings))
+    let surface = Surface::listener("test", "127.0.0.1:0", router())
+        .tls(Some(&settings))
+        .start()
         .await
         .expect("the listener binds");
     let address = surface.address();
@@ -244,7 +246,9 @@ async fn test_without_a_list_a_revoked_certificate_keeps_working() {
 
     let settings = TlsSettings::new(&server_cert, &server_key).with_client_ca(&authority_pem);
 
-    let surface = Surface::start("127.0.0.1:0", router(), Some(&settings))
+    let surface = Surface::listener("test", "127.0.0.1:0", router())
+        .tls(Some(&settings))
+        .start()
         .await
         .expect("the listener binds");
 
@@ -289,7 +293,9 @@ async fn test_the_certificate_the_client_presented_reaches_the_handler() {
     let (client_cert, client_key) = authority.issue("client", "local-operator", 7);
 
     let settings = TlsSettings::new(&server_cert, &server_key).with_client_ca(&authority_pem);
-    let surface = Surface::start("127.0.0.1:0", identifying_router(), Some(&settings))
+    let surface = Surface::listener("test", "127.0.0.1:0", identifying_router())
+        .tls(Some(&settings))
+        .start()
         .await
         .expect("the listener binds");
 
@@ -327,7 +333,9 @@ async fn test_a_surface_without_mutual_tls_produces_no_identity_at_all() {
     let (server_cert, server_key) = authority.issue("server", "localhost", 1);
 
     let settings = TlsSettings::new(&server_cert, &server_key);
-    let surface = Surface::start("127.0.0.1:0", identifying_router(), Some(&settings))
+    let surface = Surface::listener("test", "127.0.0.1:0", identifying_router())
+        .tls(Some(&settings))
+        .start()
         .await
         .expect("the listener binds");
 
