@@ -289,6 +289,14 @@ impl Surface {
     }
 }
 
+/// How often an idle HTTP/2 connection is pinged to check the peer is still on the other end.
+///
+/// Not a configured limit: it is a livability detail, not a defence, and there is no deployment whose
+/// correctness turns on whether a dead peer's streams are reclaimed in twenty seconds or forty. Thirty
+/// seconds reclaims them promptly without a quiet connection generating a PING every few seconds for
+/// as long as it stays open.
+const KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(30);
+
 /// Bounds what a client may do to a connection before it becomes a request.
 ///
 /// Everything a request goes through — the timeout, the body limit, the concurrency ceiling — starts
@@ -317,9 +325,13 @@ fn bound_connections<A: axum_server::Address>(server: &mut axum_server::Server<A
         // stream is cheaper than a connection and therefore a cheaper way to spend the same budget:
         // without this, one socket can hold as much of the surface as a thousand.
         .max_concurrent_streams(limits.concurrent_requests())
-        // A peer that stops answering keeps its streams and their buffers until something notices.
-        // These are what notice.
-        .keep_alive_interval(Some(limits.header_timeout()))
+        // A peer whose TCP connection died without a FIN — a pulled cable, a NAT that forgot it —
+        // keeps its streams and their buffers until something notices. A PING notices in seconds
+        // where the OS would take hours. The interval is its own thing on purpose: it is how often to
+        // check a *quiet* connection is still there, which has nothing to do with how long a client
+        // gets to send a request head, and it must be longer than the time allowed for the answer or
+        // a peer with a slow link gets hung up on between the ping and its reply.
+        .keep_alive_interval(Some(KEEP_ALIVE_INTERVAL))
         .keep_alive_timeout(limits.header_timeout());
 }
 
