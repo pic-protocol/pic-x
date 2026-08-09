@@ -290,6 +290,12 @@ tasks:
 
       For the full development experience, `task run` is local and instant.
 
+      If the build stops at `docker-credential-gcloud: executable file not found`, that is this
+      machine rather than this project: ~/.docker/config.json names a credential helper for gcr.io
+      that is not installed, and the runtime base image lives there. Removing the `gcr.io` entry from
+      `credHelpers` — or installing the gcloud CLI — fixes it for every image from that registry, not
+      only this one.
+
       Examples:
         task run-as-docker
         task run-as-docker VOLUME=/tmp/pic-x-docker
