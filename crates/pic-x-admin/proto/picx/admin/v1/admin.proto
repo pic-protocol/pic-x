@@ -11,9 +11,10 @@ package picx.admin.v1;
 
 // Questions about the running server that change nothing.
 //
-// Everything that *does* change something belongs on this surface too, and behind the same mTLS, but
-// it does not exist yet: an administrative API with no authentication in front of it is the whole
-// game, and the authentication is the next piece.
+// Everything that *does* change something belongs on this surface too, behind the same guard that
+// already stands in front of these: mutual TLS establishes who the client is, and an `allow` list
+// decides whether they may administer this deployment — the two are separate questions and are
+// answered separately. Those RPCs are not defined yet; the guard they will sit behind is.
 service Admin {
   // Reports which build is answering.
   rpc GetVersion(GetVersionRequest) returns (GetVersionResponse);

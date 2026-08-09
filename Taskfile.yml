@@ -28,14 +28,12 @@ tasks:
   run:
     desc: Run the server locally — everything on, nothing to set up first.
     summary: |
-      Start the server against config.local.yaml: development mode, readable output, the audit trail
-      written to files, signing keys publishing and rotating, and the volume created on first start.
+      Start the server against config.local.yaml.
 
-      The file says all of that. This task only names it — there is no environment to keep in step
-      with the editor, which is what used to make the two drift apart.
+      It is a local development run: loopback only, no TLS, readable logs and `.volume/` created on
+      first start. Serving is the binary's default action, so the direct form is `pic-x <CONFIG>`.
 
-      Serving is the binary's default action, so the invocation is `pic-x <CONFIG>`: there is no
-      `serve` command to name.
+      See docs/start-server.md for the full startup guide.
 
       Examples:
         task run
@@ -67,11 +65,10 @@ tasks:
   run-as-local-tls:
     desc: The same local run, over TLS with mutual TLS on the administrative surface.
     summary: |
-      Start the server against config.local-tls.yaml: everything `task run` does, plus the transport
-      security a real deployment has. Still nothing to set up — the authority, the server certificate
-      and the operator's client certificate are generated into the volume on the first start.
+      Start the server against config.local-tls.yaml.
 
-      Once it is up:
+      The first start generates a local authority, a server certificate and an operator client
+      certificate under `.volume/tls/`. Once it is up:
 
         curl --cacert .volume/tls/ca.pem https://localhost:7556/.well-known/jwks.json
 
@@ -85,6 +82,7 @@ tasks:
         task run-as-local-tls LOG_FORMAT=json
 
       Parameters: the same as `task run`, with CONFIG defaulting to config.local-tls.yaml.
+      See docs/start-server.md for the full startup guide.
     cmds:
       - task: serve
         vars:
@@ -101,16 +99,10 @@ tasks:
     desc: Run the server as a deployment runs it — the file the image ships.
     summary: |
       Start the server against config.prod.yaml, which is the file copied into the container image.
-      Nothing is generated, the administrative surface stays on loopback, and the log stream is what a
-      collector would receive.
 
-      Use it to see exactly what a deployment gets, and to find out what a configuration is missing
-      before a deployment does.
-
-      It will not start as it stands, and that is the file rather than a fault: production means TLS
-      on every surface, mutual TLS and an allowlist on administration, and a pseudonymisation secret,
-      none of which this process invents for itself. Run it to find out what a configuration is
-      missing before a deployment does.
+      It is production-shaped and should fail until the required TLS material, admin client CA and
+      audit pseudonymisation secret exist. That is intentional: production config does not mint trust
+      material for itself.
 
       It also writes to /var/lib/pic-x, which on a developer machine usually does not exist, so
 
@@ -123,6 +115,7 @@ tasks:
         task run-as-prod RELEASE=1
 
       Parameters: the same as `task run`, with CONFIG defaulting to config.prod.yaml.
+      See docs/start-server.md and docs/docker.md for the operational notes.
     cmds:
       - task: serve
         vars:
@@ -286,35 +279,14 @@ tasks:
       Build the image and run it against the configuration it runs by default: config.prod.yaml,
       copied to /etc/pic-x/config.yaml.
 
-      With an empty volume this **fails**, and that is the point of the file rather than a fault in
-      it. Production means TLS on every surface, mutual TLS and an allowlist on administration, and a
-      pseudonymisation secret — none of which this process will invent for itself:
+      With an empty volume this should fail. Production config requires TLS material, an admin client
+      CA and a pseudonymisation secret supplied from outside the process:
 
         pic-x: validating the configuration loaded from /etc/pic-x/config.yaml: validating the web
         TLS material: the TLS certificate /var/lib/pic-x/tls/server.pem is not a readable file
 
       For a container that starts with nothing prepared, use `task run-as-docker-dev`. It is the same
-      image and gives up transport security to get there, which is why it has to be asked for by name.
-
-      To try this one end to end, mint a demonstration authority into the volume first. It is a local
-      certificate authority signing its own server certificate — good enough to watch the thing work,
-      and trusted by nobody:
-
-        PIC_X_WORKING_DIR=.volume-docker task run-as-local-tls   # stop it once it is up
-        cp .volume-docker/tls/ca.pem .volume-docker/tls/operators.pem
-        chmod 600 .volume-docker/secrets/* .volume-docker/tls/*.key
-        task run-as-docker
-
-      That `chmod` is not ceremony: the secret store refuses a secret anyone but its owner can write
-      to, and generating the material as your user leaves it looser than it will accept. It warns
-      about world-*readable* secrets and refuses world-*writable* ones, which is the right way round —
-      a mounted Kubernetes secret is 0644 and works.
-
-      In a real deployment those files are mounted secrets and none of this applies.
-
-      The administrative port is published here because the production file binds it off loopback
-      behind mutual TLS. Nobody reaches it without a certificate the operators' authority signed *and*
-      a name listed in `allow` — which, as shipped, is a placeholder matching nobody.
+      image and gives up transport security to get there.
 
       Examples:
         task run-as-docker
@@ -324,6 +296,8 @@ tasks:
       Parameters:
         TAG     Image tag to build and run. Default: pic-x:local.
         VOLUME  Host directory mounted as the volume. Default: .volume-docker.
+
+      See docs/docker.md for required files, permissions and the local production-shaped demo.
     vars:
       TAG: '{{.TAG | default "pic-x:local"}}'
       VOLUME: '{{.VOLUME | default ".volume-docker"}}'
@@ -340,14 +314,10 @@ tasks:
     desc: Build the image and run it with nothing to prepare — no transport security.
     summary: |
       Build the image and run it against config.dev.yaml, which the same image ships at
-      /etc/pic-x/config.dev.yaml. It starts from an empty volume: the pseudonymisation secret and the
-      first signing key are created on the first run, the audit trail is written to the volume and
-      chained, and keys rotate every ten minutes so a rotation is something you can watch.
+      /etc/pic-x/config.dev.yaml.
 
-      What it gives up to do that is transport security. There is no TLS and no client certificate on
-      the administrative surface, so anything that can reach the ports is admitted — the server logs
-      `admin.unauthenticated` on every start, and only `development_mode` makes it a legal choice at
-      all. Do not run it where the ports are reachable by somebody else.
+      It starts from an empty volume and generates development material on first start. It has no TLS
+      and no admin client certificate; do not run it where the ports are reachable by somebody else.
 
       Once it is up:
 
@@ -363,6 +333,7 @@ tasks:
         task run-as-docker-dev VOLUME=/tmp/pic-x-docker-dev
 
       Parameters: the same as `task run-as-docker`, with VOLUME defaulting to .volume-docker-dev.
+      See docs/docker.md for the container guide.
     vars:
       TAG: '{{.TAG | default "pic-x:local"}}'
       VOLUME: '{{.VOLUME | default ".volume-docker-dev"}}'
@@ -382,13 +353,8 @@ tasks:
   audit:verify:
     desc: Check that nothing in the audit trail has been altered.
     summary: |
-      Read the whole trail and check it: every record against its own digest, every record against
-      the one before it, the sequence across the whole thing including day boundaries, and every
-      seal against the records it attests to.
-
-      The chain catches a record edited, removed or reordered. The seal catches the one thing the
-      chain cannot: a trail rewritten from the beginning, which verifies against itself perfectly and
-      no longer agrees with what was sealed.
+      Read the file audit trail and check record digests, sequence continuity, day boundaries and
+      seals.
 
       With KEYS, each seal's signature is checked too. Point it at a key set you trust — checking a
       seal against keys taken from the machine under suspicion checks a signature against a key the
@@ -404,6 +370,8 @@ tasks:
       Parameters:
         VOLUME  Where everything lives. Default: .volume beside the repository.
         KEYS    A JWKS document to check the seals' signatures against. Default: unset.
+
+      See docs/audit.md for the audit guide.
     vars:
       VOLUME: '{{.VOLUME | default ".volume"}}'
       KEYS: '{{.KEYS | default ""}}'

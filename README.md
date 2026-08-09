@@ -9,42 +9,34 @@
   Verifiable Authority Continuity across execution boundaries.
 </p>
 
-> ⚠️ **Experimental — not production-ready yet.**
+> Experimental: this repository is not production-ready yet.
 
----
+## Quick Start
 
-## Learn
-
-Learn about PIC-X through the following articles:
-
-- [PIC-X: From Specification to Architecture](https://www.ngallo.it/blog/2026-08-01/pic-x-from-spec-to-arch/)
-- [PIC-X: Exchanging Tokens to PCA](https://www.ngallo.it/blog/2026-08-01/pic-x-exchanging-token-to-pca/)
-- [PIC-X: Well-Known Configuration](https://www.ngallo.it/blog/2026-08-01/pic-x-well-known-config/)
-
-## Start it
-
-Rust 1.97 or later. Nothing else to set up: the server creates the directory it needs and, in
-development, generates the material it is missing.
+Requirements: Rust 1.97 or later. The examples use [Task](https://taskfile.dev/); without it, use
+the `cargo run` commands shown in [docs/start-server.md](docs/start-server.md).
 
 ```sh
 task run
 ```
 
-That starts against [`config.local.yaml`](config.local.yaml) and creates `.volume/` beside the
-repository, with a signing key, a pseudonymisation secret and an audit trail inside it.
+This starts the local development config, creates `.volume/`, writes a file audit trail, creates the
+pseudonymisation secret and maintains a signing key ring.
 
 ```sh
 curl http://127.0.0.1:7556/
 curl http://127.0.0.1:7556/.well-known/jwks.json
+curl http://127.0.0.1:7558/healthz
 ```
 
-For the same thing with transport security — a local authority, a server certificate and a client
-certificate for the administrative surface, all generated on the first start:
+To exercise TLS and mutual TLS locally:
 
 ```sh
 task run-as-local-tls
+```
 
-curl --cacert .volume/tls/ca.pem https://localhost:7556/
+```sh
+curl --cacert .volume/tls/ca.pem https://localhost:7556/.well-known/jwks.json
 
 grpcurl -cacert .volume/tls/ca.pem \
         -cert .volume/tls/client.pem -key .volume/tls/client.key \
@@ -52,56 +44,62 @@ grpcurl -cacert .volume/tls/ca.pem \
         localhost:7557 picx.admin.v1.Admin/GetVersion
 ```
 
-A client certificate that authority signed but which is **not named in `grpc.allow`** is refused with
-`PERMISSION_DENIED`. That difference — between *who is this* and *may they* — is the point of the
-administrative surface, and it is worth seeing once.
+The product APIs are still scaffolding. Today the useful surfaces are discovery/JWKS, health,
+metrics, the admin version endpoint and audit verification.
 
-## The three surfaces
+## Surfaces
 
-| surface | port | what it is | who reaches it |
+| Surface | Default port | Purpose | Intended access |
 | --- | --- | --- | --- |
-| **public** | 7556 | discovery documents, the published key set | the world |
-| **admin** | 7557 | gRPC; everything that changes state | named operators, over mutual TLS |
-| **telemetry** | 7558 | `/healthz`, `/readyz`, `/metrics` | a collector and a kubelet |
+| Public | 7556 | Discovery documents and JWKS | Clients and verifiers |
+| Admin | 7557 | gRPC operations that change state | Named operators, preferably over mTLS |
+| Telemetry | 7558 | `/healthz`, `/readyz`, `/metrics` | Probes and collectors |
 
-Three ports rather than one, so a mistake in a reverse proxy cannot expose administration by
-accident. They are deliberately not Dex's 5556/5557/5558, so both can run on one host.
+The ports are separate so administration is not accidentally exposed through the public surface.
 
-## Configuration
+## Operator Docs
 
-Five files, and each has one job:
-
-| file | what it is |
+| Need | Read |
 | --- | --- |
-| [`config.template.yaml`](config.template.yaml) | every setting there is, what it does, and what happens if you get it wrong. Nothing runs it |
-| [`config.local.yaml`](config.local.yaml) | development, in the clear — `task run` |
-| [`config.local-tls.yaml`](config.local-tls.yaml) | development, TLS and mutual TLS — `task run-as-local-tls` |
-| [`config.dev.yaml`](config.dev.yaml) | development, in a container — `task run-as-docker-dev` |
-| [`config.prod.yaml`](config.prod.yaml) | production, and what the image runs by default. Refuses to start without its TLS material — `task run-as-docker` |
+| Start locally, with TLS, or with production validation | [docs/start-server.md](docs/start-server.md) |
+| Run the image and understand the volume | [docs/docker.md](docs/docker.md) |
+| Verify and operate the audit trail | [docs/audit.md](docs/audit.md) |
+| Back up and restore the volume | [docs/backup-and-restore.md](docs/backup-and-restore.md) |
+| Use the Taskfile shortcuts | [docs/tasks.md](docs/tasks.md) |
 
-The template is kept honest by a test: it is uncommented mechanically and a server is started from
-the result, so it cannot document a setting that no longer exists.
+## Config Files
 
-What lives in the volume, what to save and how to put it back:
-[docs/backup-and-restore.md](docs/backup-and-restore.md).
+| File | Use |
+| --- | --- |
+| [config.local.yaml](config.local.yaml) | Local development, no TLS, loopback only; used by `task run` |
+| [config.local-tls.yaml](config.local-tls.yaml) | Local development with TLS and mTLS; used by `task run-as-local-tls` |
+| [config.dev.yaml](config.dev.yaml) | Container development, no TLS; used by `task run-as-docker-dev` |
+| [config.prod.yaml](config.prod.yaml) | Production-shaped default copied into the image; refuses missing TLS/secrets |
+| [config.template.yaml](config.template.yaml) | Full annotated reference; not meant to be run directly |
 
-Values resolve through five layers, each overwriting only what it declares — defaults, build
-metadata, the file, the environment, then the command line. So `PIC_X_LOG_LEVEL` beats `log.level`
-in the file, and `--log-level` beats both: a file travels with the build and describes the
-*product*, the environment is set by whoever runs this instance and describes the *deployment*.
+Runtime values are layered: defaults, build metadata, config file, environment, then CLI flags. A CLI
+flag such as `--log-level trace` wins over `PIC_X_LOG_LEVEL`, which wins over `log.level` in the file.
 
 ## Development
 
 ```sh
-task              # every task, with what it does
-task check        # lint, structural checks, supply chain, tests — everything CI runs
-task test         # the test suite
-task run-as-docker-dev  # the image, with nothing to set up first
+task --list
+task check
+task test
+task run-as-docker-dev
 ```
 
-`task check` is the gate: `clippy` with warnings denied, the two structural checks above,
-`cargo deny` over advisories, licences and sources, and the tests.
+`task check` is the local CI gate: clippy with warnings denied, architecture checks, supply-chain
+checks and the test suite.
 
-## Licence
+## Learn
+
+Articles:
+
+- [PIC-X: From Specification to Architecture](https://www.ngallo.it/blog/2026-08-01/pic-x-from-spec-to-arch/)
+- [PIC-X: Exchanging Tokens to PCA](https://www.ngallo.it/blog/2026-08-01/pic-x-exchanging-token-to-pca/)
+- [PIC-X: Well-Known Configuration](https://www.ngallo.it/blog/2026-08-01/pic-x-well-known-config/)
+
+## License
 
 Apache-2.0. See [LICENSE](LICENSE).

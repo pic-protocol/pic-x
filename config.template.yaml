@@ -130,7 +130,9 @@
 ## for, and a surface that stops at the handshake has admitted all of them.
 ##
 ## Binding this to an address outside the host without `tls.client_ca` is refused before anything
-## binds. Loopback is allowed, and is what the shipped production file uses.
+## binds. Loopback is the other way to satisfy that — reachable only from inside the host, so no
+## client certificate is demanded. The shipped production file takes the first way: it binds this
+## off-host behind mutual TLS and an `allow` list, which is how a real deployment is administered.
 
 # grpc:
 #   addr: 127.0.0.1:7557
