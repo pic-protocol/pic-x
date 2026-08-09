@@ -612,7 +612,6 @@ fn test_help_documents_the_default_action_its_flags_and_the_named_commands() {
     assert!(stdout.contains("version"));
     for flag in [
         "--web-http-addr",
-        "--web-https-addr",
         "--telemetry-addr",
         "--grpc-addr",
         "--log-level",
@@ -621,6 +620,9 @@ fn test_help_documents_the_default_action_its_flags_and_the_named_commands() {
         assert!(stdout.contains(flag), "help omits {flag}");
     }
     assert!(!stdout.contains("--config "));
+    // One address for the public surface. Whether it is HTTP or HTTPS is `web.tls`, not a second
+    // flag that used to be accepted and never bound anything.
+    assert!(!stdout.contains("--web-https-addr"));
 }
 
 #[test]

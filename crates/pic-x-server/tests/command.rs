@@ -8,9 +8,7 @@ use std::path::Path;
 
 use clap::{Parser, Subcommand};
 
-use pic_x_core::config::{
-    SETTING_GRPC_ADDR, SETTING_TELEMETRY_ADDR, SETTING_WEB_HTTP_ADDR, SETTING_WEB_HTTPS_ADDR,
-};
+use pic_x_core::config::{SETTING_GRPC_ADDR, SETTING_TELEMETRY_ADDR, SETTING_WEB_HTTP_ADDR};
 use pic_x_server::{Action, Cli, Command, ServeArgs};
 
 fn action(argv: &[&str]) -> Action {
@@ -66,8 +64,6 @@ fn test_address_flags_are_optional_overrides() {
         "config.yaml",
         "--web-http-addr",
         "127.0.0.1:1",
-        "--web-https-addr",
-        "127.0.0.1:2",
         "--telemetry-addr",
         "127.0.0.1:3",
         "--grpc-addr",
@@ -78,7 +74,6 @@ fn test_address_flags_are_optional_overrides() {
         overridden.setting_inputs(),
         vec![
             (SETTING_WEB_HTTP_ADDR.to_owned(), "127.0.0.1:1".to_owned()),
-            (SETTING_WEB_HTTPS_ADDR.to_owned(), "127.0.0.1:2".to_owned()),
             (SETTING_TELEMETRY_ADDR.to_owned(), "127.0.0.1:3".to_owned()),
             (SETTING_GRPC_ADDR.to_owned(), "127.0.0.1:4".to_owned()),
         ]

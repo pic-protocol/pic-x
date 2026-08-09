@@ -161,7 +161,6 @@ fn test_listen_addresses_have_no_built_in_default() {
     let config = config(&[], &[], &[]);
 
     assert_eq!(config.web_http_addr(), None);
-    assert_eq!(config.web_https_addr(), None);
     assert_eq!(config.telemetry_addr(), None);
     assert_eq!(config.grpc_addr(), None);
 }
@@ -195,10 +194,25 @@ fn test_validate_rejects_a_config_with_no_web_address() {
 }
 
 #[test]
-fn test_validate_accepts_an_https_only_config() {
-    let config = config(&[], &[(SETTING_WEB_HTTPS_ADDR, "0.0.0.0:5554")], &[]);
+fn test_the_public_surface_has_one_address_and_tls_is_a_property_of_it() {
+    // There is no second address for "the same surface, but encrypted": whether it is HTTP or HTTPS
+    // is decided by `web.tls`. A surface that accepted an https address and never bound it would be
+    // a configuration that looks served and is not.
+    let plain = config(&[], &[(SETTING_WEB_HTTP_ADDR, "0.0.0.0:5556")], &[]);
+    assert!(plain.validate().is_ok());
+    assert!(plain.web_tls().is_none());
 
-    assert!(config.validate().is_ok());
+    let secured = config(
+        &[],
+        &[
+            (SETTING_WEB_HTTP_ADDR, "0.0.0.0:5556"),
+            (SETTING_WEB_TLS_CERT, "/nonexistent/server.pem"),
+            (SETTING_WEB_TLS_KEY, "/nonexistent/server.key"),
+        ],
+        &[],
+    );
+    assert_eq!(secured.web_http_addr(), Some("0.0.0.0:5556"));
+    assert!(secured.web_tls().is_some());
 }
 
 #[test]
