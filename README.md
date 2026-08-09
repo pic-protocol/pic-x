@@ -9,4 +9,4 @@
   Verifiable Authority Continuity across execution boundaries.
 </p>
 
-> ⚠️ **Experimental — not production-ready.** Coming soon.
+> ⚠️ **Experimental — not production-ready yet.**

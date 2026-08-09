@@ -8,9 +8,9 @@
 use tonic::service::RoutesBuilder;
 
 use pic_x_admin::{AdminService, ServiceProvider};
-use pic_x_audit::RecordingAuditSink;
 use pic_x_core::{BuildSettings, Config, ProductIdentity, ServerContext, Service};
-use pic_x_storage::MemoryStorage;
+use pic_x_std::audit::RecordingAuditSink;
+use pic_x_std::storage::MemoryStorage;
 
 fn identity() -> ProductIdentity {
     ProductIdentity::new("demo-x", "Demo X", "A tagline", "Demo X CLI", "<art>")

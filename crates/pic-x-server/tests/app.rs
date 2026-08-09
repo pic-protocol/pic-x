@@ -12,13 +12,13 @@ use std::sync::{Arc, Mutex};
 use anyhow::{Context, Result};
 use clap::{CommandFactory, Parser};
 
-use pic_x_audit::{RecordingAuditSink, TracingAuditSink};
 use pic_x_core::{
     BoxFuture, BuildSettings, Config, ConfigSection, ProductIdentity, Pseudonymizer, Secret,
     SecretRef, SecretStore, ServerContext, Service, Value,
 };
 use pic_x_server::{Action, App, Cli, Command, DefaultServerHost};
-use pic_x_storage::MemoryStorage;
+use pic_x_std::audit::{RecordingAuditSink, TracingAuditSink};
+use pic_x_std::storage::MemoryStorage;
 
 const SERVABLE: &str = "web:\n  http: 0.0.0.0:5556\n";
 

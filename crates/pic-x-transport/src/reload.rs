@@ -195,7 +195,7 @@ pub async fn watch(surface: Weak<Reloadable>, interval: Duration) {
 
 /// Builds the material afresh and installs it, leaving the live configuration alone if it cannot.
 fn reload(surface: &Reloadable) -> anyhow::Result<String> {
-    let (config, fingerprint) = crate::build(&surface.settings)?;
+    let (config, fingerprint) = crate::material::build(&surface.settings)?;
 
     surface.config.reload_from_config(config);
 

@@ -4,7 +4,7 @@ description = "PIC-X — Provenance Identity Continuity Exchange."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-license-file.workspace = true
+license.workspace = true
 repository.workspace = true
 build = "build.rs"
 autobenches = false
@@ -18,16 +18,22 @@ name = "pic-x"
 path = "src/main.rs"
 
 [dependencies]
-pic-x-admin.workspace = true
-pic-x-audit.workspace = true
-pic-x-core.workspace = true
-pic-x-keys.workspace = true
 anyhow.workspace = true
-pic-x-provision.workspace = true
-pic-x-pseudonym.workspace = true
-pic-x-secrets.workspace = true
+pic-x-admin.workspace = true
+pic-x-core.workspace = true
 pic-x-server.workspace = true
-pic-x-storage.workspace = true
+# `provision` is outside the default set — it is the implementation that can mint a certificate
+# authority, so asking for it is written down here rather than inherited.
+pic-x-std = { workspace = true, features = [
+    "audit",
+    "keys",
+    "pseudonym",
+    "secrets",
+    "storage",
+    # Outside the default set: it is the implementation that can mint a certificate authority, so
+    # asking for it is written down here rather than inherited by naming the crate.
+    "provision",
+] }
 pic-x-telemetry.workspace = true
 pic-x-transport.workspace = true
 pic-x-wellknown.workspace = true
@@ -45,19 +51,21 @@ members = ["crates/*"]
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.97"
-license-file = "LICENSE"
+# The SPDX expression, which is what crates.io, every licence scanner and every downstream compliance
+# review actually read. `license-file` alone leaves all of them saying "unknown"; declaring both makes
+# cargo ask which one is authoritative, and for a standard licence the answer is this one. The text
+# itself still ships — in the repository, and in the image at /usr/share/doc/pic-x.
+license = "Apache-2.0"
 repository = "https://github.com/pic-protocol/pic-x"
 
 [workspace.dependencies]
 pic-x-admin = { path = "crates/pic-x-admin", version = "0.1.0" }
-pic-x-audit = { path = "crates/pic-x-audit", version = "0.1.0" }
 pic-x-core = { path = "crates/pic-x-core", version = "0.1.0" }
-pic-x-keys = { path = "crates/pic-x-keys", version = "0.1.0" }
-pic-x-provision = { path = "crates/pic-x-provision", version = "0.1.0" }
-pic-x-pseudonym = { path = "crates/pic-x-pseudonym", version = "0.1.0" }
-pic-x-secrets = { path = "crates/pic-x-secrets", version = "0.1.0" }
 pic-x-server = { path = "crates/pic-x-server", version = "0.1.0" }
-pic-x-storage = { path = "crates/pic-x-storage", version = "0.1.0" }
+# `default-features = false` at the root so every member states which areas it uses, rather than
+# inheriting all of them and linking dependencies it never touches. A crate outside this workspace
+# still gets the default set by writing `pic-x-std = "0.1"`.
+pic-x-std = { path = "crates/pic-x-std", version = "0.1.0", default-features = false }
 pic-x-telemetry = { path = "crates/pic-x-telemetry", version = "0.1.0" }
 pic-x-transport = { path = "crates/pic-x-transport", version = "0.1.0" }
 pic-x-wellknown = { path = "crates/pic-x-wellknown", version = "0.1.0" }
@@ -70,7 +78,6 @@ clap = { version = "4", features = ["derive"] }
 comfy-table = "7"
 dialoguer = "0.11"
 futures-core = "0.3"
-getrandom = "0.3"
 hmac = "0.12"
 http = "1"
 indicatif = "0.17"

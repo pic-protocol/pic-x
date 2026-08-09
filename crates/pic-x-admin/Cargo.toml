@@ -4,7 +4,7 @@ description = "The PIC-X administrative gRPC surface."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-license-file.workspace = true
+license.workspace = true
 repository.workspace = true
 build = "build.rs"
 
@@ -25,5 +25,4 @@ tracing.workspace = true
 tonic-prost-build.workspace = true
 
 [dev-dependencies]
-pic-x-audit.workspace = true
-pic-x-storage.workspace = true
+pic-x-std = { workspace = true, default-features = false, features = ["audit", "storage"] }

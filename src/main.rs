@@ -12,15 +12,15 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use pic_x_admin::AdminService;
-use pic_x_audit::{FileAuditSink, TracingAuditSink};
 use pic_x_core::{AuditDestination, AuditSink, KeyManager};
 use pic_x_core::{BuildSettings, ProductIdentity};
 use pic_x_core::{Config, SecretProvider, SecretStore};
-use pic_x_keys::{DirectoryKeyManager, KeyPolicy, KeyService};
-use pic_x_pseudonym::HmacPseudonymizer;
-use pic_x_secrets::{DirectorySecretStore, EnvironmentSecretStore};
 use pic_x_server::{App, DefaultServerHost};
-use pic_x_storage::MemoryStorage;
+use pic_x_std::audit::{FileAuditSink, TracingAuditSink};
+use pic_x_std::keys::{DirectoryKeyManager, KeyPolicy, KeyService};
+use pic_x_std::pseudonym::HmacPseudonymizer;
+use pic_x_std::secrets::{DirectorySecretStore, EnvironmentSecretStore};
+use pic_x_std::storage::MemoryStorage;
 use pic_x_telemetry::TelemetryService;
 use pic_x_wellknown::WellKnownService;
 
@@ -69,7 +69,7 @@ async fn main() -> ExitCode {
             env!("CARGO_PKG_VERSION"),
         )),
     )
-    .with_provisioner(pic_x_provision::prepare)
+    .with_provisioner(pic_x_std::provision::prepare)
     .with_secrets_factory(secret_store_for)
     .with_audit_factory(audit_sink_for)
     .with_audit_verifier(verify_audit_trail)
@@ -124,7 +124,7 @@ fn audit_sink_for(config: &Config) -> anyhow::Result<Option<Arc<dyn AuditSink>>>
 /// record before it, so writing it down somewhere this process cannot reach is what turns tamper
 /// evidence into something an attacker with write access cannot undo.
 fn verify_audit_trail(directory: &std::path::Path) -> anyhow::Result<String> {
-    let verified = pic_x_audit::verify(directory)?;
+    let verified = pic_x_std::audit::verify(directory)?;
 
     Ok(format!(
         "{} record(s) over {} day(s) verify. Head: {}",

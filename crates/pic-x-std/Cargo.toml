@@ -1,0 +1,41 @@
+[package]
+name = "pic-x-std"
+description = "The default implementations of the PIC-X contracts: storage, secrets, pseudonyms, audit, signing keys and provisioning."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# One feature per area, so a build links the dependencies of what it actually uses.
+#
+# `provision` is out of the default set on purpose: it is the one implementation that can mint a
+# certificate authority, and a build should have to write it down rather than inherit it.
+[features]
+default = ["audit", "keys", "pseudonym", "secrets", "storage"]
+audit = ["dep:serde", "dep:serde_json", "dep:sha2"]
+keys = ["dep:ring", "dep:serde", "dep:serde_json", "dep:tokio", "dep:zeroize"]
+provision = ["dep:rcgen", "dep:ring"]
+pseudonym = ["dep:hmac", "dep:sha2", "dep:zeroize"]
+secrets = []
+storage = []
+
+[dependencies]
+anyhow.workspace = true
+pic-x-core.workspace = true
+tracing.workspace = true
+
+hmac = { workspace = true, optional = true }
+# The same signing and random-number implementation `rustls` already links, so the key ring adds an
+# algorithm rather than a second cryptographic stack to keep an eye on.
+ring = { workspace = true, optional = true }
+rcgen = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+sha2 = { workspace = true, optional = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"], optional = true }
+zeroize = { workspace = true, optional = true }
+
+[dev-dependencies]
+serde_json.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

@@ -4,7 +4,7 @@ description = "The PIC-X telemetry surface: liveness, readiness and metrics, on 
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-license-file.workspace = true
+license.workspace = true
 repository.workspace = true
 
 [dependencies]
@@ -16,7 +16,6 @@ tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "syn
 tracing.workspace = true
 
 [dev-dependencies]
-pic-x-audit.workspace = true
-pic-x-storage.workspace = true
+pic-x-std = { workspace = true, default-features = false, features = ["audit", "storage"] }
 # `oneshot` drives the router directly, so the route tests need no socket at all.
 tower = { workspace = true, features = ["util"] }

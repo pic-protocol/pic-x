@@ -211,17 +211,21 @@ tasks:
         FILTER     Only run tests whose name contains this string. Default: all tests.
         NOCAPTURE  Show test stdout/stderr when set to any value. Default: unset.
         RELEASE    Test the release profile when set to any value. Default: unset.
+        FEATURES   Feature selection. Default: --all-features, so nothing is silently skipped —
+                   `pic-x-std` keeps `provision` outside its default set, and a plain `cargo test`
+                   would never compile the tests that cover it.
         ARGS       Extra flags appended verbatim to `cargo test`. Default: empty.
     vars:
       PKG: '{{.PKG | default ""}}'
       FILTER: '{{.FILTER | default ""}}'
       NOCAPTURE: '{{.NOCAPTURE | default ""}}'
       RELEASE: '{{.RELEASE | default ""}}'
+      FEATURES: '{{.FEATURES | default "--all-features"}}'
       ARGS: '{{.ARGS | default ""}}'
     cmds:
       - >-
         cargo test {{if .PKG}}-p {{.PKG}}{{else}}--workspace{{end}}
-        {{if .RELEASE}}--release{{end}} {{.ARGS}} {{.FILTER}}
+        {{.FEATURES}} {{if .RELEASE}}--release{{end}} {{.ARGS}} {{.FILTER}}
         {{if .NOCAPTURE}}-- --nocapture{{end}}
 
   bench:
@@ -269,7 +273,7 @@ tasks:
     cmds:
       - >-
         cargo clippy {{if .PKG}}-p {{.PKG}}{{else}}--workspace{{end}}
-        --all-targets {{.ARGS}} -- -D warnings
+        --all-targets --all-features {{.ARGS}} -- -D warnings
 
   run-as-docker:
     desc: Build the image and run what it actually ships.

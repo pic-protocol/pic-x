@@ -27,7 +27,6 @@ use std::task::{Context, Poll};
 use axum_server::accept::Accept;
 use axum_server::tls_rustls::RustlsAcceptor;
 use rustls::pki_types::CertificateDer;
-use sha2::{Digest, Sha256};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_rustls::server::TlsStream;
 use x509_parser::prelude::{FromDer, X509Certificate};
@@ -137,36 +136,22 @@ pub fn identity_of(certificate: &CertificateDer<'_>) -> Option<PeerIdentity> {
         parsed.subject().to_string(),
         common_name,
         fingerprint(certificate),
-        hex(parsed.raw_serial()),
+        crate::digest::hex(parsed.raw_serial()),
     ))
 }
 
 /// Returns the SHA-256 of a certificate, lowercase hex — the value every other tool prints.
+///
+/// One line, because the digest itself lives in [`crate::digest`]: an allowlist entry, a reload
+/// record and an audit chain all have to agree on what "the fingerprint of these bytes" is, and two
+/// implementations of it eventually do not.
 pub fn fingerprint(certificate: &CertificateDer<'_>) -> String {
-    hex(Sha256::digest(certificate.as_ref()).as_slice())
-}
-
-fn hex(bytes: &[u8]) -> String {
-    use std::fmt::Write;
-
-    bytes.iter().fold(String::new(), |mut out, byte| {
-        // Writing into a String cannot fail, and the alternative would be a fallible signature for
-        // something that formats a number.
-        let _ = write!(out, "{byte:02x}");
-
-        out
-    })
+    crate::digest::digest(certificate.as_ref())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_hex_is_lowercase_and_two_characters_per_byte() {
-        assert_eq!(hex(&[0x00, 0x0f, 0xff, 0xa5]), "000fffa5");
-        assert!(hex(&[0xab]).chars().all(|c| !c.is_ascii_uppercase()));
-    }
 
     #[test]
     fn test_something_that_is_not_a_certificate_yields_no_identity() {

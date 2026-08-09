@@ -32,13 +32,19 @@ jobs:
       - name: formatting
         run: cargo fmt --all -- --check
       - name: clippy
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - name: only the binary composes collaborators
         run: ./scripts/check-composition-root.sh
       - name: pic-x-core keeps its dependency allowlist
         run: ./scripts/check-core-dependencies.sh
+      - name: every feature combination still builds
+        run: |
+          cargo check -p pic-x-std --all-targets --no-default-features --locked
+          cargo check -p pic-x-std --all-targets --locked
       - name: tests
-        run: cargo test --workspace --locked
+        # --all-features because `pic-x-std` keeps `provision` outside its default set, and a
+        # plain run would never compile the tests that cover it.
+        run: cargo test --workspace --all-features --locked
 
   supply-chain:
     name: advisories, licences, sources

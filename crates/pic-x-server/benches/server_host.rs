@@ -3,10 +3,10 @@
 use std::hint::black_box;
 use std::time::Instant;
 
-use pic_x_audit::TracingAuditSink;
 use pic_x_core::{Config, ProductIdentity, ServerContext, ServerHost};
 use pic_x_server::DefaultServerHost;
-use pic_x_storage::MemoryStorage;
+use pic_x_std::audit::TracingAuditSink;
+use pic_x_std::storage::MemoryStorage;
 
 const ITERATIONS: u32 = 10_000;
 

@@ -4,7 +4,7 @@ description = "The public PIC-X surface: discovery documents and whatever a clie
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-license-file.workspace = true
+license.workspace = true
 repository.workspace = true
 
 [dependencies]
@@ -19,6 +19,5 @@ tower.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
-pic-x-audit.workspace = true
-pic-x-storage.workspace = true
+pic-x-std = { workspace = true, default-features = false, features = ["audit", "storage"] }
 tower = { workspace = true, features = ["util"] }

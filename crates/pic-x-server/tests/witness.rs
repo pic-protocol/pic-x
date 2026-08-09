@@ -197,7 +197,7 @@ fn test_the_file_holds_no_key_and_is_readable_only_by_this_user() {
 
 #[test]
 fn test_a_real_keyed_pseudonymiser_leaves_no_key_material_on_disk() {
-    use pic_x_pseudonym::HmacPseudonymizer;
+    use pic_x_std::pseudonym::HmacPseudonymizer;
 
     let root = volume("real-key");
     let config = config(&root);

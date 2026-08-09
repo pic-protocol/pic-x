@@ -7,9 +7,9 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use tower::ServiceExt;
 
-use pic_x_audit::RecordingAuditSink;
 use pic_x_core::{BuildSettings, Config, Health, ProductIdentity, ServerContext, Service};
-use pic_x_storage::MemoryStorage;
+use pic_x_std::audit::RecordingAuditSink;
+use pic_x_std::storage::MemoryStorage;
 use pic_x_telemetry::TelemetryService;
 
 fn health_of(ready: bool, live: bool) -> Health {

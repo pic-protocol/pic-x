@@ -9,10 +9,10 @@ use std::time::Duration;
 
 use anyhow::{Result, bail};
 
-use pic_x_audit::RecordingAuditSink;
 use pic_x_core::{BoxFuture, Config, ProductIdentity, ServerContext, ServerHost, Service, ready};
 use pic_x_server::DefaultServerHost;
-use pic_x_storage::MemoryStorage;
+use pic_x_std::audit::RecordingAuditSink;
+use pic_x_std::storage::MemoryStorage;
 
 fn identity() -> ProductIdentity {
     ProductIdentity::new("demo-x", "Demo X", "A tagline", "Demo X CLI", "<art>")
