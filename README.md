@@ -13,6 +13,14 @@
 
 ---
 
+## Learn
+
+Learn about PIC-X through the following articles:
+
+- [PIC-X: From Specification to Architecture](https://www.ngallo.it/blog/2026-08-01/pic-x-from-spec-to-arch/)
+- [PIC-X: Exchanging Tokens to PCA](https://www.ngallo.it/blog/2026-08-01/pic-x-exchanging-token-to-pca/)
+- [PIC-X: Well-Known Configuration](https://www.ngallo.it/blog/2026-08-01/pic-x-well-known-config/)
+
 ## Start it
 
 Rust 1.97 or later. Nothing else to set up: the server creates the directory it needs and, in
@@ -73,6 +81,9 @@ Five files, and each has one job:
 
 The template is kept honest by a test: it is uncommented mechanically and a server is started from
 the result, so it cannot document a setting that no longer exists.
+
+What lives in the volume, what to save and how to put it back:
+[docs/backup-and-restore.md](docs/backup-and-restore.md).
 
 Values resolve through five layers, each overwriting only what it declares — defaults, build
 metadata, the file, the environment, then the command line. So `PIC_X_LOG_LEVEL` beats `log.level`

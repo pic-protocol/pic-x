@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use axum::Router;
+use axum::body::Body;
 use axum::error_handling::HandleErrorLayer;
 use axum::extract::DefaultBodyLimit;
 use axum_server::Handle;
@@ -17,6 +18,7 @@ use tokio::task::JoinHandle;
 use tower::limit::ConcurrencyLimitLayer;
 use tower::load_shed::LoadShedLayer;
 use tower::{BoxError, ServiceBuilder};
+use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::timeout::TimeoutLayer;
 
@@ -145,6 +147,11 @@ impl<'a> Listener<'a> {
             // even a request that is refused before reaching a handler is named in the log and in the
             // answer the client gets.
             let service = router
+                // Innermost of all, so it is between the handlers and everything else: a panic there
+                // becomes an answer rather than a connection that closes with nothing on it. Without
+                // it the client sees a transport error, which sends whoever reports it to the
+                // network — and the surface loses the one request that would have explained itself.
+                .layer(CatchPanicLayer::custom(panicked))
                 .layer(DefaultBodyLimit::max(limits.body_bytes()))
                 .layer(RequestBodyLimitLayer::new(limits.body_bytes()))
                 .layer(TimeoutLayer::with_status_code(
@@ -207,7 +214,14 @@ impl<'a> Listener<'a> {
 
         let (material, watcher) = match secured {
             Some((settings, config)) => {
-                let material = Arc::new(reload::Reloadable::new(bound, settings.clone(), config));
+                // Before anything is served, so a deployment that started with an expired certificate
+                // says so in its first seconds rather than at the first handshake that fails.
+                measure::record_certificate_expiry(surface, &metrics, settings);
+
+                let material = Arc::new(
+                    reload::Reloadable::new(bound, settings.clone(), config)
+                        .measured(surface, metrics.clone()),
+                );
                 reload::register(&material);
 
                 let watcher = settings.reload().map(|interval| {
@@ -307,6 +321,41 @@ fn bound_connections<A: axum_server::Address>(server: &mut axum_server::Server<A
         // These are what notice.
         .keep_alive_interval(Some(limits.header_timeout()))
         .keep_alive_timeout(limits.header_timeout());
+}
+
+/// Turns a panic in a handler into an answer, and into a record somebody can find.
+///
+/// The process survives a panic either way — it unwinds into the connection's task and stops there.
+/// What differs is what the client gets: without this, a connection that closes mid-answer, which is
+/// indistinguishable from a network fault and gets investigated as one. With it, a 500 and a log
+/// record naming the panic, on a connection that stays up for the next request.
+///
+/// It deliberately does not tell the client *what* panicked. A panic message names internals, and the
+/// client is not the audience for those; the log is.
+fn panicked(payload: Box<dyn std::any::Any + Send + 'static>) -> http::Response<Body> {
+    // A panic carries a `&str` when it was `panic!("literal")` and a `String` when it was formatted.
+    // Anything else is a payload nobody here can read, and saying so is better than saying nothing.
+    let reported = payload
+        .downcast_ref::<&'static str>()
+        .map(|message| (*message).to_owned())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "a panic carrying something unprintable".to_owned());
+
+    tracing::error!(
+        event.name = "surface.panicked",
+        component = "transport",
+        panic.message = %reported,
+        "a handler panicked; the connection was kept and the client told nothing about it"
+    );
+
+    let mut response = http::Response::new(Body::from("internal error\n"));
+    *response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+    response.headers_mut().insert(
+        http::header::CONTENT_TYPE,
+        http::HeaderValue::from_static("text/plain; charset=utf-8"),
+    );
+
+    response
 }
 
 /// What a client is told when the surface is already serving as much as it is allowed to.

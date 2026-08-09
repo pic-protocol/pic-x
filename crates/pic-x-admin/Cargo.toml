@@ -26,3 +26,5 @@ tonic-prost-build.workspace = true
 
 [dev-dependencies]
 pic-x-std = { workspace = true, default-features = false, features = ["audit", "storage"] }
+# `oneshot` drives the middleware directly, so the authorisation tests need no socket at all.
+tower = { workspace = true, features = ["util"] }

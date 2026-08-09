@@ -37,7 +37,7 @@ use std::time::{Duration, SystemTime};
 use axum_server::tls_rustls::RustlsConfig;
 use tracing::{debug, info, warn};
 
-use pic_x_core::TlsSettings;
+use pic_x_core::{Metrics, TlsSettings};
 
 /// The `component` every record of a reload carries.
 const COMPONENT: &str = "transport";
@@ -51,6 +51,8 @@ pub struct Reloadable {
     settings: TlsSettings,
     config: RustlsConfig,
     seen: Mutex<Vec<Option<SystemTime>>>,
+    surface: &'static str,
+    metrics: Metrics,
 }
 
 impl Reloadable {
@@ -63,7 +65,21 @@ impl Reloadable {
             settings,
             config,
             seen: Mutex::new(seen),
+            surface: "surface",
+            metrics: Metrics::none(),
         }
+    }
+
+    /// Records what the reloaded material says about itself, under the name `surface`.
+    ///
+    /// This is what makes the expiry a *current* number rather than a description of whatever this
+    /// process started with: a renewal that swaps the file moves the gauge, and one that quietly did
+    /// not leaves it where it was — which is the alert.
+    pub fn measured(mut self, surface: &'static str, metrics: Metrics) -> Self {
+        self.surface = surface;
+        self.metrics = metrics;
+
+        self
     }
 }
 
@@ -198,6 +214,7 @@ fn reload(surface: &Reloadable) -> anyhow::Result<String> {
     let (config, fingerprint) = crate::material::build(&surface.settings)?;
 
     surface.config.reload_from_config(config);
+    crate::measure::record_certificate_expiry(surface.surface, &surface.metrics, &surface.settings);
 
     Ok(fingerprint)
 }

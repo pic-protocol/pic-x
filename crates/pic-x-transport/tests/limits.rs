@@ -26,6 +26,7 @@ fn router() -> Router {
             "/echo",
             post(|body: String| async move { body.len().to_string() }),
         )
+        .route("/panic", get(panicking))
         .route(
             "/slow",
             get(|| async {
@@ -34,6 +35,14 @@ fn router() -> Router {
                 "eventually\n"
             }),
         )
+}
+
+/// A handler that does not survive its own arithmetic.
+///
+/// A named function rather than a closure because a body that only diverges leaves axum nothing to
+/// infer a response type from, and the return type is the whole of what it needs.
+async fn panicking() -> &'static str {
+    panic!("a handler that did not survive its own arithmetic")
 }
 
 /// Sends `request` verbatim and reads back whatever the surface says, to the end of the connection.
@@ -150,6 +159,62 @@ async fn test_a_request_that_outlasts_the_timeout_is_given_up_on() {
         started.elapsed() < Duration::from_secs(5),
         "the answer took {:?}, which is the handler finishing rather than the timeout firing",
         started.elapsed()
+    );
+
+    surface
+        .stop(Duration::from_secs(5))
+        .await
+        .expect("the listener stops");
+}
+
+#[tokio::test]
+async fn test_a_handler_that_panics_answers_and_the_connection_survives() {
+    let surface = Surface::listener("test", "127.0.0.1:0", router())
+        .start()
+        .await
+        .expect("the listener binds");
+    let address = surface.address();
+
+    // Keep-alive on purpose: the claim is not only that the panic becomes an answer, but that the
+    // connection it happened on is still usable afterwards. A panic that silently costs a connection
+    // is a client that reconnects and an operator who sees a network fault.
+    let mut stream = TcpStream::connect(address)
+        .await
+        .expect("the surface accepts a connection");
+    stream
+        .write_all(b"GET /panic HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        .await
+        .expect("the request is sent");
+
+    let mut buffer = [0_u8; 1024];
+    let read = tokio::time::timeout(Duration::from_secs(5), stream.read(&mut buffer))
+        .await
+        .expect("the surface answers rather than hanging up")
+        .expect("the answer is readable");
+    let answer = String::from_utf8_lossy(&buffer[..read]).into_owned();
+
+    assert!(
+        status(&answer).contains("500"),
+        "a panic did not become an answer: {}",
+        status(&answer)
+    );
+    // The panic message names internals. The client is not the audience for those.
+    assert!(
+        !answer.contains("arithmetic"),
+        "the panic message was sent to the client: {answer}"
+    );
+
+    // And the same connection still serves.
+    stream
+        .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+        .await
+        .expect("the connection is still open");
+    let mut rest = Vec::new();
+    let _ = tokio::time::timeout(Duration::from_secs(5), stream.read_to_end(&mut rest)).await;
+    assert!(
+        String::from_utf8_lossy(&rest).contains("200"),
+        "the connection did not survive the panic: {}",
+        String::from_utf8_lossy(&rest)
     );
 
     surface

@@ -21,6 +21,20 @@
 //! Both outcomes, always, with the identity the certificate asserted. An administrative surface that
 //! records what it allowed and not what it refused keeps no evidence of the thing most worth having
 //! evidence of.
+//!
+//! # What happens when the trail cannot be written
+//!
+//! The call is refused, and it is refused *before* it runs. A full disk, a permission that changed, a
+//! volume that went read-only: whatever the reason, an administrative operation that happened and was
+//! not recorded is worse than one that did not happen. The first leaves a deployment in a state
+//! nobody can account for; the second leaves it exactly as it was, and says so.
+//!
+//! There is no setting to turn that off. A knob here would be a knob for trading away the property
+//! the surface exists to provide, and it would be found turned off during the investigation that
+//! needed the record.
+//!
+//! A **refusal** that cannot be recorded is a warning and nothing more. The call is already being
+//! refused, so there is no operation to prevent and nothing that failing harder would protect.
 
 use std::sync::Arc;
 
@@ -38,6 +52,13 @@ const COMPONENT: &str = "admin";
 
 /// The gRPC status code for a client that is who it says and may not do this.
 const PERMISSION_DENIED: &str = "7";
+
+/// The gRPC status code for a deployment that cannot serve this right now.
+///
+/// Not `INTERNAL`: nothing here is broken and nothing about the request is wrong. The deployment
+/// cannot write the record that has to exist before the work does, which is a condition that clears
+/// when somebody frees the disk — and `UNAVAILABLE` is the one status a client is expected to retry.
+const UNAVAILABLE: &str = "14";
 
 /// Who may administer this deployment, and what to do about everyone else.
 pub struct Authorization {
@@ -116,7 +137,10 @@ pub async fn authorize(
             rpc = %target,
             "admitted"
         );
-        record(&policy, "admin.request", label, &target).await;
+        // Recorded before the work, and the work only happens if the record did.
+        if !record(&policy, "admin.request", label, &target).await {
+            return unrecordable();
+        }
 
         return next.run(request).await;
     }
@@ -137,7 +161,8 @@ pub async fn authorize(
                 peer.fingerprint = peer.fingerprint(),
                 "the client is not on the list of peers that may administer this deployment"
             );
-            record(&policy, "admin.refused", peer.label(), &target).await;
+            // Not checked: the call is already refused, so there is no operation to prevent.
+            let _recorded = record(&policy, "admin.refused", peer.label(), &target).await;
         }
         None => {
             warn!(
@@ -146,38 +171,69 @@ pub async fn authorize(
                 rpc = %target,
                 "the client presented no certificate this surface could read"
             );
-            record(&policy, "admin.refused", "-", &target).await;
+            let _recorded = record(&policy, "admin.refused", "-", &target).await;
         }
     }
 
     refuse()
 }
 
-/// Records one decision, and says so if it could not.
+/// Records one decision. Returns whether the trail now says so.
 ///
-/// A decision that was made but not recorded is worth a warning: it is the difference between an
-/// audit trail with a gap and an audit trail nobody knows has one.
-async fn record(policy: &Authorization, action: &str, principal: &str, target: &str) {
+/// A build that composed no recorder returns `true`: it has no trail to leave a gap in, and it was
+/// warned about that when the surface started. Refusing every call because a deployment chose not to
+/// audit would be enforcing a decision it already made.
+async fn record(policy: &Authorization, action: &str, principal: &str, target: &str) -> bool {
     let Some(recorder) = &policy.recorder else {
-        return;
+        return true;
     };
 
-    if let Err(error) = recorder
+    match recorder
         .record_on(action, Subject::Principal(principal), target)
         .await
     {
-        warn!(
-            event.name = "admin.unrecorded",
-            component = COMPONENT,
-            audit.action = action,
-            error = %error,
-            "the decision was made but not recorded"
-        );
+        Ok(()) => true,
+        Err(error) => {
+            warn!(
+                event.name = "admin.unrecorded",
+                component = COMPONENT,
+                audit.action = action,
+                error = %error,
+                "the audit trail could not be written"
+            );
+
+            false
+        }
     }
 }
 
 /// Builds the trailers-only response a gRPC client reads as `PERMISSION_DENIED`.
 fn refuse() -> Response {
+    status(
+        PERMISSION_DENIED,
+        "this client may not administer this deployment",
+    )
+}
+
+/// Builds the answer for work that was not done because it could not be recorded.
+///
+/// It says which of the two happened, because "denied" and "not attempted" send whoever is reading it
+/// to completely different places: one to the allowlist, the other to the disk.
+fn unrecordable() -> Response {
+    warn!(
+        event.name = "admin.refused_unrecordable",
+        component = COMPONENT,
+        "refusing administrative work this deployment cannot record"
+    );
+
+    status(
+        UNAVAILABLE,
+        "this deployment cannot record what you asked it to do, so it did not do it",
+    )
+}
+
+/// Builds the trailers-only response a gRPC client reads as `code`.
+fn status(code: &'static str, message: &'static str) -> Response {
     let mut response = (StatusCode::OK, Body::empty()).into_response();
     let headers = response.headers_mut();
 
@@ -185,11 +241,8 @@ fn refuse() -> Response {
         axum::http::header::CONTENT_TYPE,
         HeaderValue::from_static("application/grpc"),
     );
-    headers.insert("grpc-status", HeaderValue::from_static(PERMISSION_DENIED));
-    headers.insert(
-        "grpc-message",
-        HeaderValue::from_static("this client may not administer this deployment"),
-    );
+    headers.insert("grpc-status", HeaderValue::from_static(code));
+    headers.insert("grpc-message", HeaderValue::from_static(message));
 
     response
 }

@@ -16,13 +16,15 @@
 //! ask for `/a`, `/b`, `/c`… controls how much memory the registry holds.
 
 use std::task::{Context, Poll};
-use std::time::Instant;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use http::{Request, Response};
+use rustls::pki_types::CertificateDer;
 use tower_service::Service;
+use x509_parser::prelude::{FromDer, X509Certificate};
 
-use pic_x_core::Metrics;
 use pic_x_core::metrics::{Metric, SECONDS};
+use pic_x_core::{Metrics, TlsSettings};
 
 /// How many requests each surface has answered, and how they ended.
 pub const REQUESTS: Metric = Metric::counter(
@@ -63,6 +65,104 @@ pub const REFUSED: Metric = Metric::counter(
     "picx_surface_connections_refused_total",
     "Connections refused because the surface was at its limit, by surface.",
 );
+
+/// When the certificate a surface presents stops being valid, as a Unix timestamp.
+///
+/// A timestamp rather than "days remaining", and the reason is what this registry is: a value written
+/// when the certificate was loaded and read whenever somebody scrapes. "Days remaining" would be
+/// correct at the moment it was written and quietly wrong for every scrape after — a certificate with
+/// two days left would still be reporting thirty a month later. A timestamp is true whenever it is
+/// read, and the subtraction happens in the query:
+///
+/// ```promql
+/// (picx_tls_certificate_expiry_timestamp_seconds - time()) / 86400 < 30
+/// ```
+pub const CERTIFICATE_EXPIRY: Metric = Metric::gauge(
+    "picx_tls_certificate_expiry_timestamp_seconds",
+    "When the certificate a surface presents stops being valid, in seconds since the epoch.",
+);
+
+/// How close to expiry a certificate has to be before starting is worth a warning.
+///
+/// Thirty days is roughly what a renewal process needs to have gone wrong for: a 90-day certificate
+/// renews at 60, and anything past 30 means two renewal windows were missed.
+const NOTICE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+
+/// Records when the certificate `settings` names stops being valid, and says so if that is soon.
+///
+/// Called when a surface starts and again every time material is reloaded, which is what makes the
+/// number follow a renewal rather than describe the certificate this process happened to start with.
+///
+/// Anything unreadable here is reported and dropped. This is a measurement: a listener that is
+/// serving correctly must not be brought down because the thing watching it could not parse a date.
+pub fn record_certificate_expiry(surface: &'static str, metrics: &Metrics, settings: &TlsSettings) {
+    let path = settings.certificate();
+
+    let expiry = match crate::material::load_certificates(path).map(|chain| expiry_of(&chain)) {
+        Ok(Some(expiry)) => expiry,
+        Ok(None) => {
+            tracing::warn!(
+                event.name = "transport.certificate_unreadable",
+                component = "transport",
+                surface = surface,
+                path = %path.display(),
+                "the certificate this surface presents has no expiry this build could read"
+            );
+
+            return;
+        }
+        Err(error) => {
+            tracing::warn!(
+                event.name = "transport.certificate_unreadable",
+                component = "transport",
+                surface = surface,
+                path = %path.display(),
+                error = %error,
+                "the certificate this surface presents could not be read back to check its expiry"
+            );
+
+            return;
+        }
+    };
+
+    metrics.set(&CERTIFICATE_EXPIRY, &[("surface", surface)], expiry as f64);
+
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|since| since.as_secs() as i64)
+        .unwrap_or_default();
+    let remaining = expiry - now;
+
+    if remaining <= 0 {
+        tracing::error!(
+            event.name = "transport.certificate_expired",
+            component = "transport",
+            surface = surface,
+            expired_days_ago = -remaining / 86_400,
+            "this surface is presenting a certificate that has already expired"
+        );
+    } else if remaining < NOTICE.as_secs() as i64 {
+        tracing::warn!(
+            event.name = "transport.certificate_expiring",
+            component = "transport",
+            surface = surface,
+            days_remaining = remaining / 86_400,
+            "the certificate this surface presents expires soon"
+        );
+    }
+}
+
+/// Reads when the leaf of `chain` stops being valid, as a Unix timestamp.
+///
+/// The leaf, which is the first: it is the one this surface presents and therefore the one that ends
+/// the handshake when it expires. An authority further up the chain outliving it is the normal case
+/// and not the one worth watching.
+fn expiry_of(chain: &[CertificateDer<'_>]) -> Option<i64> {
+    let leaf = chain.first()?;
+    let (_, parsed) = X509Certificate::from_der(leaf.as_ref()).ok()?;
+
+    Some(parsed.validity().not_after.timestamp())
+}
 
 /// Reduces a request method to one of a fixed set.
 ///

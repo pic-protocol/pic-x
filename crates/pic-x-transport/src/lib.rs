@@ -53,7 +53,7 @@ pub use digest::digest;
 pub use guard::LimitedAcceptor;
 pub use identity::{PeerAcceptor, WithPeer, fingerprint, identity_of};
 pub use material::{load_certificates, load_key, load_revocations, server_config};
-pub use measure::{ACCEPTED, CONNECTIONS, LATENCY, REFUSED, REQUESTS};
+pub use measure::{ACCEPTED, CERTIFICATE_EXPIRY, CONNECTIONS, LATENCY, REFUSED, REQUESTS};
 pub use reload::{Reloaded, reload_all};
 pub use request::RequestId;
 pub use surface::{Listener, Surface};
