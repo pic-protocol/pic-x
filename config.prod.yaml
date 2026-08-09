@@ -1,17 +1,23 @@
-# PIC-X — production, and what the container image ships.
+# PIC-X — production, and what the container image runs by default.
 #
-#   task run-as-prod   starts the server against this file
-#   the image          copies it to /etc/pic-x/config.yaml and runs it by default
+#   task run-as-docker   builds the image and runs it against this file
+#   the image            copies it to /etc/pic-x/config.yaml and runs it unless told otherwise
 #
-# It starts as it stands, and what it does is deliberately modest: it serves the public surface and
-# telemetry, keeps its administrative surface on loopback where nothing outside the host can reach
-# it, signs nothing, and sends its audit trail to the log stream for whatever is already collecting
-# it. Nothing here is generated: `development_mode` and `autogenerate` are absent, so a server that
-# is missing something says so instead of inventing it.
+# This file describes a deployment that has been given what it needs, and it **will not start without
+# it**. That is deliberate and it is the difference from config.dev.yaml: a production default that
+# quietly serves plain HTTP and admits every client is a footgun, because the first thing anybody does
+# with an image is run it and the second is assume it is configured.
 #
-# Everything commented out below is a real deployment decision. Making it is what turns this into a
-# configuration rather than a starting point. Every setting there is, with its consequences, is in
-# config.template.yaml.
+# So running this image with nothing mounted fails, on purpose, naming what is missing:
+#
+#   validating the web TLS material: the TLS certificate /var/lib/pic-x/tls/server.pem is not a
+#   readable file
+#
+# Nothing here is generated. `development_mode` and `autogenerate` are absent, so a server that is
+# missing something says so instead of inventing it — a process that mints its own authority is
+# trusted by nobody.
+#
+# Every setting there is, with its consequences, is in config.template.yaml.
 
 working_dir: /var/lib/pic-x
 
@@ -19,86 +25,109 @@ log:
   level: info
   format: json
 
-# The public URL clients are told to use — the one your proxy or ingress answers on, not the address
-# below. Without it the discovery document advertises relative paths, which is never wrong but is
-# also never useful to a client that found it through something else.
+# What has to be in the volume before this starts:
+#
+#   tls/server.pem     the certificate every surface presents
+#   tls/server.key     its private key
+#   tls/operators.pem  the authority that signed the operators allowed to administer this deployment
+#   secrets/audit-pseudonym   the key audit subjects are pseudonymised with, 32 random bytes
+#
+# In Kubernetes those are two mounted secrets. There is no step that produces them here, and that is
+# the point: material this process could create is material nobody else has to trust.
+
+# The public URL clients are told to reach this deployment at — your ingress or proxy, not the address
+# below. Left unset, the discovery document advertises relative paths, which is never wrong and is
+# rarely useful. Only a loopback address may be plain http.
 #
 # issuer: https://pic-x.example.com
 
 web:
   http: 0.0.0.0:7556
 
-  # Set these when nothing else terminates TLS in front of this process. Behind an ingress that
-  # already does, leaving them out is correct rather than lazy.
-  #
-  # tls:
-  #   cert: tls/server.pem
-  #   key: tls/server.key
+  # Remove this block, and only this block, when something in front already terminates TLS. Behind an
+  # ingress that does, running in the clear is correct rather than lazy — but it has to be a decision
+  # somebody made, which is why it is on by default and taken away by hand.
+  tls:
+    cert: tls/server.pem
+    key: tls/server.key
+    min_version: "1.3"
 
 telemetry:
   addr: 0.0.0.0:7558
 
+  # Metrics describe the inside of the process and health says when it is struggling. Neither is
+  # secret exactly, and neither belongs on the wire in the clear.
+  #
+  # A Kubernetes probe against this needs `scheme: HTTPS` in the probe spec, and a Prometheus scrape
+  # needs the authority; both are one line, and both are easier to add than to notice missing.
+  tls:
+    cert: tls/server.pem
+    key: tls/server.key
+    min_version: "1.3"
+
 grpc:
-  # Loopback, so the administrative surface is reachable from inside this host and nowhere else.
+  # Reachable, because everything that changes the state of this deployment happens here and an
+  # administrative surface only its own host can reach is one nobody can operate.
   #
-  # Moving it to 0.0.0.0 without `tls.client_ca` is refused before anything binds, and that is not a
-  # formality: one authority signs every client it was built for, so mutual TLS alone would admit all
-  # of them. To expose it, set all three of the blocks below.
-  addr: 127.0.0.1:7557
+  # Off loopback this address is refused before anything binds unless `tls.client_ca` is set — and
+  # `client_ca` alone is refused too, because one authority signs every client it was built for and a
+  # surface that stops at the handshake has admitted all of them. Both, or loopback. Nothing between.
+  addr: 0.0.0.0:7557
 
-  # tls:
-  #   cert: tls/server.pem
-  #   key: tls/server.key
-  #   client_ca: tls/operators.pem
-  #   # What the authority has taken back. Without it a compromised operator certificate stays valid
-  #   # until it expires on its own.
-  #   crl: tls/operators.crl
+  tls:
+    cert: tls/server.pem
+    key: tls/server.key
+    client_ca: tls/operators.pem
+    min_version: "1.3"
+
+    # What the authority has taken back. Commented out because a revocation list is something an
+    # authority publishes and re-publishes, and a file that demands one before it starts cannot be
+    # satisfied by any deployment that has not set that up yet.
+    #
+    # Set it as soon as there is one. Without it, a compromised operator certificate stays valid until
+    # it expires on its own, which is exactly the window an attacker was hoping for.
+    #
+    # crl: tls/operators.crl
+
+  # Who may administer this deployment. Being signed by the authority above is authentication; being
+  # named here is authorisation, and they are not the same question.
   #
-  # allow:
-  #   - cn:platform-operator
-  #   - sha256:3f9a0c2e5b71d84a6c0f1e2d3a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d
+  # Change this to the operators you actually issued certificates to. Left as it is, nobody can
+  # administer this deployment — which is the right way for a placeholder to be wrong.
+  allow:
+    - cn:pic-x-operator
 
-# What a surface refuses to spend, whoever is asking: sockets held at once, requests in flight, how
-# long one may take, and how much body it may carry. Every one has a default, so leaving this out is
-# still bounded — it is here to be lowered in front of a hostile network, or raised for a deployment
-# that genuinely serves more than this. The consequences of each are in config.template.yaml.
-#
-# limits:
-#   connections: 1024
-#   concurrent_requests: 256
-#   request_timeout: 30s
-#   handshake_timeout: 10s
-#   header_timeout: 10s
-#   body_bytes: 1M
+# Where secret material is resolved from. `directory` reads one file per key, which is what a mounted
+# Kubernetes secret looks like, and defaults to <working_dir>/secrets.
+secrets:
+  provider: directory
 
-# Where secret material is resolved from. `directory` reads one file per key — which is what a mounted
-# Kubernetes secret looks like — and defaults to <working_dir>/secrets.
-#
-# secrets:
-#   provider: directory
+audit:
+  # Kept here and chained, so that an edit, a removed line or a missing day stops the chain verifying.
+  # Switch to `tracing` when something else is already collecting the log stream durably and is
+  # responsible for keeping it.
+  sink: file
+  retention: 90d
 
-# The trail goes to the log stream, on the assumption that something is already collecting it durably.
-# Switch to `file` to keep it here instead, chained so that a later edit is detectable:
-#
-# audit:
-#   sink: file
-#   retention: 90d
-#
-# Recording people as pseudonyms rather than masking them keeps the trail answerable — "did this
-# account do that" — without putting an identifier in it. It needs a secret store to resolve the key
-# from, and rotating means changing the key and the version together.
-#
-#   pseudonym:
-#     enabled: true
-#     key_ref: audit-pseudonym
-#     key_version: "v1"
+  # Recording people as pseudonyms rather than masking them keeps the trail answerable — "did this
+  # account do that" — without putting an identifier in it. It resolves `audit-pseudonym` from the
+  # secret store above and refuses to start without it.
+  #
+  # Rotating means changing the key **and** `key_version` together. The server remembers what each
+  # version produces for one fixed input and refuses to start if a version ever produces something
+  # else, because doing one without the other fails silently and ruins the trail slowly.
+  pseudonym:
+    enabled: true
+    key_ref: audit-pseudonym
+    key_version: "v1"
 
-# A deployment that signs nothing publishes nothing, which is the honest default. Turn this on when
-# something here signs, and leave `publish_ahead` at or above the 300s cache the key set is served
-# with — shorter is refused, because it makes verifiers reject good signatures.
-#
-# keys:
-#   enabled: true
-#   publish_ahead: 1h
-#   rotate_every: 30d
-#   retain: 365d
+keys:
+  # What this deployment signs with, published at /.well-known/jwks.json and maintained here: a key is
+  # published before it signs and stays published after it stops, because a verifier caches the set.
+  #
+  # `publish_ahead` must be at least the 300s that set is served with — shorter is refused outside
+  # development mode, because it makes verifiers reject good signatures.
+  enabled: true
+  publish_ahead: 1h
+  rotate_every: 30d
+  retain: 365d

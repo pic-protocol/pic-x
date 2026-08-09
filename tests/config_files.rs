@@ -308,25 +308,96 @@ fn test_the_local_tls_file_generates_its_own_certificates_and_serves_with_them()
 }
 
 #[test]
-fn test_the_production_file_starts_and_is_not_a_development_one() {
-    let volume = volume("prod");
-    let shipped_text = shipped("config.prod.yaml");
-    let config = at(&volume, "prod", &shipped_text);
+fn test_the_development_container_file_starts_from_an_empty_volume() {
+    // Its whole reason to exist: the same image, run with nothing prepared. If this ever stops being
+    // true, there is no way to try the product without first minting a certificate authority.
+    let volume = volume("dev");
+    let config = at(&volume, "dev", &shipped("config.dev.yaml"));
 
     let outcome = start(&config, &volume);
 
-    // A shipped default that does not start is worse than no default: the first thing anybody does
-    // with an image is run it.
     assert!(outcome.started, "{}", outcome.stderr);
+    assert!(
+        volume.join("secrets/audit-pseudonym").exists(),
+        "the pseudonymisation secret was not generated"
+    );
+    assert!(
+        volume.join("keys/ring.json").exists(),
+        "the key ring was not created"
+    );
 
-    // And it must not have quietly become a development configuration, which is how this file went
-    // wrong once already.
+    // And it must say what it gave up to start unattended, every single time. A surface that
+    // authorises nobody is defensible on a laptop and indefensible in silence.
+    assert!(
+        outcome.stdout.contains("admin.unauthenticated"),
+        "the development container does not report that it authorises nobody"
+    );
+}
+
+#[test]
+fn test_the_production_file_refuses_to_start_without_the_material_it_names() {
+    // The invariant that makes the production file worth shipping. A default that quietly serves
+    // plain HTTP and admits every client is a footgun: the first thing anybody does with an image is
+    // run it, and the second is assume it is configured.
+    let volume = volume("prod-bare");
+    let config = at(&volume, "prod-bare", &shipped("config.prod.yaml"));
+
+    let outcome = start(&config, &volume);
+
+    assert!(
+        !outcome.started,
+        "the production file started with an empty volume, so it demands nothing"
+    );
+    // And it has to say which file, or the operator is left guessing at four in the morning.
+    assert!(
+        outcome.stderr.contains("server.pem"),
+        "the refusal does not name the material that is missing: {}",
+        outcome.stderr
+    );
+}
+
+#[test]
+fn test_the_production_file_starts_once_it_has_been_given_what_it_asks_for() {
+    // The other half. A file that cannot be satisfied at all is not strict, it is broken — so the
+    // material it names has to be material a deployment can actually supply.
+    let volume = volume("prod");
+
+    // The development file mints a local authority and a server certificate into the volume. That is
+    // a demonstration authority, trusted by nobody, and it stands in here for the mounted secrets a
+    // real deployment has.
+    let generator = at(&volume, "prod-generator", &shipped("config.local-tls.yaml"));
+    let generated = start(&generator, &volume);
+    assert!(
+        generated.started,
+        "the development file could not prepare the volume: {}",
+        generated.stderr
+    );
+
+    // The authority that signed the operators is a separate file from the one that signed the server,
+    // and in a real deployment it usually is a separate authority too.
+    fs::copy(volume.join("tls/ca.pem"), volume.join("tls/operators.pem"))
+        .expect("naming the operators' authority");
+
+    let config = at(&volume, "prod", &shipped("config.prod.yaml"));
+    let outcome = start(&config, &volume);
+
+    assert!(
+        outcome.started,
+        "the production file cannot be satisfied by material a deployment can supply: {}",
+        outcome.stderr
+    );
+}
+
+#[test]
+fn test_the_production_file_is_not_a_development_one() {
+    let shipped_text = shipped("config.prod.yaml");
     let settings: Vec<&str> = shipped_text
         .lines()
         .map(str::trim)
         .filter(|line| !line.starts_with('#') && !line.is_empty())
         .collect();
 
+    // How this file went wrong once already.
     for forbidden in ["development_mode:", "autogenerate:"] {
         assert!(
             !settings.iter().any(|line| line.starts_with(forbidden)),
@@ -334,10 +405,24 @@ fn test_the_production_file_starts_and_is_not_a_development_one() {
         );
     }
 
-    // Nothing outside the host reaches administration by default.
+    // Every surface encrypted, and the administrative one answering two questions rather than one:
+    // the handshake says who a client is, `allow` says whether they may. A surface off loopback with
+    // `client_ca` and no `allow` has admitted every client the authority was ever built for.
     assert!(
-        settings.iter().any(|line| line == &"addr: 127.0.0.1:7557"),
-        "the administrative surface is not on loopback in the shipped configuration"
+        settings.iter().any(|line| line.starts_with("client_ca:")),
+        "the administrative surface demands no client certificate"
+    );
+    assert!(
+        settings.contains(&"allow:"),
+        "the administrative surface authorises everyone the authority signed"
+    );
+    assert_eq!(
+        settings
+            .iter()
+            .filter(|line| line.starts_with("cert:"))
+            .count(),
+        3,
+        "not every surface presents a certificate"
     );
 }
 
@@ -354,5 +439,12 @@ fn test_the_file_the_image_ships_is_the_production_one() {
     assert!(
         dockerfile.contains(r#"CMD ["/etc/pic-x/config.yaml"]"#),
         "the image does not run the file it ships"
+    );
+
+    // Both, from the one image: the strict default it runs, and the one that starts unattended. Two
+    // images would mean the thing anybody tries is not the thing that gets deployed.
+    assert!(
+        dockerfile.contains("COPY config.dev.yaml /etc/pic-x/config.dev.yaml"),
+        "the image does not ship the development configuration"
     );
 }

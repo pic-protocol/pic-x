@@ -10,9 +10,6 @@
 </p>
 
 > ⚠️ **Experimental — not production-ready yet.**
->
-> The infrastructure below works and is tested. The domain it exists to serve — continuities,
-> exchanges, provenance records — is not written yet. See [What is here, and what is not](#what-is-here-and-what-is-not).
 
 ---
 
@@ -64,14 +61,15 @@ accident. They are deliberately not Dex's 5556/5557/5558, so both can run on one
 
 ## Configuration
 
-Four files, and each has one job:
+Five files, and each has one job:
 
 | file | what it is |
 | --- | --- |
 | [`config.template.yaml`](config.template.yaml) | every setting there is, what it does, and what happens if you get it wrong. Nothing runs it |
 | [`config.local.yaml`](config.local.yaml) | development, in the clear — `task run` |
 | [`config.local-tls.yaml`](config.local-tls.yaml) | development, TLS and mutual TLS — `task run-as-local-tls` |
-| [`config.prod.yaml`](config.prod.yaml) | production, and what the container image ships — `task run-as-prod` |
+| [`config.dev.yaml`](config.dev.yaml) | development, in a container — `task run-as-docker-dev` |
+| [`config.prod.yaml`](config.prod.yaml) | production, and what the image runs by default. Refuses to start without its TLS material — `task run-as-docker` |
 
 The template is kept honest by a test: it is uncommented mechanically and a server is started from
 the result, so it cannot document a setting that no longer exists.
@@ -87,7 +85,7 @@ in the file, and `--log-level` beats both: a file travels with the build and des
 task              # every task, with what it does
 task check        # lint, structural checks, supply chain, tests — everything CI runs
 task test         # the test suite
-task run-as-docker
+task run-as-docker-dev  # the image, with nothing to set up first
 ```
 
 `task check` is the gate: `clippy` with warnings denied, the two structural checks above,

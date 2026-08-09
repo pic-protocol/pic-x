@@ -1,0 +1,71 @@
+# PIC-X — development, in a container.
+#
+#   task run-as-docker-dev   builds the image and runs it against this file
+#   the image                ships it at /etc/pic-x/config.dev.yaml
+#
+# The counterpart to config.prod.yaml, and the difference between them is the whole point: this file
+# starts with an empty volume and nothing mounted, that one refuses to start until it has been given
+# what it needs. Both are in the same image, because the image you try has to be the image you ship.
+#
+# What this gives up to start unattended: transport security. There is no TLS here and no client
+# certificate on the administrative surface, so anything that can reach the ports is admitted. That is
+# only permitted because `development_mode` is on, and the server says so in the log every time it
+# starts. Do not run it anywhere the ports are reachable by somebody else.
+#
+# What it keeps: signing keys that rotate, an audit trail chained on disk, pseudonymised subjects.
+# Those are what a local run needs to exercise, and none of them needs anything mounted.
+
+# This is a container somebody is trying, and says so. It is what permits the line below, the
+# administrative surface without a client certificate, and the key windows further down.
+development_mode: true
+
+# Create what is missing: the pseudonymisation secret, and the first signing key. Nothing already in
+# the volume is ever overwritten, so a second run continues where the first left off.
+autogenerate: true
+
+# The volume the image declares. Mount something over it to keep what a run produced.
+working_dir: /var/lib/pic-x
+
+log:
+  # `debug` shows the starting and stopping transitions; `json` because a container's output goes to a
+  # collector even when the container is on your laptop.
+  level: debug
+  format: json
+
+web:
+  # Every address is 0.0.0.0 rather than loopback: loopback inside a container means the container,
+  # which is not where you are.
+  http: 0.0.0.0:7556
+
+telemetry:
+  addr: 0.0.0.0:7558
+
+grpc:
+  # Reachable, and authorising nobody. On any other configuration this is refused before anything
+  # binds — an administrative surface off loopback without `tls.client_ca` is exactly the mistake the
+  # validation exists to stop. `development_mode` is what makes it an allowed choice here, and the
+  # server logs `admin.unauthenticated` on every start so it can never be a quiet one.
+  addr: 0.0.0.0:7557
+
+secrets:
+  # Resolves to /var/lib/pic-x/secrets, which is where the generated pseudonymisation key lands.
+  provider: directory
+
+audit:
+  # On disk and chained, so `pic-x audit verify` has something to check after the run.
+  sink: file
+  retention: 7d
+  pseudonym:
+    enabled: true
+    key_ref: audit-pseudonym
+    key_version: "v1"
+
+keys:
+  enabled: true
+  # Minutes rather than months, so a rotation is something you can watch happen instead of something
+  # you find out about in thirty days. A `publish_ahead` shorter than the 300s cache the key set is
+  # served with would break a real verifier; there are none here, and `development_mode` is what
+  # allows it.
+  publish_ahead: 1m
+  rotate_every: 10m
+  retain: 1h

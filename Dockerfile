@@ -85,21 +85,28 @@ FROM scratch AS runtime
 COPY --from=builder /staged/passwd /staged/group /etc/
 COPY --from=builder /usr/local/bin/pic-x /usr/local/bin/pic-x
 COPY --from=builder --chown=65532:65532 /staged/var/lib/pic-x /var/lib/pic-x
-# The production file, under the name a deployment expects to override.
+# Two configurations, one image — the image you try has to be the image you ship.
+#
+# `config.yaml` is the production one and is what `CMD` runs: it demands its TLS material and its
+# pseudonymisation secret, and refuses to start without them. `config.dev.yaml` is the one that starts
+# with nothing mounted, at the price of no transport security; it is named on the command line, so
+# choosing it is something written down rather than something a default did.
 COPY config.prod.yaml /etc/pic-x/config.yaml
+COPY config.dev.yaml /etc/pic-x/config.dev.yaml
 COPY LICENSE /usr/share/doc/pic-x/
 
 USER 65532:65532
 
-# web HTTP, gRPC, telemetry — matching config.prod.yaml. Deliberately not Dex's 5556/5557/5558,
-# so both can run on the same host. The gRPC port is declared but the shipped configuration binds it
-# to loopback: exposing administration is a decision, and it needs mutual TLS to be made safely.
+# web HTTP, gRPC, telemetry — matching config.prod.yaml. Deliberately not Dex's 5556/5557/5558, so
+# both can run on the same host. Administration is on 7557 and the production file demands mutual TLS
+# and an allowlist before it will bind there, which is what makes exposing it a decision rather than
+# an accident.
 EXPOSE 7556 7557 7558
 
 # The container's default configuration path lives here and only here. Serving is the binary's default
 # action, so the command is the path and nothing else, and any other deployment passes its own:
 #
-#   docker run --rm pic-x /etc/pic-x/config.yaml
+#   docker run --rm pic-x /etc/pic-x/config.dev.yaml
 #
 # An absolute path: there is no shell to resolve PATH, and relying on one that happens to be set is
 # how this breaks the day anything about the image changes.

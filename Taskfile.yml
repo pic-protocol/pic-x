@@ -107,7 +107,12 @@ tasks:
       Use it to see exactly what a deployment gets, and to find out what a configuration is missing
       before a deployment does.
 
-      Note that it writes to /var/lib/pic-x, which on a developer machine usually does not exist:
+      It will not start as it stands, and that is the file rather than a fault: production means TLS
+      on every surface, mutual TLS and an allowlist on administration, and a pseudonymisation secret,
+      none of which this process invents for itself. Run it to find out what a configuration is
+      missing before a deployment does.
+
+      It also writes to /var/lib/pic-x, which on a developer machine usually does not exist, so
 
         task run-as-prod CONFIG=./my-config.yaml
 
@@ -276,25 +281,40 @@ tasks:
         --all-targets --all-features {{.ARGS}} -- -D warnings
 
   run-as-docker:
-    desc: Build the image and run what it actually ships.
+    desc: Build the image and run what it ships — production, which refuses to start unprepared.
     summary: |
-      Build the image and run it against the configuration it ships — config.prod.yaml, copied to
-      /etc/pic-x/config.yaml. Nothing is overridden, so what you see is what a deployment gets.
+      Build the image and run it against the configuration it runs by default: config.prod.yaml,
+      copied to /etc/pic-x/config.yaml.
 
-      The volume is a directory on the host mounted at /var/lib/pic-x, so whatever the run keeps
-      survives it and can be looked at afterwards.
+      With an empty volume this **fails**, and that is the point of the file rather than a fault in
+      it. Production means TLS on every surface, mutual TLS and an allowlist on administration, and a
+      pseudonymisation secret — none of which this process will invent for itself:
 
-      The administrative port is not published, and that is not an oversight: the shipped
-      configuration binds it to loopback, so from outside the container there is nothing there. Moving
-      it needs mutual TLS and an allowlist — see config.prod.yaml.
+        pic-x: validating the configuration loaded from /etc/pic-x/config.yaml: validating the web
+        TLS material: the TLS certificate /var/lib/pic-x/tls/server.pem is not a readable file
 
-      For the full development experience, `task run` is local and instant.
+      For a container that starts with nothing prepared, use `task run-as-docker-dev`. It is the same
+      image and gives up transport security to get there, which is why it has to be asked for by name.
 
-      If the build stops at `docker-credential-gcloud: executable file not found`, that is this
-      machine rather than this project: ~/.docker/config.json names a credential helper for gcr.io
-      that is not installed, and the runtime base image lives there. Removing the `gcr.io` entry from
-      `credHelpers` — or installing the gcloud CLI — fixes it for every image from that registry, not
-      only this one.
+      To try this one end to end, mint a demonstration authority into the volume first. It is a local
+      certificate authority signing its own server certificate — good enough to watch the thing work,
+      and trusted by nobody:
+
+        PIC_X_WORKING_DIR=.volume-docker task run-as-local-tls   # stop it once it is up
+        cp .volume-docker/tls/ca.pem .volume-docker/tls/operators.pem
+        chmod 600 .volume-docker/secrets/* .volume-docker/tls/*.key
+        task run-as-docker
+
+      That `chmod` is not ceremony: the secret store refuses a secret anyone but its owner can write
+      to, and generating the material as your user leaves it looser than it will accept. It warns
+      about world-*readable* secrets and refuses world-*writable* ones, which is the right way round —
+      a mounted Kubernetes secret is 0644 and works.
+
+      In a real deployment those files are mounted secrets and none of this applies.
+
+      The administrative port is published here because the production file binds it off loopback
+      behind mutual TLS. Nobody reaches it without a certificate the operators' authority signed *and*
+      a name listed in `allow` — which, as shipped, is a placeholder matching nobody.
 
       Examples:
         task run-as-docker
@@ -312,9 +332,52 @@ tasks:
       - mkdir -p {{.VOLUME}}
       - >-
         docker run --rm --init
-        --publish 7556:7556 --publish 7558:7558
+        --publish 7556:7556 --publish 7557:7557 --publish 7558:7558
         --volume "$(pwd)/{{.VOLUME}}:/var/lib/pic-x"
         {{.TAG}}
+
+  run-as-docker-dev:
+    desc: Build the image and run it with nothing to prepare — no transport security.
+    summary: |
+      Build the image and run it against config.dev.yaml, which the same image ships at
+      /etc/pic-x/config.dev.yaml. It starts from an empty volume: the pseudonymisation secret and the
+      first signing key are created on the first run, the audit trail is written to the volume and
+      chained, and keys rotate every ten minutes so a rotation is something you can watch.
+
+      What it gives up to do that is transport security. There is no TLS and no client certificate on
+      the administrative surface, so anything that can reach the ports is admitted — the server logs
+      `admin.unauthenticated` on every start, and only `development_mode` makes it a legal choice at
+      all. Do not run it where the ports are reachable by somebody else.
+
+      Once it is up:
+
+        curl http://localhost:7556/.well-known/jwks.json
+        curl http://localhost:7558/metrics
+
+        grpcurl -plaintext \
+                -import-path crates/pic-x-admin/proto -proto picx/admin/v1/admin.proto \
+                localhost:7557 picx.admin.v1.Admin/GetVersion
+
+      Examples:
+        task run-as-docker-dev
+        task run-as-docker-dev VOLUME=/tmp/pic-x-docker-dev
+
+      Parameters: the same as `task run-as-docker`, with VOLUME defaulting to .volume-docker-dev.
+    vars:
+      TAG: '{{.TAG | default "pic-x:local"}}'
+      VOLUME: '{{.VOLUME | default ".volume-docker-dev"}}'
+    cmds:
+      - docker build --tag {{.TAG}} .
+      - mkdir -p {{.VOLUME}}
+      # The mount point, and nothing inside it: the container writes as uid 65532 and needs the
+      # directory. Recursing would loosen the secret it wrote on the last run, and the secret store
+      # would then refuse to read it — correctly.
+      - chmod a+rwX {{.VOLUME}}
+      - >-
+        docker run --rm --init
+        --publish 7556:7556 --publish 7557:7557 --publish 7558:7558
+        --volume "$(pwd)/{{.VOLUME}}:/var/lib/pic-x"
+        {{.TAG}} /etc/pic-x/config.dev.yaml
 
   audit:verify:
     desc: Check that nothing in the audit trail has been altered.
