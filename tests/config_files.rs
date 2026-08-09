@@ -58,28 +58,18 @@ fn uncomment(template: &str) -> String {
         .join("\n")
 }
 
-/// Writes `contents` to a file of its own, with `working_dir` pointed at `volume`.
+/// Writes `contents` to a file of its own, verbatim.
 ///
-/// Rewriting the line rather than setting the environment variable is deliberate: the configuration
-/// file is a later layer than the environment, so an environment variable would have been ignored —
-/// which is exactly the trap these files exist to keep people out of.
+/// The volume is pointed elsewhere with `PIC_X_WORKING_DIR` at the call site rather than by editing
+/// the file, which is only possible because the environment overwrites the file. That is worth doing
+/// here rather than the other way round: it means these tests exercise the shipped files exactly as
+/// they are, with not one line rewritten.
 fn at(volume: &Path, name: &str, contents: &str) -> PathBuf {
-    let redirected: Vec<String> = contents
-        .lines()
-        .map(|line| {
-            if line.starts_with("working_dir:") {
-                format!("working_dir: {}", volume.display())
-            } else {
-                line.to_owned()
-            }
-        })
-        .collect();
-
     let path = volume.with_file_name(format!(
         "{}-{name}.yaml",
         volume.file_name().unwrap_or_default().to_string_lossy()
     ));
-    fs::write(&path, redirected.join("\n")).expect("writing the configuration under test");
+    fs::write(&path, contents).expect("writing the configuration under test");
 
     path
 }
@@ -94,11 +84,12 @@ struct Outcome {
 /// Starts the binary against `config`, waits for it to settle, and asks it to stop.
 ///
 /// Every address is overridden to port zero, because these files name real ports and the suite runs
-/// in parallel. The overrides arrive on the command line, which is a later layer than the file — the
-/// environment would have been ignored, which is the trap these files exist to avoid.
-fn start(config: &Path) -> Outcome {
+/// in parallel. The overrides arrive on the command line, which is the last layer of all, so they
+/// beat both the file and the `PIC_X_WORKING_DIR` set beside them.
+fn start(config: &Path, volume: &Path) -> Outcome {
     let mut child = Command::new(env!("CARGO_BIN_EXE_pic-x"))
         .arg(config)
+        .env("PIC_X_WORKING_DIR", volume)
         .args(["--web-http-addr", "127.0.0.1:0"])
         .args(["--telemetry-addr", "127.0.0.1:0"])
         .args(["--grpc-addr", "127.0.0.1:0"])
@@ -188,7 +179,7 @@ fn test_the_template_documents_a_configuration_that_actually_starts() {
     // checks the two agree about what the material is called.
     let volume = volume("template");
     let generator = at(&volume, "generator", &shipped("config.local-tls.yaml"));
-    let generated = start(&generator);
+    let generated = start(&generator, &volume);
     assert!(
         generated.started,
         "the development file could not prepare the volume: {}",
@@ -200,7 +191,7 @@ fn test_the_template_documents_a_configuration_that_actually_starts() {
         "template",
         &uncomment(&shipped("config.template.yaml")),
     );
-    let outcome = start(&config);
+    let outcome = start(&config, &volume);
 
     assert!(
         outcome.started,
@@ -269,7 +260,7 @@ fn test_the_local_file_starts_from_an_empty_volume() {
     let volume = volume("local");
     let config = at(&volume, "local", &shipped("config.local.yaml"));
 
-    let outcome = start(&config);
+    let outcome = start(&config, &volume);
 
     assert!(outcome.started, "{}", outcome.stderr);
     assert!(
@@ -291,7 +282,7 @@ fn test_the_local_tls_file_generates_its_own_certificates_and_serves_with_them()
     let volume = volume("local-tls");
     let config = at(&volume, "local-tls", &shipped("config.local-tls.yaml"));
 
-    let outcome = start(&config);
+    let outcome = start(&config, &volume);
 
     assert!(outcome.started, "{}", outcome.stderr);
     for material in ["tls/ca.pem", "tls/server.pem", "tls/client.pem"] {
@@ -315,7 +306,7 @@ fn test_the_production_file_starts_and_is_not_a_development_one() {
     let shipped_text = shipped("config.prod.yaml");
     let config = at(&volume, "prod", &shipped_text);
 
-    let outcome = start(&config);
+    let outcome = start(&config, &volume);
 
     // A shipped default that does not start is worse than no default: the first thing anybody does
     // with an image is run it.

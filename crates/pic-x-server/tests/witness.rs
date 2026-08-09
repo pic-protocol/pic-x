@@ -7,7 +7,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use pic_x_core::{BuildSettings, Config, Pseudonymizer, config::*};
+use pic_x_core::{BuildSettings, Config, Layers, Pseudonymizer, config::*};
 use pic_x_server::witness;
 
 /// A pseudonymiser that behaves like the real one for the purposes of this check: the same key
@@ -39,12 +39,10 @@ fn config(root: &Path) -> Config {
     Config::from_layers(
         BuildSettings::new("9.9.9", "2026", "Test Holder"),
         Vec::<String>::new(),
-        Vec::new(),
-        vec![(
+        Layers::new().with_file(vec![(
             SETTING_WORKING_DIR.to_owned(),
             root.to_str().expect("a UTF-8 path").to_owned(),
-        )],
-        Vec::new(),
+        )]),
     )
     .expect("the config builds")
 }

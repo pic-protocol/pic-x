@@ -7,7 +7,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use tower::ServiceExt;
 
-use pic_x_core::{BuildSettings, Config, Health, ProductIdentity, ServerContext, Service};
+use pic_x_core::{BuildSettings, Config, Health, Layers, ProductIdentity, ServerContext, Service};
 use pic_x_std::audit::RecordingAuditSink;
 use pic_x_std::storage::MemoryStorage;
 use pic_x_telemetry::TelemetryService;
@@ -106,13 +106,13 @@ async fn test_the_surface_listens_and_answers_and_then_stops() {
     let config = Config::from_layers(
         BuildSettings::new("9.9.9", "2026", "Test Holder"),
         Vec::<String>::new(),
-        Vec::new(),
-        // Port zero: the operating system picks a free one, so tests never collide.
-        vec![(
-            pic_x_core::config::SETTING_TELEMETRY_ADDR.to_owned(),
-            "127.0.0.1:0".to_owned(),
-        )],
-        Vec::new(),
+        Layers::new().with_file(
+            // Port zero: the operating system picks a free one).with_command_line(so tests never collide.
+            vec![(
+                pic_x_core::config::SETTING_TELEMETRY_ADDR.to_owned(),
+                "127.0.0.1:0".to_owned(),
+            )],
+        ),
     )
     .expect("the config builds");
     let storage = MemoryStorage::new();

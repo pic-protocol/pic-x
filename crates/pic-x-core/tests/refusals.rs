@@ -16,12 +16,12 @@ fn config(settings: &[(&str, &str)]) -> Config {
     Config::from_layers(
         BuildSettings::new("1.2.3", "2026", "Build Holder"),
         NO_DECLARED,
-        Vec::new(),
-        settings
-            .iter()
-            .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
-            .collect::<Vec<_>>(),
-        Vec::new(),
+        Layers::new().with_file(
+            settings
+                .iter()
+                .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+                .collect::<Vec<_>>(),
+        ),
     )
     .expect("the layers build a config")
 }
@@ -137,9 +137,10 @@ fn test_a_peer_that_cannot_be_read_stops_the_start_rather_than_being_skipped() {
     let error = Config::from_layers(
         BuildSettings::new("1.2.3", "2026", "Build Holder"),
         NO_DECLARED,
-        Vec::new(),
-        vec![(SETTING_GRPC_ALLOW.to_owned(), "sha256:nonsense".to_owned())],
-        Vec::new(),
+        Layers::new().with_file(vec![(
+            SETTING_GRPC_ALLOW.to_owned(),
+            "sha256:nonsense".to_owned(),
+        )]),
     )
     .expect_err("an unreadable entry is refused");
 

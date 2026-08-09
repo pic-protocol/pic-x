@@ -8,7 +8,7 @@
 use tonic::service::RoutesBuilder;
 
 use pic_x_admin::{AdminService, ServiceProvider};
-use pic_x_core::{BuildSettings, Config, ProductIdentity, ServerContext, Service};
+use pic_x_core::{BuildSettings, Config, Layers, ProductIdentity, ServerContext, Service};
 use pic_x_std::audit::RecordingAuditSink;
 use pic_x_std::storage::MemoryStorage;
 
@@ -28,9 +28,7 @@ fn config_at(addr: Option<&str>) -> Config {
     Config::from_layers(
         BuildSettings::new("9.9.9", "2026", "Test Holder"),
         Vec::<String>::new(),
-        Vec::new(),
-        file,
-        Vec::new(),
+        Layers::new().with_file(file),
     )
     .expect("the config builds")
 }

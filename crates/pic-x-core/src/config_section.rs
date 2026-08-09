@@ -25,7 +25,7 @@
 //! }
 //!
 //! // composed once, in the binary
-//! App::new(…).with_config_section::<SigningConfig>()
+//! App::new(/* … */).with_config_section::<SigningConfig>()
 //!
 //! // read back anywhere there is a &Config — including from a service the core never heard of
 //! let signing = config.section::<SigningConfig>();

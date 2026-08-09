@@ -15,8 +15,8 @@ use clap::{Command as ClapCommand, CommandFactory, FromArgMatches};
 
 use pic_x_core::{
     AuditRecorder, AuditSink, BoxFuture, BuildSettings, Config, ConfigFile, ConfigSection,
-    KeyManager, LogFormat, ProductIdentity, Pseudonymizer, SecretStore, ServerContext, ServerHost,
-    Service, Storage, Value,
+    KeyManager, Layers, LogFormat, ProductIdentity, Pseudonymizer, SecretStore, ServerContext,
+    ServerHost, Service, Storage, Value,
 };
 
 use crate::banner::Banner;
@@ -631,9 +631,10 @@ impl App {
         let config = Config::from_layers(
             self.build_settings,
             self.declared_settings.clone(),
-            env::vars(),
-            file_inputs,
-            action.setting_inputs(),
+            Layers::new()
+                .with_file(file_inputs)
+                .with_environment(env::vars())
+                .with_command_line(action.setting_inputs()),
         )?;
 
         match &file {

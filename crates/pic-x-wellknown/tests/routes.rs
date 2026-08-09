@@ -10,7 +10,7 @@ use axum::http::{Request, StatusCode};
 use axum::routing::get;
 use tower::ServiceExt;
 
-use pic_x_core::{Config, ProductIdentity};
+use pic_x_core::{Config, Layers, ProductIdentity};
 use pic_x_wellknown::{RouteProvider, WellKnownService};
 
 fn identity() -> ProductIdentity {
@@ -34,12 +34,12 @@ fn config_with(pairs: &[(&str, &str)]) -> Config {
     Config::from_layers(
         pic_x_core::BuildSettings::new("9.9.9", "2026", "Test Holder"),
         Vec::<String>::new(),
-        Vec::new(),
-        pairs
-            .iter()
-            .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
-            .collect::<Vec<_>>(),
-        Vec::new(),
+        Layers::new().with_file(
+            pairs
+                .iter()
+                .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+                .collect::<Vec<_>>(),
+        ),
     )
     .expect("the config builds")
 }

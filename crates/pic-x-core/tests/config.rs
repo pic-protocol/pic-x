@@ -24,13 +24,17 @@ fn build_settings() -> BuildSettings {
 }
 
 /// Builds a config from the three input layers, failing the test on an unreadable value.
-fn config(env: &[(&str, &str)], file: &[(&str, &str)], cli: &[(&str, &str)]) -> Config {
+///
+/// The parameters are in precedence order — file, then environment, then command line — so a call
+/// reads the same way the layers apply.
+fn config(file: &[(&str, &str)], env: &[(&str, &str)], cli: &[(&str, &str)]) -> Config {
     Config::from_layers(
         build_settings(),
         NO_DECLARED,
-        pairs(env),
-        pairs(file),
-        pairs(cli),
+        Layers::new()
+            .with_file(pairs(file))
+            .with_environment(pairs(env))
+            .with_command_line(pairs(cli)),
     )
     .expect("the layers build a config")
 }
@@ -38,22 +42,23 @@ fn config(env: &[(&str, &str)], file: &[(&str, &str)], cli: &[(&str, &str)]) -> 
 /// Builds a config for a build that declares extra setting keys.
 fn declaring(
     declared: &[&str],
-    env: &[(&str, &str)],
     file: &[(&str, &str)],
+    env: &[(&str, &str)],
     cli: &[(&str, &str)],
 ) -> Config {
     Config::from_layers(
         build_settings(),
         declared.to_vec(),
-        pairs(env),
-        pairs(file),
-        pairs(cli),
+        Layers::new()
+            .with_file(pairs(file))
+            .with_environment(pairs(env))
+            .with_command_line(pairs(cli)),
     )
     .expect("the layers build a config")
 }
 
 fn servable() -> Config {
-    config(&[], &[(SETTING_WEB_HTTP_ADDR, "0.0.0.0:5556")], &[])
+    config(&[(SETTING_WEB_HTTP_ADDR, "0.0.0.0:5556")], &[], &[])
 }
 
 #[test]
@@ -67,7 +72,7 @@ fn test_from_layers_uses_build_metadata_after_defaults() {
 
 #[test]
 fn test_absent_values_do_not_overwrite_existing_values() {
-    let config = config(&[(SETTING_COPYRIGHT_HOLDER, "Env Holder")], &[], &[]);
+    let config = config(&[], &[(SETTING_COPYRIGHT_HOLDER, "Env Holder")], &[]);
 
     assert_eq!(config.version(), "1.2.3");
     assert_eq!(config.copyright_year(), "2026");
@@ -75,37 +80,50 @@ fn test_absent_values_do_not_overwrite_existing_values() {
 }
 
 #[test]
-fn test_layers_are_applied_in_default_build_env_file_cli_order() {
-    let config = config(
-        &[
-            (SETTING_VERSION, "env-version"),
-            (SETTING_COPYRIGHT_YEAR, "2030"),
-            (SETTING_COPYRIGHT_HOLDER, "Env Holder"),
-        ],
-        &[],
-        &[
-            (SETTING_VERSION, "cli-version"),
-            (SETTING_COPYRIGHT_HOLDER, "CLI Holder"),
-        ],
+fn test_layers_are_applied_in_default_build_file_environment_cli_order() {
+    // One setting declared by every layer at once, so the winner names the order outright. The build
+    // metadata supplies the version, and each layer after it overwrites what the one before said.
+    let every_layer = config(
+        &[(SETTING_VERSION, "from-the-file")],
+        &[(SETTING_VERSION, "from-the-environment")],
+        &[(SETTING_VERSION, "from-the-command-line")],
     );
+    assert_eq!(every_layer.version(), "from-the-command-line");
 
-    assert_eq!(config.version(), "cli-version");
-    assert_eq!(config.copyright_year(), "2030");
-    assert_eq!(config.copyright_holder(), "CLI Holder");
+    // Take the last layer away, and the one before it wins — down to the build metadata.
+    let without_cli = config(
+        &[(SETTING_VERSION, "from-the-file")],
+        &[(SETTING_VERSION, "from-the-environment")],
+        &[],
+    );
+    assert_eq!(without_cli.version(), "from-the-environment");
+
+    let file_only = config(&[(SETTING_VERSION, "from-the-file")], &[], &[]);
+    assert_eq!(file_only.version(), "from-the-file");
+
+    let nothing = config(&[], &[], &[]);
+    assert_eq!(
+        nothing.version(),
+        "1.2.3",
+        "the build metadata is the floor"
+    );
 }
 
 #[test]
-fn test_config_file_layer_overwrites_environment_and_is_overwritten_by_cli() {
+fn test_the_environment_overwrites_the_file_and_is_overwritten_by_the_command_line() {
+    // The rule that matters in practice: a file travels with the build — baked into an image, copied
+    // between environments — and the environment is set by whoever is running this instance. When
+    // they disagree, the one that knows something the other could not is the environment.
     let config = config(
-        &[(SETTING_VERSION, "env-version")],
         &[
             (SETTING_VERSION, "file-version"),
             (SETTING_COPYRIGHT_HOLDER, "File Holder"),
         ],
+        &[(SETTING_VERSION, "env-version")],
         &[(SETTING_COPYRIGHT_HOLDER, "CLI Holder")],
     );
 
-    assert_eq!(config.version(), "file-version");
+    assert_eq!(config.version(), "env-version");
     assert_eq!(config.copyright_year(), "2026");
     assert_eq!(config.copyright_holder(), "CLI Holder");
 }
@@ -113,8 +131,8 @@ fn test_config_file_layer_overwrites_environment_and_is_overwritten_by_cli() {
 #[test]
 fn test_unknown_inputs_do_not_change_typed_config() {
     let with_noise = config(
-        &[("PATH", "/usr/bin")],
         &[("unknown", "file")],
+        &[("PATH", "/usr/bin")],
         &[("other", "cli")],
     );
     let without = config(&[], &[], &[]);
@@ -168,11 +186,11 @@ fn test_listen_addresses_have_no_built_in_default() {
 #[test]
 fn test_command_line_addresses_override_the_configuration_file() {
     let config = config(
-        &[],
         &[
             (SETTING_WEB_HTTP_ADDR, "0.0.0.0:5556"),
             (SETTING_GRPC_ADDR, "127.0.0.1:5557"),
         ],
+        &[],
         &[(SETTING_WEB_HTTP_ADDR, "127.0.0.1:9999")],
     );
 
@@ -187,7 +205,7 @@ fn test_validate_accepts_a_config_with_a_web_address() {
 
 #[test]
 fn test_validate_rejects_a_config_with_no_web_address() {
-    let config = config(&[], &[(SETTING_GRPC_ADDR, "127.0.0.1:5557")], &[]);
+    let config = config(&[(SETTING_GRPC_ADDR, "127.0.0.1:5557")], &[], &[]);
 
     let error = config.validate().expect_err("no web address is invalid");
     assert!(format!("{error}").contains("web listen address"));
@@ -198,17 +216,17 @@ fn test_the_public_surface_has_one_address_and_tls_is_a_property_of_it() {
     // There is no second address for "the same surface, but encrypted": whether it is HTTP or HTTPS
     // is decided by `web.tls`. A surface that accepted an https address and never bound it would be
     // a configuration that looks served and is not.
-    let plain = config(&[], &[(SETTING_WEB_HTTP_ADDR, "0.0.0.0:5556")], &[]);
+    let plain = config(&[(SETTING_WEB_HTTP_ADDR, "0.0.0.0:5556")], &[], &[]);
     assert!(plain.validate().is_ok());
     assert!(plain.web_tls().is_none());
 
     let secured = config(
-        &[],
         &[
             (SETTING_WEB_HTTP_ADDR, "0.0.0.0:5556"),
             (SETTING_WEB_TLS_CERT, "/nonexistent/server.pem"),
             (SETTING_WEB_TLS_KEY, "/nonexistent/server.key"),
         ],
+        &[],
         &[],
     );
     assert_eq!(secured.web_http_addr(), Some("0.0.0.0:5556"));
@@ -218,11 +236,11 @@ fn test_the_public_surface_has_one_address_and_tls_is_a_property_of_it() {
 #[test]
 fn test_validate_rejects_a_blank_declared_address() {
     let config = config(
-        &[],
         &[
             (SETTING_WEB_HTTP_ADDR, "0.0.0.0:5556"),
             (SETTING_GRPC_ADDR, "   "),
         ],
+        &[],
         &[],
     );
 
@@ -244,7 +262,7 @@ fn test_a_shutdown_budget_is_read_in_seconds_minutes_or_hours() {
 
     for (written, seconds) in cases {
         assert_eq!(
-            config(&[], &[(SETTING_SHUTDOWN_TIMEOUT, written)], &[]).shutdown_timeout(),
+            config(&[(SETTING_SHUTDOWN_TIMEOUT, written)], &[], &[]).shutdown_timeout(),
             Duration::from_secs(seconds),
             "reading {written}"
         );
@@ -259,9 +277,10 @@ fn test_an_unreadable_shutdown_budget_is_an_error() {
             Config::from_layers(
                 build_settings(),
                 NO_DECLARED,
-                pairs(&[]),
-                pairs(&[(SETTING_SHUTDOWN_TIMEOUT, written)]),
-                pairs(&[])
+                Layers::new()
+                    .with_file(pairs(&[(SETTING_SHUTDOWN_TIMEOUT, written)]))
+                    .with_environment(pairs(&[]))
+                    .with_command_line(pairs(&[])),
             )
             .is_err(),
             "`{written}` should not be a budget"
@@ -284,8 +303,8 @@ fn test_without_an_issuer_a_public_url_is_the_path_itself() {
 #[test]
 fn test_an_issuer_makes_public_urls_absolute() {
     let config = config(
-        &[],
         &[(SETTING_ISSUER, "https://login.example.com/pic-x")],
+        &[],
         &[],
     );
 
@@ -297,7 +316,7 @@ fn test_an_issuer_makes_public_urls_absolute() {
 
 #[test]
 fn test_a_trailing_slash_on_the_issuer_never_doubles_up() {
-    let config = config(&[], &[(SETTING_ISSUER, "https://login.example.com/")], &[]);
+    let config = config(&[(SETTING_ISSUER, "https://login.example.com/")], &[], &[]);
 
     assert_eq!(
         config.public_url("/.well-known/jwks.json"),
@@ -308,11 +327,11 @@ fn test_a_trailing_slash_on_the_issuer_never_doubles_up() {
 #[test]
 fn test_an_issuer_that_offers_no_protection_is_refused() {
     let public = config(
-        &[],
         &[
             (SETTING_WEB_HTTP_ADDR, "0.0.0.0:5556"),
             (SETTING_ISSUER, "http://login.example.com"),
         ],
+        &[],
         &[],
     );
     let error = public.validate().expect_err("http is not a public issuer");
@@ -320,11 +339,11 @@ fn test_an_issuer_that_offers_no_protection_is_refused() {
 
     // Loopback is the exception: there is nothing in between to protect the client from.
     let local = config(
-        &[],
         &[
             (SETTING_WEB_HTTP_ADDR, "0.0.0.0:5556"),
             (SETTING_ISSUER, "http://localhost:7556"),
         ],
+        &[],
         &[],
     );
     assert!(local.validate().is_ok());
@@ -333,11 +352,11 @@ fn test_an_issuer_that_offers_no_protection_is_refused() {
 #[test]
 fn test_a_path_prefix_has_to_look_like_a_path() {
     let config = config(
-        &[],
         &[
             (SETTING_WEB_HTTP_ADDR, "0.0.0.0:5556"),
             (SETTING_WEB_PATH_PREFIX, "pic-x"),
         ],
+        &[],
         &[],
     );
 
@@ -349,12 +368,12 @@ fn test_a_path_prefix_has_to_look_like_a_path() {
 fn test_an_empty_value_means_the_setting_was_never_supplied() {
     // How a Taskfile or a container manifest expresses "not this time" for an optional setting.
     let config = config(
+        &[],
         &[
             (SETTING_WEB_TLS_CERT, ""),
             (SETTING_WEB_TLS_KEY, ""),
             (SETTING_LOG_LEVEL, ""),
         ],
-        &[],
         &[],
     );
 
@@ -365,11 +384,11 @@ fn test_an_empty_value_means_the_setting_was_never_supplied() {
 #[test]
 fn test_whitespace_is_not_empty_because_it_is_a_typo() {
     let config = config(
-        &[],
         &[
             (SETTING_WEB_HTTP_ADDR, "0.0.0.0:5556"),
             (SETTING_GRPC_ADDR, "   "),
         ],
+        &[],
         &[],
     );
 
@@ -391,7 +410,6 @@ fn test_a_surface_without_tls_settings_serves_in_the_clear() {
 #[test]
 fn test_tls_material_is_read_per_surface_and_defaults_to_the_modern_floor() {
     let config = config(
-        &[],
         &[
             (SETTING_WEB_TLS_CERT, "/tls/web.pem"),
             (SETTING_WEB_TLS_KEY, "/tls/web.key"),
@@ -399,6 +417,7 @@ fn test_tls_material_is_read_per_surface_and_defaults_to_the_modern_floor() {
             (SETTING_GRPC_TLS_KEY, "/tls/grpc.key"),
             (SETTING_GRPC_TLS_CLIENT_CA, "/tls/clients.pem"),
         ],
+        &[],
         &[],
     );
 
@@ -416,9 +435,10 @@ fn test_a_certificate_without_its_key_is_refused_rather_than_ignored() {
     let only_cert = Config::from_layers(
         build_settings(),
         NO_DECLARED,
-        pairs(&[]),
-        pairs(&[(SETTING_WEB_TLS_CERT, "/tls/web.pem")]),
-        pairs(&[]),
+        Layers::new()
+            .with_file(pairs(&[(SETTING_WEB_TLS_CERT, "/tls/web.pem")]))
+            .with_environment(pairs(&[]))
+            .with_command_line(pairs(&[])),
     );
     assert!(
         only_cert.is_err(),
@@ -428,9 +448,10 @@ fn test_a_certificate_without_its_key_is_refused_rather_than_ignored() {
     let only_key = Config::from_layers(
         build_settings(),
         NO_DECLARED,
-        pairs(&[]),
-        pairs(&[(SETTING_GRPC_TLS_KEY, "/tls/grpc.key")]),
-        pairs(&[]),
+        Layers::new()
+            .with_file(pairs(&[(SETTING_GRPC_TLS_KEY, "/tls/grpc.key")]))
+            .with_environment(pairs(&[]))
+            .with_command_line(pairs(&[])),
     );
     assert!(only_key.is_err());
 }
@@ -438,12 +459,12 @@ fn test_a_certificate_without_its_key_is_refused_rather_than_ignored() {
 #[test]
 fn test_the_protocol_floor_can_be_lowered_by_naming_it() {
     let config = config(
-        &[],
         &[
             (SETTING_WEB_TLS_CERT, "/tls/web.pem"),
             (SETTING_WEB_TLS_KEY, "/tls/web.key"),
             (SETTING_WEB_TLS_MIN_VERSION, "1.2"),
         ],
+        &[],
         &[],
     );
 
@@ -459,11 +480,11 @@ fn test_the_protocol_floor_can_be_lowered_by_naming_it() {
 #[test]
 fn test_telemetry_is_offered_tls_but_never_a_client_authority() {
     let config = config(
-        &[],
         &[
             (SETTING_TELEMETRY_TLS_CERT, "/tls/telemetry.pem"),
             (SETTING_TELEMETRY_TLS_KEY, "/tls/telemetry.key"),
         ],
+        &[],
         &[],
     );
 
@@ -479,12 +500,12 @@ fn test_telemetry_is_offered_tls_but_never_a_client_authority() {
 #[test]
 fn test_material_that_names_missing_files_stops_validation() {
     let config = config(
-        &[],
         &[
             (SETTING_WEB_HTTP_ADDR, "0.0.0.0:5556"),
             (SETTING_WEB_TLS_CERT, "/nonexistent/web.pem"),
             (SETTING_WEB_TLS_KEY, "/nonexistent/web.key"),
         ],
+        &[],
         &[],
     );
 
@@ -503,11 +524,11 @@ fn test_logging_defaults_to_the_production_settings() {
 #[test]
 fn test_logging_settings_travel_through_the_same_layers() {
     let config = config(
+        &[(SETTING_LOG_LEVEL, "warn")],
         &[
             (SETTING_LOG_LEVEL, "error"),
             (SETTING_LOG_FORMAT, "terminal"),
         ],
-        &[(SETTING_LOG_LEVEL, "warn")],
         &[(SETTING_LOG_LEVEL, "debug")],
     );
 
@@ -520,9 +541,10 @@ fn test_an_unreadable_log_level_is_an_error_not_a_silent_default() {
     let error = Config::from_layers(
         build_settings(),
         NO_DECLARED,
-        pairs(&[(SETTING_LOG_LEVEL, "verbose")]),
-        pairs(&[]),
-        pairs(&[]),
+        Layers::new()
+            .with_file(pairs(&[]))
+            .with_environment(pairs(&[(SETTING_LOG_LEVEL, "verbose")]))
+            .with_command_line(pairs(&[])),
     )
     .expect_err("`verbose` is not a level");
 
@@ -536,9 +558,10 @@ fn test_an_unreadable_log_format_is_an_error_not_a_silent_default() {
     let error = Config::from_layers(
         build_settings(),
         NO_DECLARED,
-        pairs(&[]),
-        pairs(&[(SETTING_LOG_FORMAT, "xml")]),
-        pairs(&[]),
+        Layers::new()
+            .with_file(pairs(&[(SETTING_LOG_FORMAT, "xml")]))
+            .with_environment(pairs(&[]))
+            .with_command_line(pairs(&[])),
     )
     .expect_err("`xml` is not a format");
 
@@ -549,14 +572,16 @@ fn test_an_unreadable_log_format_is_an_error_not_a_silent_default() {
 
 #[test]
 fn test_a_declared_setting_travels_through_every_layer() {
+    // A setting a build added obeys the same precedence as a typed one: no capability gets its own
+    // rules about which layer wins.
     let config = declaring(
         &["PERMGUARD_SSO_ISSUER"],
-        &[("PERMGUARD_SSO_ISSUER", "env")],
         &[("PERMGUARD_SSO_ISSUER", "file")],
+        &[("PERMGUARD_SSO_ISSUER", "env")],
         &[],
     );
 
-    assert_eq!(config.setting("PERMGUARD_SSO_ISSUER"), Some("file"));
+    assert_eq!(config.setting("PERMGUARD_SSO_ISSUER"), Some("env"));
     assert_eq!(
         config.declared_settings().collect::<Vec<_>>(),
         vec!["PERMGUARD_SSO_ISSUER"]
@@ -565,7 +590,7 @@ fn test_a_declared_setting_travels_through_every_layer() {
 
 #[test]
 fn test_an_undeclared_setting_never_reaches_the_config() {
-    let config = config(&[("PERMGUARD_SSO_ISSUER", "env")], &[], &[]);
+    let config = config(&[], &[("PERMGUARD_SSO_ISSUER", "env")], &[]);
 
     assert_eq!(config.setting("PERMGUARD_SSO_ISSUER"), None);
 }

@@ -5,7 +5,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use pic_x_core::{BuildSettings, Config};
+use pic_x_core::{BuildSettings, Config, Layers};
 use pic_x_std::provision::{Volume, prepare};
 
 /// A volume location nothing else is using.
@@ -21,12 +21,12 @@ fn config(pairs: &[(&str, &str)]) -> Config {
     Config::from_layers(
         BuildSettings::new("9.9.9", "2026", "Test Holder"),
         Vec::<String>::new(),
-        Vec::new(),
-        pairs
-            .iter()
-            .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
-            .collect::<Vec<_>>(),
-        Vec::new(),
+        Layers::new().with_file(
+            pairs
+                .iter()
+                .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+                .collect::<Vec<_>>(),
+        ),
     )
     .expect("the config builds")
 }

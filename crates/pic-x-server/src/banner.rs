@@ -63,7 +63,7 @@ mod tests {
 
     use super::*;
 
-    use pic_x_core::BuildSettings;
+    use pic_x_core::{BuildSettings, Layers};
 
     const ART: &str = " ____ ___ ____\n|  _ \\_ _/ ___|";
 
@@ -81,9 +81,7 @@ mod tests {
         let config = Config::from_layers(
             BuildSettings::new("9.9.9", "2026", "Test Holder"),
             Vec::<String>::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
+            Layers::new(),
         )
         .expect("the layers build a config");
 

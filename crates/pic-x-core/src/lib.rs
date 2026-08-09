@@ -32,7 +32,7 @@ pub mod storage;
 pub mod tls;
 
 pub use audit::{AuditDestination, AuditEvent, AuditSink, Sensitivity, Subject};
-pub use config::{BuildSettings, Config};
+pub use config::{BuildSettings, Config, Layers};
 pub use config_file::ConfigFile;
 pub use config_section::{AnyConfigSection, ConfigSection};
 pub use error::{AuditError, KeyError, SecretError, ServiceError, StorageError};

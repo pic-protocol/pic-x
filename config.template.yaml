@@ -16,8 +16,13 @@
 ## ## Where a value can come from
 ##
 ## Five layers, each overwriting only what it actually declares: built-in defaults, build metadata,
-## the environment, this file, then the command line. So a setting written here beats the same
-## setting in the environment, and a `--flag` beats both.
+## this file, the environment, then the command line.
+##
+## So `PIC_X_LOG_LEVEL` beats `log.level` written here, and `--log-level` beats both. That order is
+## deliberate: a file travels with the build — baked into an image, copied between environments — so
+## it describes the *product*, while the environment is set by whoever is running this particular
+## instance and describes the *deployment*. When they disagree, the deployment knows something the
+## file could not.
 
 ## ---------------------------------------------------------------------------------------------
 ## The volume

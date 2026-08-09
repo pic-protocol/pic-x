@@ -90,7 +90,7 @@ pub const SETTING_GRPC_TLS_MIN_VERSION: &str = "PIC_X_GRPC_TLS_MIN_VERSION";
 
 /// Runtime setting key for the peers the administrative surface answers.
 ///
-/// One entry per line — see [`AllowedPeer`](crate::peer::AllowedPeer) for the forms. A newline
+/// One entry per line — see [`AllowedPeer`] for the forms. A newline
 /// rather than a comma because a distinguished name contains commas, and a separator that appears
 /// inside the values it separates is a parser waiting to split somebody's identity in half.
 pub const SETTING_GRPC_ALLOW: &str = "PIC_X_GRPC_ALLOW";
@@ -227,6 +227,60 @@ const DEFAULT_VERSION: &str = "0.0.0";
 const DEFAULT_COPYRIGHT_YEAR: &str = "0000";
 const DEFAULT_COPYRIGHT_HOLDER: &str = "PIC-X";
 
+/// The inputs a configuration is assembled from, in the order they overwrite one another.
+///
+/// A struct with names rather than three arguments of the same type in a row. Three lists of
+/// `(String, String)` as positional parameters are three chances to swap two of them, and a swap
+/// here compiles, runs, passes every test that does not set the same key twice, and quietly decides
+/// that a file baked into an image outranks what the deployment said. Naming them makes that
+/// particular mistake unwritable.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Layers {
+    /// What the configuration file named on the command line declares.
+    pub file: Vec<(String, String)>,
+    /// What the process environment declares. Overwrites the file — see [`Config::from_layers`].
+    pub environment: Vec<(String, String)>,
+    /// What the invocation passed as flags. The last word.
+    pub command_line: Vec<(String, String)>,
+}
+
+impl Layers {
+    /// Builds an empty set of layers.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Adds what the configuration file declares.
+    pub fn with_file<I>(mut self, inputs: I) -> Self
+    where
+        I: IntoIterator<Item = (String, String)>,
+    {
+        self.file = inputs.into_iter().collect();
+
+        self
+    }
+
+    /// Adds what the environment declares.
+    pub fn with_environment<I>(mut self, inputs: I) -> Self
+    where
+        I: IntoIterator<Item = (String, String)>,
+    {
+        self.environment = inputs.into_iter().collect();
+
+        self
+    }
+
+    /// Adds what the invocation passed as flags.
+    pub fn with_command_line<I>(mut self, inputs: I) -> Self
+    where
+        I: IntoIterator<Item = (String, String)>,
+    {
+        self.command_line = inputs.into_iter().collect();
+
+        self
+    }
+}
+
 /// Build-time values that participate in runtime configuration.
 ///
 /// Every value is `&'static str`: these come from the compiled binary, and the command-line parser
@@ -270,7 +324,7 @@ impl BuildSettings {
 /// configuration of a build that does not ask for it.
 ///
 /// Beyond both of those, a build can add whole typed sections of its own — see
-/// [`ConfigSection`](crate::config_section::ConfigSection) — which is how configuration that this
+/// [`ConfigSection`] — which is how configuration that this
 /// crate has never heard of travels to the code that understands it.
 ///
 /// The type is deliberately not `PartialEq`: it carries sections whose types it does not know, and
@@ -367,27 +421,34 @@ impl Config {
     ///
     /// 1. typed defaults;
     /// 2. build metadata;
-    /// 3. runtime environment;
-    /// 4. configuration file;
+    /// 3. the configuration file;
+    /// 4. the runtime environment;
     /// 5. command-line inputs.
+    ///
+    /// # Why the environment beats the file
+    ///
+    /// Because of where each one comes from. A configuration file is written once and travels with
+    /// the build — baked into a container image, checked into a chart, copied between environments —
+    /// so it describes the *product*. The environment is set by whoever is running this particular
+    /// instance, so it describes the *deployment*. When the two disagree, the deployment is the one
+    /// that knows something the file could not.
+    ///
+    /// It is also what every other tool does, and being the exception costs more than it is worth:
+    /// an operator who sets `PIC_X_LOG_LEVEL` and sees no change does not think "interesting
+    /// precedence choice", they think the setting is broken.
     ///
     /// `declared_settings` names the extra keys this build understands on top of the typed ones.
     ///
     /// A value a layer cannot be read as its type is an error rather than a silent fallback: a build
     /// asked for `debug` and given `verbose` should say so, not quietly log less than it was told to.
-    pub fn from_layers<D, S, E, F, C>(
+    pub fn from_layers<D, S>(
         build_settings: BuildSettings,
         declared_settings: D,
-        env_inputs: E,
-        file_inputs: F,
-        cli_inputs: C,
+        layers: Layers,
     ) -> Result<Self>
     where
         D: IntoIterator<Item = S>,
         S: Into<String>,
-        E: IntoIterator<Item = (String, String)>,
-        F: IntoIterator<Item = (String, String)>,
-        C: IntoIterator<Item = (String, String)>,
     {
         let mut config = Self {
             declared: declared_settings.into_iter().map(Into::into).collect(),
@@ -395,9 +456,9 @@ impl Config {
         };
 
         config.apply_build_settings(build_settings);
-        config.apply_pairs(env_inputs)?;
-        config.apply_pairs(file_inputs)?;
-        config.apply_pairs(cli_inputs)?;
+        config.apply_pairs(layers.file)?;
+        config.apply_pairs(layers.environment)?;
+        config.apply_pairs(layers.command_line)?;
 
         Ok(config)
     }
