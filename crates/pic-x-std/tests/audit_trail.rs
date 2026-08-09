@@ -329,31 +329,45 @@ async fn test_a_truncated_trail_is_caught_by_its_seal() {
 
 #[tokio::test]
 async fn test_a_trail_rewritten_from_the_beginning_stops_agreeing_with_its_seal() {
-    // The attacker the chain alone cannot catch: rewrite every record and recompute every digest.
-    // The result verifies against itself — and no longer matches what was sealed.
+    // The attacker the chain alone cannot catch: rewrite every record and recompute every digest, so
+    // the result verifies against itself perfectly.
     let directory = trail("rewritten");
     let sink = sink(&directory);
     sink.prepare().expect("the trail is prepared");
     write(&sink, 3).await;
     sink.shutdown().await.expect("the trail is closed");
 
-    let sealed_head = verify(&directory).expect("it verifies").head;
+    let sealed = verify(&directory).expect("it verifies").head;
 
-    // A whole new trail of the same length, written by the same code — the strongest forgery a
-    // process with write access can produce.
-    let path = only_file(&directory);
-    fs::remove_file(&path).expect("the day is removed");
-    let forger = FileAuditSink::new(&directory, "pic-x", "9.9.9", Duration::from_secs(90 * 86_400));
+    // A whole new trail, the same length, written by the same code — and saying something else,
+    // which is the entire reason to forge one.
+    fs::remove_file(only_file(&directory)).expect("the day is removed");
+    let forger = FileAuditSink::new(
+        &directory,
+        "pic-x",
+        "9.9.9",
+        Duration::from_secs(90 * 86_400),
+    );
     forger.prepare().expect("the trail is prepared");
-    write(&forger, 3).await;
+    for index in 0..3 {
+        let target = format!("run-{index}");
+        let event = AuditEvent::system("service.stop", "wellknown").on(&target);
 
+        forger
+            .record(&event, None)
+            .await
+            .expect("the forged record is written");
+    }
+
+    // The forgery is internally perfect — and no longer what was sealed.
     let error = verify(&directory).expect_err("a rewritten trail must not verify");
 
+    let why = format!("{error:#}");
+    assert!(why.contains("rewritten since they were sealed"), "{why}");
     assert!(
-        format!("{error:#}").contains("rewritten since they were sealed"),
-        "{error:#}"
+        why.contains(&sealed),
+        "the failure does not name the head that was sealed: {why}"
     );
-    assert_ne!(sealed_head, "", "the fixture is meaningless without a head");
 }
 
 #[cfg(feature = "keys")]

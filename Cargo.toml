@@ -37,6 +37,8 @@ pic-x-std = { workspace = true, features = [
 pic-x-telemetry.workspace = true
 pic-x-transport.workspace = true
 pic-x-wellknown.workspace = true
+# Reading a published key set back, to check what the audit trail's seals were signed with.
+serde_json.workspace = true
 tokio.workspace = true
 
 [workspace]

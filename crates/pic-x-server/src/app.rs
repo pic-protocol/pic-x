@@ -51,13 +51,20 @@ type KeyManagerFactory = Box<dyn Fn(&Config) -> Result<Option<Arc<dyn KeyManager
 ///
 /// Returning nothing means "the one this app was composed with", so a build that offers a choice of
 /// destinations and a build that has exactly one are the same code path.
-type AuditSinkFactory = Box<dyn Fn(&Config) -> Result<Option<Arc<dyn AuditSink>>> + Send + Sync>;
+///
+/// It is handed the key ring because a destination may want to sign what it writes — the file trail
+/// seals its head with it — and the ring is composed by the same pass.
+type AuditSinkFactory = Box<
+    dyn Fn(&Config, Option<&Arc<dyn KeyManager>>) -> Result<Option<Arc<dyn AuditSink>>>
+        + Send
+        + Sync,
+>;
 
 /// Checks an audit trail and returns what it found, in one line a human reads.
 ///
 /// Registered by the binary for the same reason as everything else: this crate knows that a trail
 /// can be verified, and only the composition root knows what the trail is made of.
-type AuditVerifier = Box<dyn Fn(&Path) -> Result<String> + Send + Sync>;
+type AuditVerifier = Box<dyn Fn(&Path, Option<&Path>) -> Result<String> + Send + Sync>;
 
 /// The shortest key material worth deriving anything from.
 ///
@@ -209,7 +216,10 @@ impl App {
     /// with a single destination needs none of this.
     pub fn with_audit_factory<F>(mut self, factory: F) -> Self
     where
-        F: Fn(&Config) -> Result<Option<Arc<dyn AuditSink>>> + Send + Sync + 'static,
+        F: Fn(&Config, Option<&Arc<dyn KeyManager>>) -> Result<Option<Arc<dyn AuditSink>>>
+            + Send
+            + Sync
+            + 'static,
     {
         self.audit_factory = Some(Box::new(factory));
 
@@ -222,7 +232,7 @@ impl App {
     /// because nothing looked at it.
     pub fn with_audit_verifier<F>(mut self, verifier: F) -> Self
     where
-        F: Fn(&Path) -> Result<String> + Send + Sync + 'static,
+        F: Fn(&Path, Option<&Path>) -> Result<String> + Send + Sync + 'static,
     {
         self.audit_verifier = Some(Box::new(verifier));
 
@@ -467,19 +477,24 @@ impl App {
             Action::Serve(args) => self.serve(config, args.config_file(), out).await,
             Action::Named(Command::Version) => self.version(config, out),
             Action::Named(Command::Audit {
-                what: AuditCommand::Verify { directory },
-            }) => self.verify_audit(directory, out),
+                what: AuditCommand::Verify { directory, keys },
+            }) => self.verify_audit(directory, keys.as_deref(), out),
         }
     }
 
     /// Checks an audit trail and reports what verifying it found.
-    fn verify_audit(&self, directory: &Path, out: &mut dyn Write) -> Result<()> {
+    fn verify_audit(
+        &self,
+        directory: &Path,
+        keys: Option<&Path>,
+        out: &mut dyn Write,
+    ) -> Result<()> {
         let verifier = self
             .audit_verifier
             .as_ref()
             .context("this build cannot check an audit trail")?;
 
-        let summary = verifier(directory)
+        let summary = verifier(directory, keys)
             .with_context(|| format!("checking the audit trail in {}", directory.display()))?;
 
         writeln!(out, "{summary}").context("writing the result")?;
@@ -536,9 +551,13 @@ impl App {
     }
 
     /// Builds the audit destination the effective configuration names.
-    pub fn audit_for(&self, config: &Config) -> Result<Arc<dyn AuditSink>> {
+    pub fn audit_for(
+        &self,
+        config: &Config,
+        keys: Option<&Arc<dyn KeyManager>>,
+    ) -> Result<Arc<dyn AuditSink>> {
         let chosen = match &self.audit_factory {
-            Some(factory) => factory(config)?,
+            Some(factory) => factory(config, keys)?,
             None => None,
         };
 
@@ -731,7 +750,7 @@ impl App {
         witness::check(config, pseudonymizer.as_deref())?;
 
         let keys = self.keys_for(config)?;
-        let audit = self.audit_for(config)?;
+        let audit = self.audit_for(config, keys.as_ref())?;
 
         logging::record_build(&self.identity, config, self.server.name());
 

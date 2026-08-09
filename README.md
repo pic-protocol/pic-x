@@ -143,6 +143,9 @@ contracts crate to its dependency allowlist. Both run in CI.
   published before it signs and stays published after it stops
 - an audit trail written to files, each record carrying the digest of the one before it, so an edit,
   a removed line or a missing day stops the chain verifying — `task audit:verify`
+- a **seal** on every day the trail closes: the head, signed by the key ring, written beside the
+  trail and emitted to the log stream. It catches the one edit the chain cannot — a trail rewritten
+  from the beginning, which verifies against itself and no longer agrees with what was sealed
 - audit subjects that are people recorded as keyed, versioned pseudonyms rather than in the clear
 - a startup that refuses configurations which would look fine and be wrong: an administrative surface
   the world can reach with no client certificate, a key that would start signing before verifiers
@@ -152,7 +155,7 @@ contracts crate to its dependency allowlist. Both run in CI.
 
 - **the domain** — `continuity`, `exchange` and `provenance` do not exist as types. This is the
   product; everything above is the scaffolding it will stand on
-- **anything that signs** — the key ring generates, rotates and publishes keys that nothing uses yet
+- **anything else that signs** — the key ring signs the audit seals, and nothing else yet
 - **durable domain storage** — the store is in memory, which costs nothing today because nothing
   depends on it. Its shape is a question the domain answers
 

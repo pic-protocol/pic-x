@@ -314,22 +314,34 @@ tasks:
     desc: Check that nothing in the audit trail has been altered.
     summary: |
       Read the whole trail and check it: every record against its own digest, every record against
-      the one before it, and the sequence across the whole thing including day boundaries.
+      the one before it, the sequence across the whole thing including day boundaries, and every
+      seal against the records it attests to.
 
-      A trail that verifies has not been edited in place, had a line removed, or lost a day. It is
-      evidence, not prevention — see the `audit` section of the configuration file for what that
-      distinction costs and what it buys.
+      The chain catches a record edited, removed or reordered. The seal catches the one thing the
+      chain cannot: a trail rewritten from the beginning, which verifies against itself perfectly and
+      no longer agrees with what was sealed.
+
+      With KEYS, each seal's signature is checked too. Point it at a key set you trust — checking a
+      seal against keys taken from the machine under suspicion checks a signature against a key the
+      same attacker could have replaced:
+
+        task audit:verify KEYS=./trusted.jwks
 
       Examples:
         task audit:verify
         task audit:verify VOLUME=/tmp/pic-x
+        task audit:verify KEYS=./trusted.jwks
 
       Parameters:
         VOLUME  Where everything lives. Default: .volume beside the repository.
+        KEYS    A JWKS document to check the seals' signatures against. Default: unset.
     vars:
       VOLUME: '{{.VOLUME | default ".volume"}}'
+      KEYS: '{{.KEYS | default ""}}'
     cmds:
-      - cargo run --quiet --bin pic-x -- audit verify --directory {{.VOLUME}}/audit
+      - >-
+        cargo run --quiet --bin pic-x -- audit verify --directory {{.VOLUME}}/audit
+        {{if .KEYS}}--keys {{.KEYS}}{{end}}
 
   check:seams:
     desc: Check that only the binary constructs swappable collaborators.

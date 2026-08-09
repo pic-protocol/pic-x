@@ -97,6 +97,14 @@ pub enum AuditCommand {
         /// Directory the trail was written to.
         #[arg(long, value_name = "DIRECTORY")]
         directory: PathBuf,
+
+        /// Key set to check the seals' signatures against, as a JWKS document.
+        ///
+        /// Optional, and pointedly not defaulted to the local key ring: verifying a seal against
+        /// keys taken from the machine under suspicion checks a signature against a key the same
+        /// attacker could have replaced. Point it at a copy you trust.
+        #[arg(long, value_name = "JWKS")]
+        keys: Option<PathBuf>,
     },
 }
 

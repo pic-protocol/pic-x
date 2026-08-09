@@ -11,8 +11,9 @@
 use std::process::ExitCode;
 use std::sync::Arc;
 
+use anyhow::Context;
 use pic_x_admin::AdminService;
-use pic_x_core::{AuditDestination, AuditSink, KeyManager};
+use pic_x_core::{AuditDestination, AuditSink, JwkSet, KeyManager};
 use pic_x_core::{BuildSettings, ProductIdentity};
 use pic_x_core::{Config, SecretProvider, SecretStore};
 use pic_x_server::{App, DefaultServerHost};
@@ -98,16 +99,26 @@ async fn main() -> ExitCode {
 /// Builds the audit destination the effective configuration names.
 ///
 /// Returning nothing leaves the sink this binary was composed with, which is the log stream.
-fn audit_sink_for(config: &Config) -> anyhow::Result<Option<Arc<dyn AuditSink>>> {
+fn audit_sink_for(
+    config: &Config,
+    keys: Option<&Arc<dyn KeyManager>>,
+) -> anyhow::Result<Option<Arc<dyn AuditSink>>> {
     match config.audit_destination() {
         AuditDestination::Tracing => Ok(None),
         AuditDestination::File => {
-            let sink = FileAuditSink::new(
+            let mut sink = FileAuditSink::new(
                 config.audit_directory(),
                 BINARY_NAME,
                 config.version(),
                 config.audit_retention(),
             );
+
+            // With a key ring, every day the trail closes is sealed with a signature — a statement
+            // about where the chain stood that can leave this machine and still be checked. Without
+            // one the seal is still written, and simply proves less.
+            if let Some(keys) = keys {
+                sink = sink.sealed_by(Arc::clone(keys));
+            }
 
             // Prepared here rather than at the first record: a trail that cannot be written is a
             // reason not to start, not something to discover later from whoever needed the record.
@@ -123,13 +134,81 @@ fn audit_sink_for(config: &Config) -> anyhow::Result<Option<Arc<dyn AuditSink>>>
 /// The head is the value that matters and is printed for that reason: one digest stands for every
 /// record before it, so writing it down somewhere this process cannot reach is what turns tamper
 /// evidence into something an attacker with write access cannot undo.
-fn verify_audit_trail(directory: &std::path::Path) -> anyhow::Result<String> {
+///
+/// When a key set is named, every seal's signature is checked against it. The set has to be named
+/// rather than found: verifying against keys taken from the machine under suspicion checks a
+/// signature against a key the same attacker could have replaced.
+fn verify_audit_trail(
+    directory: &std::path::Path,
+    keys: Option<&std::path::Path>,
+) -> anyhow::Result<String> {
     let verified = pic_x_std::audit::verify(directory)?;
 
-    Ok(format!(
+    let mut summary = format!(
         "{} record(s) over {} day(s) verify. Head: {}",
         verified.records, verified.days, verified.head
-    ))
+    );
+
+    if verified.seals.is_empty() {
+        return Ok(summary);
+    }
+
+    let Some(path) = keys else {
+        summary.push_str(&format!(
+            "\n{} seal(s) present, signatures unchecked. Pass --keys <JWKS> to check them.",
+            verified.seals.len()
+        ));
+
+        return Ok(summary);
+    };
+
+    let published: JwkSet = serde_json::from_str(&std::fs::read_to_string(path)?)
+        .with_context(|| format!("reading the key set from {}", path.display()))?;
+
+    let mut signed = 0_usize;
+    for seal in &verified.seals {
+        let (Some(kid), Some(signature)) = (seal.kid.as_deref(), seal.signature.as_deref()) else {
+            anyhow::bail!("the seal for {} carries no signature", seal.body.day);
+        };
+
+        let key = published
+            .keys
+            .iter()
+            .find(|key| key.kid == kid)
+            .with_context(|| format!("the key set does not publish `{kid}`"))?;
+
+        let signature = from_hex(signature).with_context(|| {
+            format!("the seal for {} has an unreadable signature", seal.body.day)
+        })?;
+
+        if !pic_x_std::keys::verify_signature(key, &seal.signed_bytes()?, &signature) {
+            anyhow::bail!(
+                "the seal for {} does not verify against `{kid}`: it was not signed by the key it \
+                 names, or it has been altered since",
+                seal.body.day
+            );
+        }
+
+        signed += 1;
+    }
+
+    summary.push_str(&format!("\n{signed} seal(s) verify against the key set."));
+
+    Ok(summary)
+}
+
+/// Reads lowercase hexadecimal back into the bytes it renders.
+fn from_hex(text: &str) -> anyhow::Result<Vec<u8>> {
+    if !text.len().is_multiple_of(2) {
+        anyhow::bail!("a hexadecimal string has an even number of characters");
+    }
+
+    (0..text.len() / 2)
+        .map(|index| {
+            u8::from_str_radix(&text[index * 2..index * 2 + 2], 16)
+                .map_err(|error| anyhow::anyhow!("{error}"))
+        })
+        .collect()
 }
 
 /// Builds the key ring the effective configuration names.

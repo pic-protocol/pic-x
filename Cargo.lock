@@ -886,6 +886,7 @@ dependencies = [
  "pic-x-telemetry",
  "pic-x-transport",
  "pic-x-wellknown",
+ "serde_json",
  "tokio",
 ]
 

@@ -431,8 +431,10 @@ impl FileAuditSink {
     }
 
     fn seal_path(&self, day: i64) -> PathBuf {
-        self.directory
-            .join(format!("{PREFIX}{}{SEAL_SUFFIX}", civil::date_of(day).to_iso()))
+        self.directory.join(format!(
+            "{PREFIX}{}{SEAL_SUFFIX}",
+            civil::date_of(day).to_iso()
+        ))
     }
 }
 
@@ -461,8 +463,7 @@ impl AuditSink for FileAuditSink {
             // still to hand. A failure here is reported and does not stop the record being written:
             // losing the summary is bad, losing what it summarises is worse.
             if rolled && let Some(closing) = open.as_ref() {
-                let (closed, records, head) =
-                    (closing.day, closing.seq, closing.previous.clone());
+                let (closed, records, head) = (closing.day, closing.seq, closing.previous.clone());
 
                 if let Err(error) = self.seal(closed, records, &head) {
                     tracing::warn!(

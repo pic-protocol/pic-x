@@ -103,7 +103,9 @@ fn decode_with(input: &str, alphabet: &[u8; 64]) -> Option<Vec<u8>> {
             break;
         }
 
-        let value = alphabet.iter().position(|entry| *entry == character as u8)?;
+        let value = alphabet
+            .iter()
+            .position(|entry| *entry == character as u8)?;
 
         accumulator = (accumulator << 6) | value as u32;
         bits += 6;

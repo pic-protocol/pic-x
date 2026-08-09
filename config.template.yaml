@@ -224,9 +224,19 @@
 ##                   before it, so an edit, a removed line or a missing day stops the chain verifying
 ##
 ## That is tamper *evidence*, not prevention: anyone who can write the files can rewrite the chain
-## from where they changed it. What it catches is the ordinary case — and the head of the chain is
-## one digest that stands for everything before it, which is what makes attesting to it elsewhere
-## possible later. `pic-x audit verify --directory <dir>` checks a trail and prints that head.
+## from where they changed it, and the result verifies against itself.
+##
+## What catches *that* is the **seal**. Every day the trail closes, the head is written beside it and
+## emitted to the log stream — and, when `keys` below is on, signed. The log stream leaves this
+## machine, so the attestation does too: anyone holding an earlier seal can tell that the trail no
+## longer agrees with it, and check the signature against the published key set without trusting the
+## machine that produced it.
+##
+## `pic-x audit verify --directory <dir> [--keys <jwks>]` checks all of it.
+##
+## It is still not proof against somebody who owns the host, because the signing key is on the same
+## volume. Making it so means keeping the key somewhere they cannot reach — which is what the key
+## manager contract exists to allow.
 
 # audit:
 #   sink: file
