@@ -35,13 +35,13 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use pic_x_core::{AuditError, AuditEvent, AuditSink, BoxFuture, Pseudonymizer};
+use pic_x_core::{AuditError, AuditEvent, AuditSink, BoxFuture, KeyManager, Pseudonymizer};
 
 use super::civil::{self, Date};
 
@@ -51,6 +51,9 @@ type Result<T> = std::result::Result<T, AuditError>;
 /// What a file of records is called, either side of the date.
 const PREFIX: &str = "audit-";
 const SUFFIX: &str = ".jsonl";
+
+/// What a seal is called, beside the day it closes.
+const SEAL_SUFFIX: &str = ".seal";
 
 /// The digest the first record of a trail names as its predecessor.
 ///
@@ -107,6 +110,65 @@ impl Record {
     }
 }
 
+/// What a seal attests to: a day of the trail, and where the chain stood at the end of it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SealBody {
+    /// The day this seal closes, as `YYYY-MM-DD`.
+    pub day: String,
+    /// When it was sealed, RFC 3339 in UTC.
+    pub at: String,
+    /// How many records the whole trail held at that point.
+    pub records: u64,
+    /// The digest of the last record — one value that stands for every record before it.
+    pub head: String,
+}
+
+/// A statement about the trail that can leave the machine and still be checked.
+///
+/// # What this is for
+///
+/// The chain makes tampering *detectable by whoever holds the trail*. It does not help against
+/// somebody who can rewrite the files, because they can recompute every digest from the point they
+/// changed and the result verifies again.
+///
+/// What defeats that is the head **leaving**. A seal is the head in a form that can travel — to a log
+/// collector, to a monitoring system, to another host — and, when a key ring is composed, signed, so
+/// that whoever received it can check it against the published key set without trusting the sender.
+/// Anyone holding yesterday's seal can then tell that today's trail no longer agrees with it.
+///
+/// The seal is written beside the trail *and* emitted to the log stream, and the second is the one
+/// that matters: a seal that never leaves the volume it attests to is worth as little as the chain
+/// it summarises.
+///
+/// It is still not proof against an attacker who owns the host — the signing key is on the same
+/// volume. Making it so means keeping the key where they cannot reach it, which is what the
+/// [`KeyManager`] contract exists to allow.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Seal {
+    /// What is attested, and the only thing the signature covers.
+    pub body: SealBody,
+    /// The key that signed it, when one was available.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub kid: Option<String>,
+    /// The algorithm it was signed with.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub algorithm: Option<String>,
+    /// The signature over `body`, lowercase hex.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub signature: Option<String>,
+}
+
+impl Seal {
+    /// Returns the exact bytes a signature covers.
+    ///
+    /// Public because verifying happens elsewhere — in whatever holds the published key set — and a
+    /// verifier that reconstructs these bytes by hand eventually reconstructs them differently.
+    pub fn signed_bytes(&self) -> Result<Vec<u8>> {
+        serde_json::to_vec(&self.body)
+            .map_err(|error| AuditError::backend(format!("describing a seal: {error}")))
+    }
+}
+
 /// The file currently being appended to.
 struct Open {
     day: i64,
@@ -121,6 +183,7 @@ pub struct FileAuditSink {
     service_name: String,
     service_version: String,
     retention: Duration,
+    keys: Option<Arc<dyn KeyManager>>,
     open: Mutex<Option<Open>>,
 }
 
@@ -137,8 +200,20 @@ impl FileAuditSink {
             service_name: service_name.into(),
             service_version: service_version.into(),
             retention,
+            keys: None,
             open: Mutex::new(None),
         }
+    }
+
+    /// Signs every seal with `keys`.
+    ///
+    /// Without this the seals are still written and still record where the chain stood, which is
+    /// worth something to whoever kept the previous one. The signature is what makes a seal
+    /// checkable by somebody who does not trust the machine that produced it.
+    pub fn sealed_by(mut self, keys: Arc<dyn KeyManager>) -> Self {
+        self.keys = Some(keys);
+
+        self
     }
 
     /// Returns the directory the trail lives in.
@@ -186,6 +261,9 @@ impl FileAuditSink {
             fs::remove_file(entry.path()).map_err(|error| {
                 AuditError::backend(format!("removing {}: {error}", entry.path().display()))
             })?;
+            // The seal goes with the day it attests to: a seal for records nobody kept is a claim
+            // nobody can check.
+            let _ = fs::remove_file(self.seal_path(day));
             removed += 1;
 
             tracing::info!(
@@ -197,6 +275,71 @@ impl FileAuditSink {
         }
 
         Ok(removed)
+    }
+
+    /// Attests to where the chain stood at the end of `day`, and lets the attestation leave.
+    ///
+    /// Written beside the trail and emitted to the log stream. A failure to seal is reported and does
+    /// not stop the trail: losing the summary is bad, losing the records it summarises is worse.
+    fn seal(&self, day: i64, records: u64, head: &str) -> Result<()> {
+        let body = SealBody {
+            day: civil::date_of(day).to_iso(),
+            at: civil::to_rfc3339(now()),
+            records,
+            head: head.to_owned(),
+        };
+
+        let payload = serde_json::to_vec(&body)
+            .map_err(|error| AuditError::backend(format!("describing a seal: {error}")))?;
+
+        let signed = match &self.keys {
+            Some(keys) => match keys.sign(&payload) {
+                Ok(signature) => Some(signature),
+                Err(error) => {
+                    // A key ring that is not ready yet is the ordinary case at the very first
+                    // rollover, and an unsigned seal is still worth writing.
+                    tracing::warn!(
+                        event.name = "audit.seal_unsigned",
+                        component = "audit",
+                        day = %body.day,
+                        error = %error,
+                        "the seal was written without a signature"
+                    );
+
+                    None
+                }
+            },
+            None => None,
+        };
+
+        let seal = Seal {
+            kid: signed.as_ref().map(|s| s.key_id().to_string()),
+            algorithm: signed.as_ref().map(|s| s.algorithm().to_owned()),
+            signature: signed.as_ref().map(|s| hex(s.bytes())),
+            body,
+        };
+
+        let path = self.seal_path(day);
+        let text = serde_json::to_string_pretty(&seal)
+            .map_err(|error| AuditError::backend(format!("describing a seal: {error}")))?;
+
+        fs::write(&path, text.as_bytes())
+            .map_err(|error| AuditError::backend(format!("writing {}: {error}", path.display())))?;
+        restrict(&path, 0o600)?;
+
+        // The half that matters: the log stream leaves this machine, so the attestation does too.
+        tracing::info!(
+            event.name = "audit.sealed",
+            component = "audit",
+            audit.day = %seal.body.day,
+            audit.records = seal.body.records,
+            audit.head = %seal.body.head,
+            audit.kid = seal.kid.as_deref(),
+            audit.signature = seal.signature.as_deref(),
+            "sealed a day of the audit trail"
+        );
+
+        Ok(())
     }
 
     /// Returns the file for `day`, opening or rolling over as needed.
@@ -285,6 +428,11 @@ impl FileAuditSink {
         self.directory
             .join(format!("{PREFIX}{}{SUFFIX}", civil::date_of(day).to_iso()))
     }
+
+    fn seal_path(&self, day: i64) -> PathBuf {
+        self.directory
+            .join(format!("{PREFIX}{}{SEAL_SUFFIX}", civil::date_of(day).to_iso()))
+    }
 }
 
 impl AuditSink for FileAuditSink {
@@ -307,6 +455,24 @@ impl AuditSink for FileAuditSink {
                 .map_err(|_| AuditError::backend("the audit file lock is poisoned"))?;
 
             let rolled = !open.as_ref().is_some_and(|current| current.day == day);
+
+            // The day that is closing gets its seal before the next one is opened, while its head is
+            // still to hand. A failure here is reported and does not stop the record being written:
+            // losing the summary is bad, losing what it summarises is worse.
+            if rolled && let Some(closing) = open.as_ref() {
+                let (closed, records, head) =
+                    (closing.day, closing.seq, closing.previous.clone());
+
+                if let Err(error) = self.seal(closed, records, &head) {
+                    tracing::warn!(
+                        event.name = "audit.seal_failed",
+                        component = "audit",
+                        error = %error,
+                        "a day of the trail was closed without a seal"
+                    );
+                }
+            }
+
             self.open_for(&mut open, day)?;
 
             // A new day is the natural moment to drop the oldest one: it happens once, it happens
@@ -365,6 +531,19 @@ impl AuditSink for FileAuditSink {
                     .file
                     .sync_all()
                     .map_err(|error| AuditError::backend(format!("closing the trail: {error}")))?;
+
+                let (day, records, head) = (current.day, current.seq, current.previous.clone());
+
+                // After the last record and after the flush: a seal that named a head the disk does
+                // not hold would attest to something that never happened.
+                if let Err(error) = self.seal(day, records, &head) {
+                    tracing::warn!(
+                        event.name = "audit.seal_failed",
+                        component = "audit",
+                        error = %error,
+                        "the trail was closed without a seal"
+                    );
+                }
             }
 
             *open = None;
@@ -383,6 +562,13 @@ pub struct Verification {
     pub days: usize,
     /// The digest of the last record, which is what attests to everything before it.
     pub head: String,
+    /// Every seal found beside the trail, already checked against the records it attests to.
+    ///
+    /// Their *signatures* are not checked here, and deliberately: doing so needs the published key
+    /// set, and a verifier that fetched it from the machine under suspicion would be checking a
+    /// signature against a key the same attacker could have replaced. The caller supplies the keys it
+    /// trusts — see [`pic_x_std::keys::verify_signature`](crate::keys::verify_signature).
+    pub seals: Vec<Seal>,
 }
 
 /// Reads a whole trail and checks that nothing in it has been altered.
@@ -404,6 +590,7 @@ pub fn verify(directory: &Path) -> anyhow::Result<Verification> {
     let mut expected_previous = GENESIS.to_owned();
     let mut expected_seq = 1_u64;
     let mut records = 0_u64;
+    let mut seals = Vec::new();
 
     for day in &days {
         let path = directory.join(format!("{PREFIX}{}{SUFFIX}", civil::date_of(*day).to_iso()));
@@ -447,12 +634,43 @@ pub fn verify(directory: &Path) -> anyhow::Result<Verification> {
             expected_seq += 1;
             records += 1;
         }
+
+        // A day that was sealed has to agree with the day that was read. This catches the edit the
+        // chain alone cannot: a trail rewritten from the beginning verifies against itself, and
+        // stops agreeing with a seal somebody kept a copy of.
+        let sealed = directory.join(format!(
+            "{PREFIX}{}{SEAL_SUFFIX}",
+            civil::date_of(*day).to_iso()
+        ));
+
+        if sealed.is_file() {
+            let seal: Seal = serde_json::from_str(
+                &fs::read_to_string(&sealed)
+                    .with_context(|| format!("reading {}", sealed.display()))?,
+            )
+            .with_context(|| format!("parsing {}", sealed.display()))?;
+
+            if seal.body.head != expected_previous || seal.body.records != records {
+                bail!(
+                    "{} attests to {} record(s) ending at {}, and the trail holds {} ending at {}: \
+                     the records have been rewritten since they were sealed",
+                    sealed.display(),
+                    seal.body.records,
+                    seal.body.head,
+                    records,
+                    expected_previous
+                );
+            }
+
+            seals.push(seal);
+        }
     }
 
     Ok(Verification {
         records,
         days: days.len(),
         head: expected_previous,
+        seals,
     })
 }
 

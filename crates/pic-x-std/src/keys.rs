@@ -440,6 +440,30 @@ impl DirectoryKeyManager {
     }
 }
 
+/// Reports whether `signature` over `payload` was made by the key `jwk` publishes.
+///
+/// It lives here rather than beside whatever produced the signature because this is where the
+/// cryptography is, and because the caller has to choose the key set deliberately: verifying against
+/// keys fetched from the machine under suspicion checks a signature against a key the same attacker
+/// could have replaced.
+///
+/// Anything that is not an Ed25519 key this build understands answers `false` rather than erroring:
+/// a verifier that distinguishes "wrong signature" from "key I could not read" hands an attacker a
+/// way to tell which of the two they achieved.
+pub fn verify_signature(jwk: &Jwk, payload: &[u8], signature: &[u8]) -> bool {
+    if jwk.kty != "OKP" || jwk.crv.as_deref() != Some(CURVE) || jwk.alg != ALGORITHM {
+        return false;
+    }
+
+    let Some(public) = encoding::from_base64url(&jwk.x) else {
+        return false;
+    };
+
+    ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, public)
+        .verify(payload, signature)
+        .is_ok()
+}
+
 /// Returns the RFC 7638 thumbprint of an Ed25519 public key, which is what names it.
 ///
 /// The name is derived from the key rather than assigned to it, so two deployments never disagree

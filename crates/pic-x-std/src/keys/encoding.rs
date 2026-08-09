@@ -41,6 +41,11 @@ pub fn pem(label: &str, der: &[u8]) -> String {
     out
 }
 
+/// Reads what a JWK carries: URL-safe, unpadded.
+pub fn from_base64url(input: &str) -> Option<Vec<u8>> {
+    decode_with(input, URL_SAFE)
+}
+
 /// Reads back what [`pem`] wrote, ignoring the armour and any line breaks inside it.
 pub fn from_pem(text: &str) -> Option<Vec<u8>> {
     let body: String = text
@@ -84,6 +89,11 @@ fn encode(input: &[u8], alphabet: &[u8; 64], pad: bool) -> String {
 
 /// Decodes standard base64, tolerating the absence of padding.
 fn decode(input: &str) -> Option<Vec<u8>> {
+    decode_with(input, STANDARD)
+}
+
+/// Decodes against `alphabet`, tolerating the absence of padding.
+fn decode_with(input: &str, alphabet: &[u8; 64]) -> Option<Vec<u8>> {
     let mut out = Vec::with_capacity(input.len() / 4 * 3);
     let mut accumulator: u32 = 0;
     let mut bits = 0_u32;
@@ -93,9 +103,7 @@ fn decode(input: &str) -> Option<Vec<u8>> {
             break;
         }
 
-        let value = STANDARD
-            .iter()
-            .position(|entry| *entry == character as u8)?;
+        let value = alphabet.iter().position(|entry| *entry == character as u8)?;
 
         accumulator = (accumulator << 6) | value as u32;
         bits += 6;
@@ -157,6 +165,20 @@ mod tests {
 
             assert_eq!(
                 from_pem(&pem("PRIVATE KEY", &material)),
+                Some(material.clone()),
+                "round-tripping {length} bytes"
+            );
+        }
+    }
+
+    #[test]
+    fn test_the_url_alphabet_round_trips_too() {
+        // What a JWK carries, and therefore what a signature verifier has to be able to read back.
+        for length in [0, 1, 2, 32, 64] {
+            let material: Vec<u8> = (0..length).map(|index| (index * 11 % 253) as u8).collect();
+
+            assert_eq!(
+                from_base64url(&base64url(&material)),
                 Some(material.clone()),
                 "round-tripping {length} bytes"
             );
