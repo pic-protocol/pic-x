@@ -32,6 +32,7 @@
 //! they are not worth moving off the runtime thread for. A deployment that audits per data-plane
 //! request should implement the contract over something that batches.
 
+use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -587,10 +588,15 @@ pub fn verify(directory: &Path) -> anyhow::Result<Verification> {
         .collect();
     days.sort_unstable();
 
+    // Every seal, indexed by the point in the trail it attests to. A seal is a *checkpoint over a
+    // prefix*, not a statement about a finished day: a process that restarts and appends more records
+    // to the same day has not tampered with anything, and its earlier seal still has to hold.
+    let seals = read_seals(directory, &days)?;
+    let mut checked: Vec<Seal> = Vec::new();
+
     let mut expected_previous = GENESIS.to_owned();
     let mut expected_seq = 1_u64;
     let mut records = 0_u64;
-    let mut seals = Vec::new();
 
     for day in &days {
         let path = directory.join(format!("{PREFIX}{}{SUFFIX}", civil::date_of(*day).to_iso()));
@@ -633,45 +639,76 @@ pub fn verify(directory: &Path) -> anyhow::Result<Verification> {
             expected_previous = record.digest;
             expected_seq += 1;
             records += 1;
-        }
 
-        // A day that was sealed has to agree with the day that was read. This catches the edit the
-        // chain alone cannot: a trail rewritten from the beginning verifies against itself, and
-        // stops agreeing with a seal somebody kept a copy of.
-        let sealed = directory.join(format!(
-            "{PREFIX}{}{SEAL_SUFFIX}",
-            civil::date_of(*day).to_iso()
-        ));
+            // The moment the trail reaches the point a seal attests to, the head has to be the one
+            // the seal names. This is the check the chain alone cannot make: a trail rewritten from
+            // the beginning verifies against itself, and stops agreeing with a seal.
+            if let Some(seal) = seals.get(&records) {
+                if seal.body.head != expected_previous {
+                    bail!(
+                        "the seal for {} attests that record {} was {}, and the trail now has {}: \
+                         the records have been rewritten since they were sealed",
+                        seal.body.day,
+                        records,
+                        seal.body.head,
+                        expected_previous
+                    );
+                }
 
-        if sealed.is_file() {
-            let seal: Seal = serde_json::from_str(
-                &fs::read_to_string(&sealed)
-                    .with_context(|| format!("reading {}", sealed.display()))?,
-            )
-            .with_context(|| format!("parsing {}", sealed.display()))?;
-
-            if seal.body.head != expected_previous || seal.body.records != records {
-                bail!(
-                    "{} attests to {} record(s) ending at {}, and the trail holds {} ending at {}: \
-                     the records have been rewritten since they were sealed",
-                    sealed.display(),
-                    seal.body.records,
-                    seal.body.head,
-                    records,
-                    expected_previous
-                );
+                checked.push(seal.clone());
             }
-
-            seals.push(seal);
         }
+    }
+
+    // A seal for records the trail no longer holds is the case the chain by itself misses entirely:
+    // cut the tail off and what remains is perfectly self-consistent. The seal is what makes a
+    // truncation visible.
+    if let Some(beyond) = seals.keys().find(|point| **point > records) {
+        let seal = &seals[beyond];
+
+        bail!(
+            "the seal for {} attests to {} record(s) and the trail holds {}: {} record(s) have been \
+             removed from the end",
+            seal.body.day,
+            seal.body.records,
+            records,
+            seal.body.records - records
+        );
     }
 
     Ok(Verification {
         records,
         days: days.len(),
         head: expected_previous,
-        seals,
+        seals: checked,
     })
+}
+
+/// Reads every seal beside the trail, indexed by the point in it each one attests to.
+fn read_seals(directory: &Path, days: &[i64]) -> anyhow::Result<BTreeMap<u64, Seal>> {
+    use anyhow::Context;
+
+    let mut seals = BTreeMap::new();
+
+    for day in days {
+        let path = directory.join(format!(
+            "{PREFIX}{}{SEAL_SUFFIX}",
+            civil::date_of(*day).to_iso()
+        ));
+
+        if !path.is_file() {
+            continue;
+        }
+
+        let seal: Seal = serde_json::from_str(
+            &fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?,
+        )
+        .with_context(|| format!("parsing {}", path.display()))?;
+
+        seals.insert(seal.body.records, seal);
+    }
+
+    Ok(seals)
 }
 
 /// Returns which day a file holds records for, or nothing when it is not one of ours.

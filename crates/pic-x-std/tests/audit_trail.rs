@@ -263,3 +263,138 @@ async fn test_an_empty_directory_verifies_as_an_empty_trail() {
     assert_eq!(verified.records, 0);
     assert_eq!(verified.days, 0);
 }
+
+/// A key ring in a directory of its own, for the tests that need a signature.
+#[cfg(feature = "keys")]
+fn ring(name: &str) -> std::sync::Arc<pic_x_std::keys::DirectoryKeyManager> {
+    use pic_x_core::KeyManager;
+    use pic_x_std::keys::{DirectoryKeyManager, KeyPolicy};
+
+    let path = std::env::temp_dir().join(format!("pic-x-trail-keys-{name}"));
+    let _ = fs::remove_dir_all(&path);
+
+    let keys = std::sync::Arc::new(DirectoryKeyManager::new(
+        path,
+        KeyPolicy {
+            publish_ahead: Duration::from_secs(3600),
+            rotate_every: Duration::from_secs(86_400),
+            retain: Duration::from_secs(7 * 86_400),
+        },
+    ));
+    keys.maintain().expect("the ring comes up");
+
+    keys
+}
+
+#[tokio::test]
+async fn test_closing_the_trail_seals_where_the_chain_stood() {
+    let directory = trail("sealed");
+    let sink = sink(&directory);
+    sink.prepare().expect("the trail is prepared");
+    write(&sink, 3).await;
+    sink.shutdown().await.expect("the trail is closed");
+
+    let verified = verify(&directory).expect("it verifies");
+
+    assert_eq!(verified.seals.len(), 1, "closing wrote no seal");
+    let seal = &verified.seals[0];
+    assert_eq!(seal.body.records, 3);
+    assert_eq!(
+        seal.body.head, verified.head,
+        "the seal attests to a head the trail does not have"
+    );
+}
+
+#[tokio::test]
+async fn test_a_truncated_trail_is_caught_by_its_seal() {
+    // Without a seal this is the one edit that survives: cut the tail off and what remains is
+    // perfectly self-consistent. The seal is what turns it into evidence.
+    let directory = trail("truncated-sealed");
+    let sink = sink(&directory);
+    sink.prepare().expect("the trail is prepared");
+    write(&sink, 4).await;
+    sink.shutdown().await.expect("the trail is closed");
+
+    let path = only_file(&directory);
+    let text = fs::read_to_string(&path).expect("the file reads");
+    let kept: Vec<&str> = text.lines().take(2).collect();
+    fs::write(&path, format!("{}\n", kept.join("\n"))).expect("the file is edited");
+
+    let error = verify(&directory).expect_err("a truncated trail must not verify");
+
+    let why = format!("{error:#}");
+    assert!(why.contains("removed from the end"), "{why}");
+    assert!(why.contains("attests to 4"), "{why}");
+}
+
+#[tokio::test]
+async fn test_a_trail_rewritten_from_the_beginning_stops_agreeing_with_its_seal() {
+    // The attacker the chain alone cannot catch: rewrite every record and recompute every digest.
+    // The result verifies against itself — and no longer matches what was sealed.
+    let directory = trail("rewritten");
+    let sink = sink(&directory);
+    sink.prepare().expect("the trail is prepared");
+    write(&sink, 3).await;
+    sink.shutdown().await.expect("the trail is closed");
+
+    let sealed_head = verify(&directory).expect("it verifies").head;
+
+    // A whole new trail of the same length, written by the same code — the strongest forgery a
+    // process with write access can produce.
+    let path = only_file(&directory);
+    fs::remove_file(&path).expect("the day is removed");
+    let forger = FileAuditSink::new(&directory, "pic-x", "9.9.9", Duration::from_secs(90 * 86_400));
+    forger.prepare().expect("the trail is prepared");
+    write(&forger, 3).await;
+
+    let error = verify(&directory).expect_err("a rewritten trail must not verify");
+
+    assert!(
+        format!("{error:#}").contains("rewritten since they were sealed"),
+        "{error:#}"
+    );
+    assert_ne!(sealed_head, "", "the fixture is meaningless without a head");
+}
+
+#[cfg(feature = "keys")]
+#[tokio::test]
+async fn test_a_seal_is_signed_by_the_key_ring_and_verifies_against_the_published_set() {
+    use pic_x_core::KeyManager;
+
+    let directory = trail("signed");
+    let keys = ring("signed");
+    let sink = sink(&directory).sealed_by(keys.clone());
+    sink.prepare().expect("the trail is prepared");
+    write(&sink, 2).await;
+    sink.shutdown().await.expect("the trail is closed");
+
+    let verified = verify(&directory).expect("it verifies");
+    let seal = verified.seals.first().expect("a seal was written");
+
+    let signature = seal.signature.as_deref().expect("the seal is signed");
+    let kid = seal.kid.as_deref().expect("the seal names its key");
+    assert_eq!(seal.algorithm.as_deref(), Some("EdDSA"));
+
+    // The published key set — what a verifier that does not trust this machine would have fetched
+    // from somewhere it does.
+    let published = keys.public_keys().expect("the set reads");
+    let jwk = published
+        .iter()
+        .find(|key| key.kid == kid)
+        .expect("the key that signed is published");
+
+    let bytes = seal.signed_bytes().expect("the signed bytes rebuild");
+    let raw: Vec<u8> = (0..signature.len() / 2)
+        .map(|i| u8::from_str_radix(&signature[i * 2..i * 2 + 2], 16).expect("hex"))
+        .collect();
+
+    assert!(
+        pic_x_std::keys::verify_signature(jwk, &bytes, &raw),
+        "the signature does not verify against the published key"
+    );
+
+    // And it is a signature over *this* seal, not over anything that looks like one.
+    let mut tampered = bytes.clone();
+    tampered.push(b' ');
+    assert!(!pic_x_std::keys::verify_signature(jwk, &tampered, &raw));
+}
