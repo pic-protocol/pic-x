@@ -2,11 +2,12 @@
 //!
 //! Two surfaces, one file, because they answer the same shape of question at two scopes:
 //!
-//! * the **server** — the control plane — says what this deployment is and which issuers it hosts,
-//!   and publishes the key that signs its system trail. It issues no tokens, so it has no issuer
-//!   discovery of its own;
-//! * a **realm** — an issuer — says what a client integrating against it needs (its issuer URL, where
-//!   its keys are), and publishes those keys.
+//! * the **server** — the control plane — says what this deployment is and which issuers it hosts. It
+//!   signs its system trail with an operations key, but that key's public half is an internal matter
+//!   reached through the administrative surface, never served here; and it issues no tokens, so it
+//!   publishes no key set and has no issuer discovery of its own;
+//! * a **realm** — an issuer — says what a client integrating against it needs (its issuer URL, its
+//!   endpoints, where its token keys are), and publishes those token keys at its `jwks_uri`.
 //!
 //! # Why the server lists realms rather than being one
 //!
@@ -43,11 +44,13 @@ pub(crate) struct KeyRing {
 }
 
 /// What the server document says about this deployment.
+///
+/// No key set: the server's operations key is internal, and it issues nothing, so the document is the
+/// deployment's identity and the realms it lists — nothing to verify a signature against.
 #[derive(Clone)]
 pub(crate) struct Server {
     pub(crate) product: String,
     pub(crate) version: String,
-    pub(crate) jwks_uri: String,
     pub(crate) profiles: Vec<ProfileEntry>,
 }
 
@@ -72,10 +75,19 @@ pub(crate) struct CatalogRealm {
 }
 
 /// What a realm's own configuration document says.
+///
+/// The endpoints are absolute URLs, each rooted at the realm's issuer (or its mount path when it was
+/// told no public name). The service assembles them once, where the issuer is known; the handler only
+/// renders. Everything below the endpoints in the document is the profile's fixed capability set —
+/// hardcoded for now, and read from configuration once dynamic loading exists.
 #[derive(Clone)]
 pub(crate) struct RealmMeta {
     pub(crate) issuer: Option<String>,
+    pub(crate) token_endpoint: String,
+    pub(crate) revocation_endpoint: String,
     pub(crate) jwks_uri: String,
+    pub(crate) attestation_endpoint: String,
+    pub(crate) trust_anchors_endpoint: String,
 }
 
 /// Answers the request an operator makes first: opening the address in a browser.
@@ -90,30 +102,93 @@ pub(crate) async fn root(State(server): State<Server>) -> impl IntoResponse {
         .sum();
 
     format!(
-        "{} {}\n\nServer:  /.well-known/server-configuration\nKeys:    {}\nRealms:  {realms} listed\n",
-        server.product, server.version, server.jwks_uri
+        "{} {}\n\nServer:  /.well-known/server-configuration\nRealms:  {realms} listed\n",
+        server.product, server.version
     )
 }
 
 /// Says what this deployment is and which issuers it hosts.
 ///
-/// The generic envelope: product, version, the server's own key set, and a profile array. A client
-/// that speaks a profile finds it here and follows the links to the realms under it.
+/// The generic envelope: product, version, and a profile array. A client that speaks a profile finds
+/// it here and follows the links to the realms under it. There is no key set — the server issues
+/// nothing, and the key that seals its trail is not published here.
 pub(crate) async fn server_configuration(State(server): State<Server>) -> impl IntoResponse {
     Json(serde_json::json!({
         "product": server.product,
         "version": server.version,
-        "jwks_uri": server.jwks_uri,
         "profiles": server.profiles,
     }))
 }
 
 /// The issuer discovery a client integrates a realm against.
+///
+/// The `issuer` and the endpoint URLs are the realm's own; everything else is the PIC profile 0.2
+/// capability set this build implements, fixed for now. The endpoints below `jwks_uri` are advertised
+/// ahead of the issuance they describe: a client learns the contract here, and the handlers that
+/// answer `/token`, `/revoke`, `/attestations` and `/trust-anchors` arrive with token issuance.
 pub(crate) async fn realm_configuration(State(realm): State<RealmMeta>) -> impl IntoResponse {
     Json(serde_json::json!({
-        "profile": PIC_PROFILE,
         "issuer": realm.issuer,
+        "profile": PIC_PROFILE,
+
+        "token_endpoint": realm.token_endpoint,
+        "revocation_endpoint": realm.revocation_endpoint,
         "jwks_uri": realm.jwks_uri,
+
+        "attestation_endpoint": realm.attestation_endpoint,
+        "trust_anchors_endpoint": realm.trust_anchors_endpoint,
+
+        "grant_types_supported": [
+            "urn:ietf:params:oauth:grant-type:token-exchange"
+        ],
+
+        "subject_token_types_supported": [
+            "urn:ietf:params:oauth:token-type:access_token",
+            "https://pic-protocol.org/definitions/token-types/continuity"
+        ],
+
+        "issued_token_types_supported": [
+            "https://pic-protocol.org/definitions/token-types/continuity"
+        ],
+
+        "token_endpoint_auth_methods_supported": [
+            "none"
+        ],
+
+        "token_exchange_parameters_supported": [
+            "continuity_proposal",
+            "continuity_proposal_type"
+        ],
+
+        "pca": {
+            "format": "json",
+            "execution_contract_binding_methods_supported": [
+                "embedded"
+            ]
+        },
+
+        "continuity_proposals": {
+            "parameter": "continuity_proposal",
+            "type_parameter": "continuity_proposal_type",
+            "types_supported": [
+                "https://pic-protocol.org/definitions/proposal-types/continuity-initial",
+                "https://pic-protocol.org/definitions/proposal-types/continuity"
+            ]
+        },
+
+        "continuity": {
+            "token_type": "https://pic-protocol.org/definitions/token-types/continuity",
+            "transition_signing_alg_values_supported": [
+                "ES256"
+            ],
+            "formats_supported": [
+                "jwt"
+            ],
+            "continuity_modes_supported": [
+                "centralized-continuity",
+                "decentralized-continuity"
+            ]
+        }
     }))
 }
 

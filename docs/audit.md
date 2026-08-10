@@ -27,14 +27,14 @@ task audit:verify
 Explicit directory:
 
 ```sh
-pic-x audit verify --directory /var/lib/pic-x/audit
+pic-x audit verify --directory /var/lib/pic-x/operations/audit
 ```
 
 With seal signature checks:
 
 ```sh
 pic-x audit verify \
-  --directory /var/lib/pic-x/audit \
+  --directory /var/lib/pic-x/operations/audit \
   --keys /backups/pic-x/jwks-2026-08-09.json
 ```
 
@@ -43,11 +43,17 @@ read from the same machine proves less.
 
 ## Export Keys for Audit Evidence
 
+The keys that seal the trail are the operations ring's, and that ring is never served over HTTP.
+Export its public halves from the ring on disk — it works with the server stopped:
+
 ```sh
-curl -sf https://pic-x.example.com/.well-known/jwks.json > /backups/pic-x/jwks-2026-08-09.json
+pic-x keys export --directory /var/lib/pic-x/operations/keys > /backups/pic-x/jwks-2026-08-09.json
 ```
 
-Keep exported JWKS files for at least as long as the audit trail and the key retention window.
+Keep exported key sets for at least as long as the audit trail. An operations key's public half is
+kept until `audit.retention` even though its private half is deleted at `keys.retain`, so a seal
+verifies for as long as the records it covers are kept — against a set exported before the key was
+forgotten.
 
 ## Pseudonymisation
 
@@ -62,8 +68,8 @@ audit:
 ```
 
 `key_ref` is resolved by the configured secret store. Rotate the secret and `key_version` together.
-The server keeps a witness under `state/` so a changed key with the same version is detected on the
-next start.
+The server keeps a witness under `operations/state/` so a changed key with the same version is
+detected on the next start.
 
 ## Operating Rules
 

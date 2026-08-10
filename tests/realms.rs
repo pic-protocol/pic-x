@@ -1,9 +1,11 @@
 //! Two realms, one server, against the real binary.
 //!
-//! The whole multi-tenant claim in one run: a deployment hosts two issuers; each publishes its own
-//! discovery and its own key set at its own path; the server lists the one that opted in and hides
-//! the one that did not; and a single process — one maintenance loop, no task per realm — gives each
-//! realm a *different* signing key. If any of that regresses, this fails.
+//! The whole multi-tenant claim in one run: a deployment hosts two issuers; each serves its own
+//! discovery at its own path; the server lists the one that opted in and hides the one that did not;
+//! and a single process — one maintenance loop, no task per realm — seals each realm's trail with a
+//! *different* key. Those sealing keys are the realms' operations keys, which are internal and never
+//! served over HTTP, so the "different key" claim is checked on disk; the HTTP key set is the realm's
+//! token ring, empty until issuance exists. If any of that regresses, this fails.
 
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -154,18 +156,25 @@ fn config_in(volume: &std::path::Path) -> PathBuf {
     path
 }
 
-/// Returns the `kid`s a JWKS document publishes.
+/// Returns the `kid`s a JWKS document — or a `ring.json` — names.
 fn kids(body: &str) -> Vec<String> {
     // A hand parse rather than a JSON dependency: the field is unambiguous and the test is about
-    // whether two documents differ, not about the shape of a key.
-    body.match_indices(r#""kid":""#)
-        .map(|(at, marker)| {
+    // whether two documents differ, not about the shape of a key. It reads a served key set and an
+    // on-disk ring the same way — the served set is compact (`"kid":"…"`) and the ring is
+    // pretty-printed (`"kid": "…"`), so it skips to the value's opening quote rather than assuming one.
+    body.match_indices(r#""kid""#)
+        .filter_map(|(at, marker)| {
             let rest = &body[at + marker.len()..];
-            rest.find('"')
-                .map(|end| rest[..end].to_owned())
-                .unwrap_or_default()
+            let open = rest.find('"')?;
+            let value = &rest[open + 1..];
+            value.find('"').map(|end| value[..end].to_owned())
         })
         .collect()
+}
+
+/// Reads a file to a string, or empty when it is not there.
+fn read(path: &std::path::Path) -> String {
+    fs::read_to_string(path).unwrap_or_default()
 }
 
 #[test]
@@ -202,41 +211,50 @@ fn test_two_realms_each_get_their_own_issuer_surface_and_key() {
         "the unlisted realm is unreachable: {beta_status}"
     );
 
-    // The heart of it: one process, one maintenance loop, and yet the server and each realm sign with
-    // a *different* key. If the rings were shared, or the loop only maintained one, these would match.
-    let (_, server_keys) = get(&server.web, "/.well-known/jwks.json");
-    let (_, acme_keys) = get(&server.web, "/realms/acme/.well-known/jwks.json");
-    let (_, beta_keys) = get(&server.web, "/realms/beta/.well-known/jwks.json");
-
-    let server_kids = kids(&server_keys);
-    let acme_kids = kids(&acme_keys);
-    let beta_kids = kids(&beta_keys);
-
-    assert_eq!(
-        server_kids.len(),
-        1,
-        "the server published no key: {server_keys}"
+    // Over HTTP, a realm's key set is its *token* ring — empty until issuance exists — and the server
+    // publishes none at all. The sealing keys are checked on disk below.
+    let (server_keys_status, _) = get(&server.web, "/.well-known/jwks.json");
+    assert!(
+        server_keys_status.contains("404"),
+        "the server should publish no key set of its own: {server_keys_status}"
     );
-    assert_eq!(acme_kids.len(), 1, "acme published no key: {acme_keys}");
-    assert_eq!(beta_kids.len(), 1, "beta published no key: {beta_keys}");
+    let (acme_keys_status, acme_token_keys) = get(&server.web, "/realms/acme/keys");
+    assert!(acme_keys_status.contains("200"), "{acme_keys_status}");
+    assert_eq!(
+        acme_token_keys.trim(),
+        r#"{"keys":[]}"#,
+        "the realm should publish no token keys yet: {acme_token_keys}"
+    );
+    // The old realm key path is gone; the key set moved to `{issuer}/keys`.
+    let (old_path_status, _) = get(&server.web, "/realms/acme/.well-known/jwks.json");
+    assert!(
+        old_path_status.contains("404"),
+        "the realm key set should have moved off the well-known path: {old_path_status}"
+    );
 
+    server.stop();
+
+    // The heart of it, checked on disk since operations keys never leave it: one process, one
+    // maintenance loop, and yet the server and each realm seal with a *different* key. If the rings
+    // were shared, or the loop only maintained one, these would match.
+    let vol = volume.join("vol");
+    let server_kids = kids(&read(&vol.join("operations/keys/ring.json")));
+    let acme_kids = kids(&read(&vol.join("realms/acme/operations/keys/ring.json")));
+    let beta_kids = kids(&read(&vol.join("realms/beta/operations/keys/ring.json")));
+
+    assert!(!server_kids.is_empty(), "the server sealed with no key");
+    assert!(!acme_kids.is_empty(), "acme sealed with no key");
+    assert!(!beta_kids.is_empty(), "beta sealed with no key");
     assert_ne!(
         server_kids, acme_kids,
         "the server and acme share a signing key"
     );
     assert_ne!(acme_kids, beta_kids, "two realms share a signing key");
 
-    server.stop();
-
-    // The realms left their material behind, each in its own directory — isolation on disk.
-    let vol = volume.join("vol");
+    // Each realm left its material behind, in its own directory — isolation on disk.
     for realm in ["acme", "beta"] {
         assert!(
-            vol.join(format!("realms/{realm}/keys/ring.json")).exists(),
-            "{realm} has no key ring of its own"
-        );
-        assert!(
-            vol.join(format!("realms/{realm}/secrets/audit-pseudonym"))
+            vol.join(format!("realms/{realm}/operations/secrets/audit-pseudonym"))
                 .exists(),
             "{realm} has no pseudonymisation key of its own"
         );

@@ -84,6 +84,30 @@ pub enum Command {
         #[command(subcommand)]
         what: AuditCommand,
     },
+    /// Work with a key ring.
+    Keys {
+        /// What to do with it.
+        #[command(subcommand)]
+        what: KeysCommand,
+    },
+}
+
+/// What can be asked of a key ring from the command line.
+#[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
+pub enum KeysCommand {
+    /// Print a ring's public keys as a JWKS document.
+    ///
+    /// The way to obtain the public half of an operations ring — the keys that seal a trail — which
+    /// is deliberately never served over HTTP. It reads the ring on disk, so it works with the server
+    /// stopped, which is exactly when a restore needs it: export from the volume before backing it up,
+    /// keep the file off the host, and check restored seals against it. Verifying against keys taken
+    /// from the machine under suspicion afterwards would check a signature against a key the same
+    /// attacker could have replaced.
+    Export {
+        /// Directory the ring lives in, e.g. `<volume>/operations/keys`.
+        #[arg(long, value_name = "DIRECTORY")]
+        directory: PathBuf,
+    },
 }
 
 /// What can be asked of an audit trail from the command line.

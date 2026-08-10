@@ -56,6 +56,11 @@ pub enum KeyState {
     Active,
     /// In the key set, no longer signing. What makes yesterday's signatures still verify.
     Retired,
+    /// In the key set for verification only: the private half has been deleted, so it can never sign
+    /// again, but the public half stays published for as long as anything it signed must still verify.
+    /// This is what lets a signature — an audit seal — keep verifying long after the key that made it
+    /// stopped signing, without keeping the private half on disk that whole time.
+    Archived,
 }
 
 impl KeyState {
@@ -65,13 +70,15 @@ impl KeyState {
             Self::Published => "published",
             Self::Active => "active",
             Self::Retired => "retired",
+            Self::Archived => "archived",
         }
     }
 
     /// Reports whether a key in this state appears in the published key set.
     ///
-    /// All three do, and that is the point of the design rather than an accident of it: a verifier
-    /// must be able to find a key before it is used and after it stops being used.
+    /// All of them do, and that is the point of the design rather than an accident of it: a verifier
+    /// must be able to find a key before it is used, while it is used, and after it stops being used —
+    /// right up until nothing it signed is expected to verify any longer.
     pub fn is_published(&self) -> bool {
         true
     }
@@ -202,6 +209,8 @@ pub struct Maintenance {
     pub activated: usize,
     /// Keys that stopped signing and stayed in the key set.
     pub retired: usize,
+    /// Keys whose private half was deleted, their public half kept in the key set for verification.
+    pub archived: usize,
     /// Keys dropped from the key set because nothing they signed is still expected to verify.
     pub forgotten: usize,
 }
@@ -209,7 +218,11 @@ pub struct Maintenance {
 impl Maintenance {
     /// Reports whether anything changed, which is what decides between a record and silence.
     pub fn is_empty(&self) -> bool {
-        self.published == 0 && self.activated == 0 && self.retired == 0 && self.forgotten == 0
+        self.published == 0
+            && self.activated == 0
+            && self.retired == 0
+            && self.archived == 0
+            && self.forgotten == 0
     }
 }
 

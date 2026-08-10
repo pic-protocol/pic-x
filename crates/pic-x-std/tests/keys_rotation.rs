@@ -55,6 +55,9 @@ fn policy() -> KeyPolicy {
         publish_ahead: Duration::from_secs(3600),
         rotate_every: Duration::from_secs(86_400),
         retain: Duration::from_secs(7 * 86_400),
+        // No separate public lifetime: a key is forgotten outright when it stops being retained, which
+        // is the behaviour the rotation cases below step through. The archive phase has its own test.
+        verify_retain: Duration::from_secs(7 * 86_400),
     }
 }
 
@@ -84,6 +87,7 @@ fn states(manager: &DirectoryKeyManager) -> Vec<(String, KeyState)> {
                 "published" => KeyState::Published,
                 "active" => KeyState::Active,
                 "retired" => KeyState::Retired,
+                "archived" => KeyState::Archived,
                 other => panic!("unknown state {other}"),
             };
 
@@ -238,6 +242,73 @@ fn test_a_retired_key_stays_published_for_exactly_as_long_as_it_was_promised() {
     assert!(
         !directory.join(format!("{first}.pem")).exists(),
         "the key left the set but its private half is still on disk"
+    );
+}
+
+#[test]
+fn test_a_keys_private_half_goes_at_retain_while_its_public_half_verifies_until_the_trail_expires() {
+    // The audit-sealing lifecycle: a seal must keep verifying for as long as the trail it covers is
+    // kept, which outlasts how long the key that made it should keep its private half on disk. So the
+    // private half is deleted at `retain`, and the public half stays — Archived — until `verify_retain`.
+    let clock = TestClock::at(1_000_000);
+    let directory = ring("archive");
+    let manager = DirectoryKeyManager::with_clock(
+        &directory,
+        KeyPolicy {
+            publish_ahead: Duration::from_secs(3600),
+            rotate_every: Duration::from_secs(86_400),
+            retain: Duration::from_secs(7 * 86_400), // private half: a week after it retires
+            verify_retain: Duration::from_secs(30 * 86_400), // public half: a month
+        },
+        Box::new(SharedClock(Arc::clone(&clock))),
+    );
+
+    // Bring the first key up and rotate once so it retires, exactly as the handover test does.
+    manager.maintain().expect("the first pass succeeds");
+    let first = manager.active_key_id().expect("a key is signing");
+    clock.advance(Duration::from_secs(23 * 3600));
+    manager.maintain().expect("a pass succeeds");
+    clock.advance(Duration::from_secs(3600));
+    manager.maintain().expect("a pass succeeds");
+    assert!(
+        directory.join(format!("{first}.pem")).exists(),
+        "a just-retired key should still hold its private half"
+    );
+
+    // Past `retain`: the private half is deleted, the public half stays and is Archived.
+    clock.advance(Duration::from_secs(8 * 86_400));
+    let report = manager.maintain().expect("a pass succeeds");
+    assert!(report.archived >= 1, "the retired key was not archived: {report:?}");
+    assert!(
+        !directory.join(format!("{first}.pem")).exists(),
+        "the private half outlived `retain`, which is the exposure this avoids"
+    );
+    assert!(
+        manager
+            .public_keys()
+            .expect("the set reads")
+            .iter()
+            .any(|key| key.kid == first.as_str()),
+        "an archived key must still verify — the seals it made are not yet past retention"
+    );
+    assert!(
+        states(&manager)
+            .iter()
+            .any(|(kid, state)| kid == first.as_str() && *state == KeyState::Archived),
+        "the key is not recorded as archived"
+    );
+
+    // Past `verify_retain`: nothing it signed is expected to verify any longer, so it goes entirely.
+    clock.advance(Duration::from_secs(25 * 86_400));
+    let report = manager.maintain().expect("a pass succeeds");
+    assert!(report.forgotten >= 1, "the archived key was never forgotten: {report:?}");
+    assert!(
+        !manager
+            .public_keys()
+            .expect("the set reads")
+            .iter()
+            .any(|key| key.kid == first.as_str()),
+        "the key outlived the verification window it was promised"
     );
 }
 

@@ -10,8 +10,7 @@
 //! it being a test: a documented procedure nobody runs stops being true quietly.
 
 use std::fs;
-use std::io::{BufRead, BufReader, Read, Write};
-use std::net::TcpStream;
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
@@ -37,7 +36,6 @@ fn scratch(name: &str) -> PathBuf {
 /// A server that is up, and what is needed to talk to it and stop it.
 struct Running {
     child: Child,
-    web: String,
     lines: mpsc::Receiver<String>,
 }
 
@@ -93,12 +91,12 @@ fn serve(config: &str, volume: &Path) -> Running {
         }
     });
 
-    let mut web = String::new();
+    let mut listening = false;
     loop {
         match lines.recv_timeout(LULL) {
             Ok(line) => {
                 if line.contains("wellknown.listening") {
-                    web = address_in(&line);
+                    listening = true;
                 }
 
                 if line.contains("server.started") {
@@ -109,47 +107,29 @@ fn serve(config: &str, volume: &Path) -> Running {
         }
     }
 
-    assert!(!web.is_empty(), "the public surface reported no address");
+    assert!(listening, "the public surface never came up");
 
-    Running { child, web, lines }
+    Running { child, lines }
 }
 
-/// Reads the `address` field out of a JSON log line.
-fn address_in(line: &str) -> String {
-    let Some(start) = line.find(r#""address":""#) else {
-        return String::new();
-    };
-    let rest = &line[start + r#""address":""#.len()..];
-
-    rest.find('"')
-        .map(|end| rest[..end].to_owned())
-        .unwrap_or_default()
-}
-
-/// Fetches one path over plain HTTP and returns the body.
+/// Exports an operations ring's public keys as a JWKS document, via the binary.
 ///
-/// Written by hand because the alternative is a client library in the dependency tree of a test that
-/// makes exactly one request.
-fn fetch(address: &str, path: &str) -> String {
-    let mut stream = TcpStream::connect(address).expect("the surface accepts a connection");
-    stream
-        .set_read_timeout(Some(Duration::from_secs(10)))
-        .expect("the read timeout is set");
-    write!(
-        stream,
-        "GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
-    )
-    .expect("the request is sent");
+/// The operations ring is never served over HTTP, so the key set is read from the ring on disk — the
+/// server stopped — exactly as the backup runbook has an operator do it.
+fn export_keys(ring: &Path) -> String {
+    let output = Command::new(env!("CARGO_BIN_EXE_pic-x"))
+        .args(["keys", "export", "--directory"])
+        .arg(ring)
+        .output()
+        .expect("running the key exporter");
 
-    let mut answer = String::new();
-    stream
-        .read_to_string(&mut answer)
-        .expect("the answer is readable");
+    assert!(
+        output.status.success(),
+        "exporting the key ring failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 
-    answer
-        .split_once("\r\n\r\n")
-        .map(|(_, body)| body.to_owned())
-        .unwrap_or_default()
+    String::from_utf8_lossy(&output.stdout).into_owned()
 }
 
 /// Copies a directory tree, the way `cp -a` does.
@@ -195,23 +175,24 @@ fn test_a_volume_can_be_lost_entirely_and_put_back() {
     // 1. A deployment that ran: it generated its key ring, wrote an audit trail, and sealed it when
     //    it stopped.
     let server = serve("config.local.yaml", &volume);
-    let published = fetch(&server.web, "/.well-known/jwks.json");
-    assert!(
-        published.contains("\"kid\""),
-        "the deployment published no keys to check its seals against: {published}"
-    );
     assert!(server.stop(), "the server did not shut down cleanly");
 
-    // The key set, exported before the loss. This is the part a restore cannot recreate: it is not a
-    // file in the volume, and taking it from the restored machine afterwards would mean checking a
-    // signature against a key whoever tampered with the machine could have replaced.
+    // The key set, exported before the loss — read from the operations ring on disk, because that
+    // ring is never served over HTTP. This is the part a restore cannot recreate: taking it from the
+    // restored machine afterwards would mean checking a signature against a key whoever tampered with
+    // the machine could have replaced.
+    let published = export_keys(&volume.join("operations/keys"));
+    assert!(
+        published.contains("\"kid\""),
+        "the deployment sealed with no key to check its seals against: {published}"
+    );
     let exported = backup.with_extension("jwks.json");
     fs::create_dir_all(backup.parent().unwrap_or(&backup))
         .expect("the backup directory is created");
     fs::write(&exported, &published).expect("the key set is exported");
 
     assert!(
-        volume.join("audit").read_dir().is_ok(),
+        volume.join("operations/audit").read_dir().is_ok(),
         "no trail was written to back up"
     );
 
@@ -229,7 +210,7 @@ fn test_a_volume_can_be_lost_entirely_and_put_back() {
     //    is the assertion the whole procedure exists for: an intact chain proves nothing was edited
     //    within the trail, and a seal that still checks proves the trail is the one that deployment
     //    actually wrote.
-    let (verified, said) = verify(&volume.join("audit"), Some(&exported));
+    let (verified, said) = verify(&volume.join("operations/audit"), Some(&exported));
     assert!(verified, "the restored trail does not verify: {said}");
     assert!(
         said.contains("verify"),
@@ -248,7 +229,7 @@ fn test_a_volume_can_be_lost_entirely_and_put_back() {
         "the server did not start on the restored volume"
     );
 
-    let (still, said) = verify(&volume.join("audit"), Some(&exported));
+    let (still, said) = verify(&volume.join("operations/audit"), Some(&exported));
     assert!(
         still,
         "appending to a restored trail broke it, which makes the restore single-use: {said}"
@@ -269,7 +250,7 @@ fn test_a_trail_restored_without_its_key_set_is_reported_as_unchecked() {
     let server = serve("config.local.yaml", &volume);
     assert!(server.stop(), "the server did not shut down cleanly");
 
-    let (verified, said) = verify(&volume.join("audit"), None);
+    let (verified, said) = verify(&volume.join("operations/audit"), None);
 
     assert!(verified, "the trail does not verify: {said}");
     assert!(

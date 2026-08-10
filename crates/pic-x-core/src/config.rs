@@ -194,6 +194,13 @@ pub const SETTING_KEYS_ROTATE_EVERY: &str = "PIC_X_KEYS_ROTATE_EVERY";
 /// holding one.
 pub const SETTING_KEYS_RETAIN: &str = "PIC_X_KEYS_RETAIN";
 
+/// Runtime setting key for how often the key lifecycle is advanced.
+///
+/// One loop maintains every ring — the server's and each realm's — so this is one server-wide cadence,
+/// not something a realm sets. A realm's `rotate_every` cannot take effect faster than this: the loop
+/// only acts when it runs. A minute in production; development lowers it to watch a rotation happen.
+pub const SETTING_KEYS_MAINTENANCE_INTERVAL: &str = "PIC_X_KEYS_MAINTENANCE_INTERVAL";
+
 /// The key version a deployment that never rotated is on.
 const DEFAULT_KEY_VERSION: &str = "v1";
 
@@ -209,6 +216,13 @@ const DEFAULT_KEYS_PUBLISH_AHEAD: Duration = Duration::from_secs(60 * 60);
 /// How long a key signs before it is replaced.
 const DEFAULT_KEYS_ROTATE_EVERY: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 
+/// How often the key lifecycle is advanced when nothing says otherwise.
+///
+/// A minute: the pass is a small file read that changes nothing almost every time, and a cadence tied
+/// to the rotation windows would mean a deployment with a one-hour `publish_ahead` could be up to an
+/// hour late to honour it.
+const DEFAULT_KEYS_MAINTENANCE_INTERVAL: Duration = Duration::from_secs(60);
+
 /// How long a retired key stays published.
 ///
 /// A year, which is longer than most products would choose and deliberately so: PIC-X is about
@@ -220,10 +234,15 @@ const DEFAULT_KEYS_RETAIN: Duration = Duration::from_secs(365 * 24 * 60 * 60);
 const DEFAULT_AUDIT_RETENTION: Duration = Duration::from_secs(90 * 24 * 60 * 60);
 
 /// Where the key ring lives inside the volume when nothing says otherwise.
-const DEFAULT_KEYS_SUBDIRECTORY: &str = "keys";
+///
+/// Under `operations/`: this is the ring that signs the system trail's seals, an internal duty whose
+/// public keys are never served over HTTP. It sits beside the trail it protects and the secret that
+/// pseudonymises it, so the whole record-keeping subsystem backs up as one unit. A realm issuing
+/// tokens keeps those keys separately, at `realms/<name>/keys` — see [`Config::realm_token_keys_directory`].
+const DEFAULT_KEYS_SUBDIRECTORY: &str = "operations/keys";
 
 /// Where the audit trail is written inside the volume when nothing says otherwise.
-const DEFAULT_AUDIT_SUBDIRECTORY: &str = "audit";
+const DEFAULT_AUDIT_SUBDIRECTORY: &str = "operations/audit";
 
 /// How long shutdown gets before the process exits regardless.
 ///
@@ -238,7 +257,10 @@ const DEFAULT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
 const DEFAULT_WORKING_DIR: &str = ".volume";
 
 /// Where secrets live inside the volume when nothing says otherwise.
-const DEFAULT_SECRETS_SUBDIRECTORY: &str = "secrets";
+///
+/// Under `operations/`: the pseudonymisation key is part of protecting the record, so it lives with
+/// the trail and the keys that seal it.
+const DEFAULT_SECRETS_SUBDIRECTORY: &str = "operations/secrets";
 
 const DEFAULT_VERSION: &str = "0.0.0";
 const DEFAULT_COPYRIGHT_YEAR: &str = "0000";
@@ -383,6 +405,7 @@ pub struct Config {
     keys_publish_ahead: Duration,
     keys_rotate_every: Duration,
     keys_retain: Duration,
+    keys_maintenance_interval: Duration,
     realms: Vec<RealmConfig>,
     declared: BTreeSet<String>,
     declared_values: BTreeMap<String, String>,
@@ -427,6 +450,7 @@ impl Default for Config {
             keys_publish_ahead: DEFAULT_KEYS_PUBLISH_AHEAD,
             keys_rotate_every: DEFAULT_KEYS_ROTATE_EVERY,
             keys_retain: DEFAULT_KEYS_RETAIN,
+            keys_maintenance_interval: DEFAULT_KEYS_MAINTENANCE_INTERVAL,
             realms: Vec::new(),
             declared: BTreeSet::new(),
             declared_values: BTreeMap::new(),
@@ -1134,22 +1158,37 @@ impl Config {
         &self.realms
     }
 
-    /// Returns where `realm`'s key ring lives: `<volume>/realms/<name>/keys`.
+    /// Returns where `realm`'s operations key ring lives: `<volume>/realms/<name>/operations/keys`.
     ///
-    /// The convention is here, in one place, so the surface that publishes a realm's keys and the
-    /// service that rotates them cannot disagree about where they are.
+    /// The ring that signs *this realm's* trail — an internal duty, like the server's own, so it sits
+    /// under `operations/` beside the trail it seals and never appears on the public key set. The keys
+    /// a realm signs *tokens* with are a different ring at [`Config::realm_token_keys_directory`].
+    ///
+    /// The convention is here, in one place, so the service that rotates a realm's keys and the sink
+    /// that seals with them cannot disagree about where they are.
     pub fn realm_keys_directory(&self, realm: &str) -> PathBuf {
+        self.resolve(format!("realms/{realm}/operations/keys"))
+    }
+
+    /// Returns where `realm`'s token-signing key ring lives: `<volume>/realms/<name>/keys`.
+    ///
+    /// A realm's reason to exist: the keys it signs the tokens it issues with, published at its
+    /// `jwks_uri` for relying parties. Kept at the realm's top level — for a realm, *these* are "its
+    /// keys" — and separate from the operations ring, because a token key and an audit-sealing key
+    /// need opposite lifetimes. Reserved: nothing writes here until token issuance exists.
+    pub fn realm_token_keys_directory(&self, realm: &str) -> PathBuf {
         self.resolve(format!("realms/{realm}/keys"))
     }
 
-    /// Returns where `realm`'s audit trail lives: `<volume>/realms/<name>/audit`.
+    /// Returns where `realm`'s audit trail lives: `<volume>/realms/<name>/operations/audit`.
     pub fn realm_audit_directory(&self, realm: &str) -> PathBuf {
-        self.resolve(format!("realms/{realm}/audit"))
+        self.resolve(format!("realms/{realm}/operations/audit"))
     }
 
-    /// Returns where `realm`'s secret material is resolved from: `<volume>/realms/<name>/secrets`.
+    /// Returns where `realm`'s secret material is resolved from:
+    /// `<volume>/realms/<name>/operations/secrets`.
     pub fn realm_secrets_directory(&self, realm: &str) -> PathBuf {
-        self.resolve(format!("realms/{realm}/secrets"))
+        self.resolve(format!("realms/{realm}/operations/secrets"))
     }
 
     /// Returns how long a new key is published before it starts signing.
@@ -1165,6 +1204,11 @@ impl Config {
     /// Returns how long a retired key stays published.
     pub fn keys_retain(&self) -> Duration {
         self.keys_retain
+    }
+
+    /// Returns how often the key lifecycle is advanced — one cadence for every ring in the process.
+    pub fn keys_maintenance_interval(&self) -> Duration {
+        self.keys_maintenance_interval
     }
 
     /// Returns the effective value of a declared setting, when any layer supplied one.
@@ -1429,6 +1473,11 @@ impl Config {
         if let Some(value) = settings.get(SETTING_KEYS_RETAIN) {
             self.keys_retain =
                 parse_duration(value).with_context(|| format!("reading {SETTING_KEYS_RETAIN}"))?;
+        }
+
+        if let Some(value) = settings.get(SETTING_KEYS_MAINTENANCE_INTERVAL) {
+            self.keys_maintenance_interval = parse_duration(value)
+                .with_context(|| format!("reading {SETTING_KEYS_MAINTENANCE_INTERVAL}"))?;
         }
 
         for key in &self.declared {

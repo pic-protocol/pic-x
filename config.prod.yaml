@@ -122,21 +122,23 @@ audit:
     key_version: "v1"
 
 keys:
-  # What this deployment signs with, published at /.well-known/jwks.json and maintained here: a key is
-  # published before it signs and stays published after it stops, because a verifier caches the set.
+  # The operations ring: what seals this deployment's system trail, maintained here. Its public half
+  # is reached through the administrative surface, not served over HTTP. A key is published before it
+  # signs; after it stops, its private half is deleted at `retain` while its public half is kept until
+  # the audit retention, so a seal keeps verifying for as long as the trail it covers is kept.
   #
-  # `publish_ahead` must be at least the 300s that set is served with — shorter is refused outside
-  # development mode, because it makes verifiers reject good signatures.
+  # `publish_ahead` must be at least the 300s a key set is served with — shorter is refused outside
+  # development mode. The same lifecycle governs a realm's token keys, which a verifier does cache.
   enabled: true
   publish_ahead: 1h
-  rotate_every: 30d
-  retain: 365d
+  rotate_every: 7d
+  retain: 30d
 
 # The issuers this deployment hosts, one realm each, both listed so both appear in the public
 # catalogue. Set each `issuer` to the tenant's real public URL. Because this file does not
-# autogenerate, each realm's pseudonymisation key must be provided at realms/<name>/secrets/
-# audit-pseudonym, exactly as the server's is — the server refuses to start without it. See
-# docs/realms.md.
+# autogenerate, each realm's pseudonymisation key must be provided at
+# realms/<name>/operations/secrets/audit-pseudonym, exactly as the server's is — the server refuses
+# to start without it. See docs/realms.md.
 realms:
   - name: acme
     issuer: https://acme.example.com
@@ -144,8 +146,8 @@ realms:
     # acme keeps its trail longer and rotates less often than the server default; globex
     # inherits everything. Both still need their own secrets/audit-pseudonym provided.
     keys:
-      rotate_every: 90d
-      retain: 400d
+      rotate_every: 30d
+      retain: 90d
     audit:
       retention: 365d
   - name: globex

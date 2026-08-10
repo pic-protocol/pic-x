@@ -62,13 +62,13 @@ audit:
 
 keys:
   enabled: true
-  # Minutes rather than months, so a rotation is something you can watch happen instead of something
-  # you find out about in thirty days. A `publish_ahead` shorter than the 300s cache the key set is
-  # served with would break a real verifier; there are none here, and `development_mode` is what
-  # allows it.
-  publish_ahead: 1m
-  rotate_every: 10m
-  retain: 1h
+  # Short windows for development — an hour, not a month — so a rotation happens within a working
+  # session. The maintenance loop's default 60s tick is fine here; lower `maintenance_interval` only
+  # to watch a rotation live. A sub-300s `publish_ahead` would break a real verifier, but there are
+  # none here and `development_mode` allows it.
+  publish_ahead: 5m
+  rotate_every: 1h
+  retain: 1d
 
 # Two example realms — two issuers hosted by one server — so a container run demonstrates the
 # multi-tenant shape. Both listed, so both appear in /.well-known/server-configuration; each
@@ -81,8 +81,8 @@ realms:
     listed: true
     # A realm may override any server block; what it omits, it inherits.
     keys:
-      rotate_every: 5m
-      retain: 30m
+      rotate_every: 30m
+      retain: 12h
     audit:
       retention: 30d
   - name: globex

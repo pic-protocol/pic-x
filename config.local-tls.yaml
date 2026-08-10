@@ -69,9 +69,12 @@ audit:
 
 keys:
   enabled: true
-  publish_ahead: 1m
-  rotate_every: 10m
-  retain: 1h
+  publish_ahead: 5m
+  rotate_every: 1h
+  retain: 1d
+  # The maintenance loop's default 60s tick applies. To watch a rotation live, set a small
+  # `maintenance_interval` (e.g. 2s) — it is one server-wide cadence, and a realm's `rotate_every`
+  # can never take effect faster than it.
 
 # Two example realms, both listed, each with its own issuer over TLS. Generated material
 # (keys, trail, pseudonymisation key) lands under .volume/realms/<name>/ on first start.
@@ -79,10 +82,11 @@ realms:
   - name: acme
     issuer: https://localhost:7556/realms/acme
     listed: true
-    # A realm may override any server block; what it omits, it inherits.
+    # acme rotates and retains on its own schedule; globex inherits the server's. publish_ahead is
+    # inherited (5m). Lower the server's maintenance_interval to watch acme churn in realms/acme/keys.
     keys:
-      rotate_every: 5m
-      retain: 30m
+      rotate_every: 30m
+      retain: 12h
     audit:
       retention: 30d
   - name: globex

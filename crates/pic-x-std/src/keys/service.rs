@@ -35,16 +35,11 @@ const KEYS_ACTIVE: Metric = Metric::gauge(
 /// The `component` every record of the key ring carries.
 const COMPONENT: &str = "keys";
 
-/// How often the lifecycle is advanced.
-///
-/// A minute, regardless of how long the windows are: the pass is a small file read that changes
-/// nothing almost every time, and a cadence tied to the policy would mean a deployment with a
-/// one-hour `publish_ahead` could be up to an hour late to honour it.
-const TICK: Duration = Duration::from_secs(60);
-
 /// Advances the key lifecycle, at startup and on a timer.
 pub struct KeyService {
-    tick: Duration,
+    /// An explicit cadence override. `None` — the ordinary case — takes the deployment's configured
+    /// `keys.maintenance_interval`. `Some` is for a test that wants a cadence of its own.
+    tick: Option<Duration>,
     running: Mutex<Option<Running>>,
 }
 
@@ -61,17 +56,20 @@ impl Default for KeyService {
 }
 
 impl KeyService {
-    /// Builds the service that maintains whichever key ring the context carries.
+    /// Builds the service that maintains whichever key rings the context carries.
+    ///
+    /// The cadence comes from the configuration at start; nothing needs to be chosen here.
     pub fn new() -> Self {
         Self {
-            tick: TICK,
+            tick: None,
             running: Mutex::new(None),
         }
     }
 
-    /// Advances the lifecycle at a different cadence, which is what a test wants.
+    /// Advances the lifecycle at a fixed cadence regardless of configuration, which is what a test
+    /// that cannot wait for a configured minute wants.
     pub fn every(mut self, tick: Duration) -> Self {
-        self.tick = tick;
+        self.tick = Some(tick);
 
         self
     }
@@ -99,6 +97,7 @@ impl KeyService {
             keys.published = report.published,
             keys.activated = report.activated,
             keys.retired = report.retired,
+            keys.archived = report.archived,
             keys.forgotten = report.forgotten,
             "the key ring changed"
         );
@@ -152,8 +151,10 @@ impl Service for KeyService {
                     keys: Arc::clone(keys),
                 });
             }
+            // A realm's operations ring — the one that seals its trail. Its token ring, once token
+            // issuance exists, is a second ring maintained the same way; there is none yet.
             for realm in context.realms().all() {
-                if let Some(keys) = realm.keys() {
+                if let Some(keys) = realm.operations_keys() {
                     rings.push(Ring {
                         realm: Some(realm.name().to_owned()),
                         keys: Arc::clone(keys),
@@ -210,7 +211,9 @@ impl Service for KeyService {
             }
 
             let (stop, mut stopped) = watch::channel(false);
-            let tick = self.tick;
+            let tick = self
+                .tick
+                .unwrap_or_else(|| context.config().keys_maintenance_interval());
             let metrics = context.metrics().clone();
 
             let task = tokio::spawn(async move {

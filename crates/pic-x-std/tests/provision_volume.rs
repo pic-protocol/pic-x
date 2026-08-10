@@ -65,7 +65,7 @@ fn test_a_secret_is_generated_when_generation_is_allowed() {
 
     prepare(&config).expect("the volume is prepared");
 
-    let secret = root.join("secrets").join("audit-pseudonym");
+    let secret = root.join("operations/secrets").join("audit-pseudonym");
     let material = fs::read_to_string(&secret).expect("the secret is there");
 
     // 32 bytes, hex encoded, and not something a person typed.
@@ -82,8 +82,8 @@ fn test_two_runs_never_produce_the_same_secret() {
     prepare(&generating(&second, &[])).expect("the second volume");
 
     assert_ne!(
-        fs::read_to_string(first.join("secrets/audit-pseudonym")).expect("the first secret"),
-        fs::read_to_string(second.join("secrets/audit-pseudonym")).expect("the second secret"),
+        fs::read_to_string(first.join("operations/secrets/audit-pseudonym")).expect("the first secret"),
+        fs::read_to_string(second.join("operations/secrets/audit-pseudonym")).expect("the second secret"),
         "a generated key that repeats is not a key"
     );
 }
@@ -91,9 +91,9 @@ fn test_two_runs_never_produce_the_same_secret() {
 #[test]
 fn test_what_is_already_there_is_never_overwritten() {
     let root = volume("existing");
-    fs::create_dir_all(root.join("secrets")).expect("creating the directory");
+    fs::create_dir_all(root.join("operations/secrets")).expect("creating the directory");
     fs::write(
-        root.join("secrets/audit-pseudonym"),
+        root.join("operations/secrets/audit-pseudonym"),
         "supplied-by-somebody-else",
     )
     .expect("writing the secret");
@@ -101,7 +101,7 @@ fn test_what_is_already_there_is_never_overwritten() {
     prepare(&generating(&root, &[])).expect("the volume is prepared");
 
     assert_eq!(
-        fs::read_to_string(root.join("secrets/audit-pseudonym")).expect("the secret is there"),
+        fs::read_to_string(root.join("operations/secrets/audit-pseudonym")).expect("the secret is there"),
         "supplied-by-somebody-else",
         "a file that exists is a file somebody meant to put there"
     );
@@ -170,7 +170,7 @@ fn test_nothing_is_generated_without_permission() {
     prepare(&config).expect("the volume is prepared");
 
     assert!(
-        !root.join("secrets/audit-pseudonym").exists(),
+        !root.join("operations/secrets/audit-pseudonym").exists(),
         "generation must take saying so"
     );
 }
@@ -198,7 +198,7 @@ fn test_generated_material_is_readable_by_nobody_else() {
     ))
     .expect("the volume is prepared");
 
-    for private in ["secrets/audit-pseudonym", "tls/server.key", "tls/ca.key"] {
+    for private in ["operations/secrets/audit-pseudonym", "tls/server.key", "tls/ca.key"] {
         let mode = fs::metadata(root.join(private))
             .expect("the file is there")
             .permissions()

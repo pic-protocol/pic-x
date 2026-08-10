@@ -28,7 +28,7 @@ Check the public and telemetry surfaces:
 
 ```sh
 curl http://127.0.0.1:7556/
-curl http://127.0.0.1:7556/.well-known/jwks.json
+curl http://127.0.0.1:7556/.well-known/server-configuration
 curl http://127.0.0.1:7558/readyz
 ```
 
@@ -45,7 +45,7 @@ The first start generates a local authority, server certificate and client certi
 `.volume/tls/`.
 
 ```sh
-curl --cacert .volume/tls/ca.pem https://localhost:7556/.well-known/jwks.json
+curl --cacert .volume/tls/ca.pem https://localhost:7556/.well-known/server-configuration
 
 grpcurl -cacert .volume/tls/ca.pem \
         -cert .volume/tls/client.pem -key .volume/tls/client.key \

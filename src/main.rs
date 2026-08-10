@@ -80,6 +80,7 @@ async fn main() -> ExitCode {
     .with_secrets_factory(secret_store_for)
     .with_audit_factory(audit_sink_for)
     .with_audit_verifier(verify_audit_trail)
+    .with_keys_exporter(export_keys)
     .with_keys_factory(key_manager_for)
     .with_pseudonymizer_factory(|key, key_version| {
         Box::new(HmacPseudonymizer::new(key, key_version))
@@ -148,6 +149,17 @@ fn audit_sink_for(
 /// When a key set is named, every seal's signature is checked against it. The set has to be named
 /// rather than found: verifying against keys taken from the machine under suspicion checks a
 /// signature against a key the same attacker could have replaced.
+/// Prints an operations ring's public keys as the JWKS a verifier checks seals against.
+///
+/// The counterpart to `audit verify --keys`. An operations ring is never served over HTTP, so this
+/// is how its public half is obtained: read straight from the ring on disk, which is what a restore
+/// needs — the server is stopped, and the set has to be exported from the volume being backed up so a
+/// later signature is checked against a key an attacker on the restored host could not have replaced.
+fn export_keys(directory: &std::path::Path) -> anyhow::Result<String> {
+    pic_x_std::keys::export(directory)
+        .with_context(|| format!("reading the key ring in {}", directory.display()))
+}
+
 fn verify_audit_trail(
     directory: &std::path::Path,
     keys: Option<&std::path::Path>,
@@ -222,6 +234,12 @@ fn from_hex(text: &str) -> anyhow::Result<Vec<u8>> {
 }
 
 /// Builds the key ring the effective configuration names.
+///
+/// This is the server's operations ring: it seals the system trail. Its public half must stay
+/// verifiable for as long as that trail is kept, so `verify_retain` is the audit retention — the
+/// private half still goes at `retain`, but a seal keeps verifying until the records it covers age
+/// out. The `KeyPolicy` treats `verify_retain` as at least `retain`, so the common default (a long
+/// `retain`, a shorter audit retention) simply keeps the key its full `retain` and is unaffected.
 fn key_manager_for(config: &Config) -> anyhow::Result<Option<Arc<dyn KeyManager>>> {
     Ok(Some(Arc::new(DirectoryKeyManager::new(
         config.keys_directory(),
@@ -229,6 +247,7 @@ fn key_manager_for(config: &Config) -> anyhow::Result<Option<Arc<dyn KeyManager>
             publish_ahead: config.keys_publish_ahead(),
             rotate_every: config.keys_rotate_every(),
             retain: config.keys_retain(),
+            verify_retain: config.audit_retention(),
         },
     ))))
 }
@@ -242,20 +261,26 @@ fn key_manager_for(config: &Config) -> anyhow::Result<Option<Arc<dyn KeyManager>
 fn build_realm(config: &Config, realm: &RealmConfig) -> anyhow::Result<Realm> {
     let name = realm.name();
 
-    // Its own signing keys — when it publishes any — on its own lifecycle, so a realm's tokens and
-    // its trail's seals verify against its key set and no other.
-    let keys: Option<Arc<dyn KeyManager>> = if realm.keys_enabled() {
+    // The realm's operations ring — when it keeps a signed trail — on its own lifecycle, so this
+    // realm's seals verify against this realm's keys and no other. Internal: it seals the trail, and
+    // its public half is never served over HTTP. The ring a realm signs *tokens* with is separate,
+    // reserved at `realms/<name>/keys`, and does not exist until token issuance does.
+    let operations_keys: Option<Arc<dyn KeyManager>> = if realm.keys_enabled() {
         Some(Arc::new(DirectoryKeyManager::new(
             config.realm_keys_directory(name),
             KeyPolicy {
                 publish_ahead: realm.keys_publish_ahead(),
                 rotate_every: realm.keys_rotate_every(),
                 retain: realm.keys_retain(),
+                // Its public half outlives its private one by the realm's own audit retention, so
+                // this realm's seals verify for as long as this realm keeps its trail.
+                verify_retain: realm.audit_retention(),
             },
         )))
     } else {
         None
     };
+    let token_keys: Option<Arc<dyn KeyManager>> = None;
 
     // Its own trail, to its own destination and retention. A file trail is sealed by the realm's own
     // key, so its attestations are checkable against the realm's published key set alone.
@@ -271,7 +296,7 @@ fn build_realm(config: &Config, realm: &RealmConfig) -> anyhow::Result<Realm> {
                 config.version(),
                 realm.audit_retention(),
             );
-            if let Some(keys) = &keys {
+            if let Some(keys) = &operations_keys {
                 sink = sink.sealed_by(Arc::clone(keys));
             }
 
@@ -321,7 +346,8 @@ fn build_realm(config: &Config, realm: &RealmConfig) -> anyhow::Result<Realm> {
         realm.mount_path(),
         realm.issuer().map(ToOwned::to_owned),
         realm.listed(),
-        keys,
+        operations_keys,
+        token_keys,
         audit,
         pseudonymizer,
     ))

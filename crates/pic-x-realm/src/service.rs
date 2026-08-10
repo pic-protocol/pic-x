@@ -8,8 +8,7 @@ use axum::routing::get;
 use tracing::info;
 
 use pic_x_core::{
-    BoxFuture, Config, KeyManager, PIC_PROFILE, ProductIdentity, Realms, ServerContext, Service,
-    ready,
+    BoxFuture, Config, PIC_PROFILE, ProductIdentity, Realms, ServerContext, Service, ready,
 };
 use pic_x_transport::Surface;
 
@@ -86,15 +85,14 @@ impl WellKnownService {
         &self,
         identity: &ProductIdentity,
         config: &Config,
-        keys: Option<Arc<dyn KeyManager>>,
         realms: &Realms,
     ) -> Router {
-        // The server surface: what this deployment is, which realms it lists, and the key that signs
-        // its system trail. It issues nothing, so there is no issuer discovery here.
+        // The server surface: what this deployment is and which realms it lists. It issues nothing
+        // and publishes no key set — the key that seals its system trail is internal, reached through
+        // the administrative surface and never here. So there is no key route and no issuer discovery.
         let server = Server {
             product: identity.product_name().to_owned(),
             version: config.version().to_owned(),
-            jwks_uri: config.public_url("/.well-known/jwks.json"),
             profiles: vec![ProfileEntry {
                 profile: PIC_PROFILE,
                 realms: realms
@@ -103,7 +101,7 @@ impl WellKnownService {
                         name: realm.name().to_owned(),
                         issuer: realm.issuer().map(ToOwned::to_owned),
                         configuration_url: realm.url("/.well-known/pic-x-configuration"),
-                        jwks_uri: realm.url("/.well-known/jwks.json"),
+                        jwks_uri: realm.url("/keys"),
                     })
                     .collect(),
             }],
@@ -115,29 +113,31 @@ impl WellKnownService {
                 "/.well-known/server-configuration",
                 get(server_configuration),
             )
-            .with_state(server)
-            .merge(
-                Router::new()
-                    .route("/.well-known/jwks.json", get(jwks))
-                    .with_state(KeyRing { keys }),
-            );
+            .with_state(server);
 
         // One issuer surface per realm, mounted at its own path. Every realm is mounted, listed or
         // not: `listed` decides whether the server *advertises* it, not whether a client that knows
-        // its name can reach the keys it needs to verify a token.
+        // its name can reach the discovery and keys it needs to verify a token.
+        //
+        // The key set is the realm's *token* ring — what a relying party verifies an issued token
+        // against — served at `/keys` so that the `{issuer}/keys` the discovery advertises resolves
+        // here. It is empty until token issuance exists; the ring that seals the realm's trail is a
+        // different, internal ring and is never on this surface.
         for realm in realms.all() {
             let issuer = Router::new()
                 .route("/.well-known/pic-x-configuration", get(realm_configuration))
                 .with_state(RealmMeta {
                     issuer: realm.issuer().map(ToOwned::to_owned),
-                    jwks_uri: realm.url("/.well-known/jwks.json"),
+                    token_endpoint: realm.url("/token"),
+                    revocation_endpoint: realm.url("/revoke"),
+                    jwks_uri: realm.url("/keys"),
+                    attestation_endpoint: realm.url("/attestations"),
+                    trust_anchors_endpoint: realm.url("/trust-anchors"),
                 })
                 .merge(
-                    Router::new()
-                        .route("/.well-known/jwks.json", get(jwks))
-                        .with_state(KeyRing {
-                            keys: realm.keys().map(Arc::clone),
-                        }),
+                    Router::new().route("/keys", get(jwks)).with_state(KeyRing {
+                        keys: realm.token_keys().map(Arc::clone),
+                    }),
                 );
 
             router = router.nest(realm.mount_path(), issuer);
@@ -186,12 +186,7 @@ impl Service for WellKnownService {
             let surface = Surface::listener(
                 COMPONENT,
                 configured,
-                self.router(
-                    context.identity(),
-                    context.config(),
-                    context.keys().map(Arc::clone),
-                    context.realms(),
-                ),
+                self.router(context.identity(), context.config(), context.realms()),
             )
             .tls(secured.as_ref())
             .limits(context.config().limits())

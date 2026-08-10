@@ -19,16 +19,20 @@
 //!
 //! ```text
 //! .volume/
-//! ├── data/                      what the server keeps
-//! ├── state/                     what the server remembers about its own configuration
-//! ├── audit/                     the trail, when it is kept here rather than in the log stream
-//! ├── keys/                      the signing key ring, which maintains itself
-//! ├── secrets/audit-pseudonym    32 random bytes
-//! ├── tls/ca.{pem,key}           a local authority
-//! ├── tls/ca.crl                 its revocation list, revoking nothing yet
-//! ├── tls/server.{pem,key}       for localhost, signed by it
-//! └── tls/client.{pem,key}       what an operator presents to the administrative surface
+//! ├── data/                                 what the server keeps
+//! ├── operations/                           the record-keeping subsystem, backed up as one unit
+//! │   ├── state/                            what the server remembers about its own configuration
+//! │   ├── audit/                            the trail, when it is kept here rather than in the log
+//! │   ├── keys/                             the ring that seals the trail, which maintains itself
+//! │   └── secrets/audit-pseudonym           32 random bytes
+//! ├── tls/ca.{pem,key}                      a local authority
+//! ├── tls/ca.crl                            its revocation list, revoking nothing yet
+//! ├── tls/server.{pem,key}                  for localhost, signed by it
+//! └── tls/client.{pem,key}                  what an operator presents to the administrative surface
 //! ```
+//!
+//! A realm hosts the same `operations/` subsystem under `realms/<name>/operations/`, and — when it
+//! issues tokens — its own signing keys at `realms/<name>/keys`.
 //!
 //! The directories exist whatever `autogenerate` says — a server that cannot write its own state
 //! directory cannot run, and creating a directory grants no trust. Only the *material* inside
@@ -94,9 +98,16 @@ impl Volume {
         self.root.join("data")
     }
 
+    /// Returns the server's operations directory: the record-keeping subsystem, in one place.
+    ///
+    /// Its keys, secret, trail and state all live under here, so the whole thing backs up as a unit.
+    pub fn operations(&self) -> PathBuf {
+        self.root.join("operations")
+    }
+
     /// Returns where the server remembers things about its own configuration.
     pub fn state(&self) -> PathBuf {
-        self.root.join("state")
+        self.operations().join("state")
     }
 
     /// Returns where the audit trail is kept, which is wherever the configuration resolved it to.
@@ -123,7 +134,9 @@ pub fn prepare(config: &Config) -> Result<()> {
     create_directory(volume.root())
         .with_context(|| format!("preparing the volume at {}", volume.root().display()))?;
 
-    for directory in [volume.data(), volume.state()] {
+    // `operations/` is created before its children so the container that holds the trail, the keys
+    // that seal it and the pseudonymisation secret is itself `0700`, not left at the umask default.
+    for directory in [volume.data(), volume.operations(), volume.state()] {
         create_directory(&directory)?;
     }
 

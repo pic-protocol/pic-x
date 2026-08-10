@@ -19,7 +19,7 @@ This builds the image and runs `/etc/pic-x/config.dev.yaml`. It starts with an e
 and generates the missing development material.
 
 ```sh
-curl http://localhost:7556/.well-known/jwks.json
+curl http://localhost:7556/.well-known/server-configuration
 curl http://localhost:7558/metrics
 
 grpcurl -plaintext \
@@ -73,7 +73,7 @@ The Taskfile includes a demo path that reuses local TLS material:
 PIC_X_WORKING_DIR=.volume-docker task run-as-local-tls
 # Stop it with Ctrl-C once the volume has been generated, then continue:
 cp .volume-docker/tls/ca.pem .volume-docker/tls/operators.pem
-chmod 600 .volume-docker/secrets/* .volume-docker/tls/*.key
+chmod 600 .volume-docker/operations/secrets/* .volume-docker/tls/*.key
 task run-as-docker
 ```
 

@@ -250,15 +250,15 @@ fn test_the_volume_is_where_everything_the_configuration_names_resolves() {
 
     assert_eq!(
         deployed.keys_directory(),
-        std::path::Path::new("/var/lib/pic-x/keys")
+        std::path::Path::new("/var/lib/pic-x/operations/keys")
     );
     assert_eq!(
         deployed.audit_directory(),
-        std::path::Path::new("/var/lib/pic-x/audit")
+        std::path::Path::new("/var/lib/pic-x/operations/audit")
     );
     assert_eq!(
         deployed.secrets_directory(),
-        std::path::Path::new("/var/lib/pic-x/secrets")
+        std::path::Path::new("/var/lib/pic-x/operations/secrets")
     );
     assert_eq!(
         deployed.web_tls().expect("it is configured").certificate(),

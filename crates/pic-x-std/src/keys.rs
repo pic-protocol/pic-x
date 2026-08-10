@@ -46,7 +46,7 @@ use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
 use pic_x_core::keys::Result;
-use pic_x_core::{Jwk, KeyError, KeyId, KeyManager, KeyState, Maintenance, Signature};
+use pic_x_core::{Jwk, JwkSet, KeyError, KeyId, KeyManager, KeyState, Maintenance, Signature};
 
 pub use service::KeyService;
 
@@ -69,8 +69,19 @@ pub struct KeyPolicy {
     pub publish_ahead: Duration,
     /// How long a key signs before it is replaced.
     pub rotate_every: Duration,
-    /// How long a key stays published after it stops signing.
+    /// How long a key's private half is kept after it stops signing.
+    ///
+    /// At this point the private half is deleted: the key will never sign again, and keeping it on
+    /// disk only widens the window in which it could leak.
     pub retain: Duration,
+    /// How long a key's public half stays in the key set after it stops signing.
+    ///
+    /// The public half outlives the private one: from `retain` until this elapses the key is
+    /// `Archived` — verifiable, but unable to sign. For a ring that seals an audit trail this is the
+    /// trail's retention, so a seal keeps verifying for as long as the records it covers are kept.
+    /// Treated as at least `retain`: a public half cannot be dropped while its private half is still
+    /// on disk.
+    pub verify_retain: Duration,
 }
 
 /// What time it is, so that a rotation can be tested without waiting for one.
@@ -398,25 +409,54 @@ impl KeyManager for DirectoryKeyManager {
             report.published += 1;
         }
 
-        // A retired key stops being published once nothing it signed is still expected to verify.
-        let expired: Vec<String> = ring
-            .keys
-            .iter()
-            .filter(|entry| entry.state == KeyState::Retired)
-            .filter(|entry| {
-                entry
-                    .retired_at
-                    .is_some_and(|retired| retired.saturating_add(self.seconds_retained()) <= now)
-            })
-            .map(|entry| entry.kid.clone())
-            .collect();
+        // The two-stage end of a key's life. Its private half is deleted once it has been retired for
+        // `retain`: it will never sign again, so keeping it only widens the window it could leak in.
+        // Its public half stays — the key moves to `Archived` — until `verify_retain`, so a signature
+        // it made keeps verifying that whole time. When a ring wants no separate public lifetime
+        // (`verify_retain` no longer than `retain`), the two stages collapse and the key is forgotten
+        // outright, exactly as before.
+        let retain = self.seconds_retained();
+        let verify_retain = self.seconds_verify_retained();
+        let has_archive_phase = verify_retain > retain;
 
-        for kid in &expired {
-            self.forget(kid)?;
-            report.forgotten += 1;
+        let mut to_archive: Vec<String> = Vec::new();
+        let mut to_forget: Vec<String> = Vec::new();
+        for entry in &ring.keys {
+            let Some(retired_at) = entry.retired_at else {
+                continue;
+            };
+
+            match entry.state {
+                KeyState::Retired if retired_at.saturating_add(retain) <= now => {
+                    if has_archive_phase {
+                        to_archive.push(entry.kid.clone());
+                    } else {
+                        to_forget.push(entry.kid.clone());
+                    }
+                }
+                KeyState::Archived if retired_at.saturating_add(verify_retain) <= now => {
+                    to_forget.push(entry.kid.clone());
+                }
+                _ => {}
+            }
         }
 
-        ring.keys.retain(|entry| !expired.contains(&entry.kid));
+        // The private half goes for both — archived keeps only its public half, forgotten keeps
+        // nothing. `forget` deleting an already-deleted file is not an error, so an archived key
+        // being forgotten later is fine.
+        for kid in to_archive.iter().chain(to_forget.iter()) {
+            self.forget(kid)?;
+        }
+
+        for entry in &mut ring.keys {
+            if to_archive.contains(&entry.kid) {
+                entry.state = KeyState::Archived;
+                report.archived += 1;
+            }
+        }
+
+        ring.keys.retain(|entry| !to_forget.contains(&entry.kid));
+        report.forgotten += to_forget.len();
 
         if !report.is_empty() {
             self.write_ring(&ring)?;
@@ -438,6 +478,37 @@ impl DirectoryKeyManager {
     fn seconds_retained(&self) -> u64 {
         self.policy.retain.as_secs()
     }
+
+    /// How long the public half stays published — never less than how long the private half is kept.
+    fn seconds_verify_retained(&self) -> u64 {
+        self.policy
+            .verify_retain
+            .as_secs()
+            .max(self.policy.retain.as_secs())
+    }
+}
+
+/// Reads a ring on disk and returns its public keys as a JWKS document.
+///
+/// The way to obtain an operations ring's public half without the server running: those keys are
+/// never served over HTTP, so a verifier — after a restore, or following the backup runbook — reads
+/// them here. The lifecycle policy a manager needs to *rotate* a ring is irrelevant to *reading* one
+/// already written, so this asks for none.
+pub fn export(directory: impl Into<PathBuf>) -> Result<String> {
+    let manager = DirectoryKeyManager::new(
+        directory,
+        KeyPolicy {
+            publish_ahead: Duration::ZERO,
+            rotate_every: Duration::ZERO,
+            retain: Duration::ZERO,
+            verify_retain: Duration::ZERO,
+        },
+    );
+
+    let document = JwkSet::new(manager.public_keys()?);
+
+    serde_json::to_string_pretty(&document)
+        .map_err(|error| KeyError::backend(format!("rendering the key set: {error}")))
 }
 
 /// Reports whether `signature` over `payload` was made by the key `jwk` publishes.

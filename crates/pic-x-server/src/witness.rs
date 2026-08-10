@@ -34,7 +34,7 @@ use pic_x_core::{Config, Pseudonymizer, Realm};
 const WITNESS_INPUT: &str = "pic-x:audit-pseudonym-key-witness";
 
 /// Where the witnesses are kept inside the volume.
-const WITNESS_FILE: &str = "state/audit-pseudonym-versions";
+const WITNESS_FILE: &str = "operations/state/audit-pseudonym-versions";
 
 /// Returns where this deployment keeps its witnesses.
 pub fn witness_path(config: &Config) -> PathBuf {
@@ -56,7 +56,7 @@ pub fn check(config: &Config, pseudonymizer: Option<&dyn Pseudonymizer>) -> Resu
 /// silently corrupt a realm's trail is a configuration error to fix, not a fault to serve through.
 pub fn check_realm(config: &Config, realm: &Realm) -> Result<()> {
     let path = config.resolve(format!(
-        "realms/{}/state/audit-pseudonym-versions",
+        "realms/{}/operations/state/audit-pseudonym-versions",
         realm.name()
     ));
 

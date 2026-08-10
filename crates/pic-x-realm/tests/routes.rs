@@ -1,10 +1,10 @@
 //! What the public surface answers, and what a build that extends it can change.
 //!
 //! Two scopes are exercised here because the surface has two: the **server** (the control plane —
-//! what this deployment is, which realms it lists, the key that signs its system trail) and each
-//! **realm** (an issuer, at its own path). And the cases that matter are about composition — a route a
-//! build registers, a layer that wraps routes it did not write, a realm that opted out of the
-//! catalogue — so each needs a router assembled a different way.
+//! what this deployment is and which realms it lists; it publishes no key set) and each **realm** (an
+//! issuer, at its own path, publishing the token keys a relying party verifies against). And the cases
+//! that matter are about composition — a route a build registers, a layer that wraps routes it did not
+//! write, a realm that opted out of the catalogue — so each needs a router assembled a different way.
 
 use std::sync::Arc;
 
@@ -40,13 +40,14 @@ impl pic_x_core::AuditSink for SilentSink {
     }
 }
 
-/// A realm mounted at `/realms/{name}`, with no keys of its own.
+/// A realm mounted at `/realms/{name}`, with neither operations nor token keys of its own.
 fn realm(name: &str, issuer: Option<&str>, listed: bool) -> Realm {
     Realm::new(
         name,
         format!("/realms/{name}"),
         issuer.map(ToOwned::to_owned),
         listed,
+        None,
         None,
         Arc::new(SilentSink),
         None,
@@ -95,7 +96,7 @@ async fn ask_full(
     path: &str,
 ) -> (StatusCode, String) {
     let response = service
-        .router(&identity(), config, None, realms)
+        .router(&identity(), config, realms)
         .oneshot(
             Request::builder()
                 .uri(path)
@@ -124,10 +125,10 @@ async fn test_the_server_document_says_what_this_deployment_is() {
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains("Demo X"));
     assert!(body.contains("9.9.9"));
-    assert!(body.contains("jwks.json"));
-    // It is an envelope over profiles, not an issuer document — no issuer of its own.
+    // It is an envelope over profiles, not an issuer document — no issuer, and no key set of its own.
     assert!(body.contains("profiles"));
     assert!(body.contains("https://pic-protocol.org/profiles/0.2"));
+    assert!(!body.contains("jwks"), "the server publishes no key set: {body}");
 }
 
 #[tokio::test]
@@ -143,11 +144,19 @@ async fn test_the_server_does_not_serve_issuer_discovery() {
 }
 
 #[tokio::test]
-async fn test_the_key_set_is_empty_until_there_are_keys_to_publish() {
-    let (status, body) = ask(&WellKnownService::new(), "/.well-known/jwks.json").await;
-
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(body, r#"{"keys":[]}"#);
+async fn test_the_server_publishes_no_key_set() {
+    // The server's operations key seals its trail and is reached through the administrative surface,
+    // never here. So the key-set route that used to sit at the root is gone.
+    assert_eq!(
+        ask(&WellKnownService::new(), "/.well-known/jwks.json")
+            .await
+            .0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        ask(&WellKnownService::new(), "/keys").await.0,
+        StatusCode::NOT_FOUND
+    );
 }
 
 #[tokio::test]
@@ -156,7 +165,7 @@ async fn test_a_registered_provider_serves_beside_the_routes_pic_x_defines() {
 
     assert_eq!(ask(&service, "/own").await.1, "mine\n");
     assert_eq!(
-        ask(&service, "/.well-known/jwks.json").await.0,
+        ask(&service, "/.well-known/server-configuration").await.0,
         StatusCode::OK
     );
     assert_eq!(service.providers().collect::<Vec<_>>(), vec!["own-routes"]);
@@ -177,7 +186,7 @@ async fn test_a_registered_layer_wraps_the_routes_pic_x_defines_too() {
         });
 
     assert_eq!(
-        ask(&service, "/.well-known/jwks.json").await.0,
+        ask(&service, "/.well-known/server-configuration").await.0,
         StatusCode::FORBIDDEN
     );
     assert_eq!(ask(&service, "/own").await.0, StatusCode::FORBIDDEN);
@@ -194,22 +203,21 @@ async fn test_the_root_says_what_this_is_and_where_to_look_next() {
 }
 
 #[tokio::test]
-async fn test_an_issuer_makes_the_servers_advertised_url_absolute() {
-    let config = config_with(&[(
-        pic_x_core::config::SETTING_ISSUER,
-        "https://login.example.com/pic-x",
-    )]);
+async fn test_a_listed_realms_advertised_urls_are_absolute() {
+    // A realm's catalogue entry points at the realm's own issuer, and its key set is `{issuer}/keys`.
+    let realms = Realms::new([realm("acme", Some("https://acme.example.com"), true)]);
 
-    let (_, body) = ask_with(
+    let (_, catalogue) = ask_full(
         &WellKnownService::new(),
-        &config,
+        &config_with(&[]),
+        &realms,
         "/.well-known/server-configuration",
     )
     .await;
 
     assert!(
-        body.contains(r#""jwks_uri":"https://login.example.com/pic-x/.well-known/jwks.json""#),
-        "{body}"
+        catalogue.contains(r#""jwks_uri":"https://acme.example.com/keys""#),
+        "{catalogue}"
     );
 }
 
@@ -230,27 +238,47 @@ async fn test_a_realm_serves_its_own_discovery_and_keys_at_its_path() {
         document.contains(r#""issuer":"https://acme.example.com""#),
         "{document}"
     );
+    // Every endpoint is rooted at the realm's issuer, and the key set is `{issuer}/keys`.
     assert!(
-        document.contains(r#""jwks_uri":"https://acme.example.com/.well-known/jwks.json""#),
+        document.contains(r#""jwks_uri":"https://acme.example.com/keys""#),
+        "{document}"
+    );
+    assert!(
+        document.contains(r#""token_endpoint":"https://acme.example.com/token""#),
+        "{document}"
+    );
+    assert!(
+        document.contains(r#""revocation_endpoint":"https://acme.example.com/revoke""#),
+        "{document}"
+    );
+    assert!(
+        document.contains(r#""attestation_endpoint":"https://acme.example.com/attestations""#),
+        "{document}"
+    );
+    assert!(
+        document.contains(r#""trust_anchors_endpoint":"https://acme.example.com/trust-anchors""#),
         "{document}"
     );
     assert!(
         document.contains("https://pic-protocol.org/profiles/0.2"),
         "{document}"
     );
-
-    // And its key set is reachable at its path.
-    assert_eq!(
-        ask_full(
-            &WellKnownService::new(),
-            &config_with(&[]),
-            &realms,
-            "/realms/acme/.well-known/jwks.json"
-        )
-        .await
-        .0,
-        StatusCode::OK
+    // The capability set this build implements is advertised.
+    assert!(
+        document.contains("urn:ietf:params:oauth:grant-type:token-exchange"),
+        "{document}"
     );
+
+    // Its key set is reachable at `{issuer}/keys` — and empty, because there are no token keys yet.
+    let (status, keys) = ask_full(
+        &WellKnownService::new(),
+        &config_with(&[]),
+        &realms,
+        "/realms/acme/keys",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(keys, r#"{"keys":[]}"#, "the realm has no token keys yet");
 }
 
 #[tokio::test]
@@ -288,22 +316,16 @@ async fn test_the_catalogue_lists_opted_in_realms_and_hides_the_rest() {
 
 #[tokio::test]
 async fn test_a_path_prefix_moves_where_everything_is_mounted() {
-    let config = config_with(&[
-        (pic_x_core::config::SETTING_WEB_PATH_PREFIX, "/pic-x"),
-        (
-            pic_x_core::config::SETTING_ISSUER,
-            "https://login.example.com/pic-x",
-        ),
-    ]);
+    let config = config_with(&[(pic_x_core::config::SETTING_WEB_PATH_PREFIX, "/pic-x")]);
     let service = WellKnownService::new();
 
     // Mounted under the prefix...
-    let (status, body) = ask_with(&service, &config, "/pic-x/.well-known/jwks.json").await;
+    let (status, body) = ask_with(&service, &config, "/pic-x/.well-known/server-configuration").await;
     assert_eq!(status, StatusCode::OK, "{body}");
 
     // ...and no longer at the root.
     assert_eq!(
-        ask_with(&service, &config, "/.well-known/jwks.json")
+        ask_with(&service, &config, "/.well-known/server-configuration")
             .await
             .0,
         StatusCode::NOT_FOUND
@@ -314,9 +336,15 @@ async fn test_a_path_prefix_moves_where_everything_is_mounted() {
 async fn test_a_realm_that_is_not_hosted_is_not_found() {
     // A realm nobody configured has no surface, whatever path is asked for.
     assert_eq!(
+        ask(&WellKnownService::new(), "/realms/ghost/keys")
+            .await
+            .0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
         ask(
             &WellKnownService::new(),
-            "/realms/ghost/.well-known/jwks.json"
+            "/realms/ghost/.well-known/pic-x-configuration"
         )
         .await
         .0,

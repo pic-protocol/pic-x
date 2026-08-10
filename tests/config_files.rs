@@ -271,15 +271,15 @@ fn test_the_local_file_starts_from_an_empty_volume() {
 
     assert!(outcome.started, "{}", outcome.stderr);
     assert!(
-        volume.join("secrets/audit-pseudonym").exists(),
+        volume.join("operations/secrets/audit-pseudonym").exists(),
         "the pseudonymisation secret was not generated"
     );
     assert!(
-        volume.join("keys/ring.json").exists(),
+        volume.join("operations/keys/ring.json").exists(),
         "the key ring was not created"
     );
     assert!(
-        volume.join("audit").exists(),
+        volume.join("operations/audit").exists(),
         "the audit trail was not written"
     );
 }
@@ -318,11 +318,11 @@ fn test_the_development_container_file_starts_from_an_empty_volume() {
 
     assert!(outcome.started, "{}", outcome.stderr);
     assert!(
-        volume.join("secrets/audit-pseudonym").exists(),
+        volume.join("operations/secrets/audit-pseudonym").exists(),
         "the pseudonymisation secret was not generated"
     );
     assert!(
-        volume.join("keys/ring.json").exists(),
+        volume.join("operations/keys/ring.json").exists(),
         "the key ring was not created"
     );
 

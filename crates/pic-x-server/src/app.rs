@@ -20,7 +20,7 @@ use pic_x_core::{
 };
 
 use crate::banner::Banner;
-use crate::command::{Action, AuditCommand, Cli, Command};
+use crate::command::{Action, AuditCommand, Cli, Command, KeysCommand};
 use crate::signal::ReloadHandler;
 use crate::{logging, signal, witness};
 
@@ -74,6 +74,12 @@ type RealmFactory = Box<dyn Fn(&Config, &RealmConfig) -> Result<Realm> + Send + 
 /// can be verified, and only the composition root knows what the trail is made of.
 type AuditVerifier = Box<dyn Fn(&Path, Option<&Path>) -> Result<String> + Send + Sync>;
 
+/// Reads a key ring on disk and returns its public keys as a JWKS document.
+///
+/// Registered by the binary for the same reason as the verifier: this crate knows a ring's public
+/// keys can be exported, and only the composition root knows what a ring on disk is made of.
+type KeysExporter = Box<dyn Fn(&Path) -> Result<String> + Send + Sync>;
+
 /// The shortest key material worth deriving anything from.
 ///
 /// Sixteen bytes is the floor, not the recommendation: what belongs in that secret is 32 random
@@ -120,6 +126,7 @@ pub struct App {
     audit_factory: Option<AuditSinkFactory>,
     realm_factory: Option<RealmFactory>,
     audit_verifier: Option<AuditVerifier>,
+    keys_exporter: Option<KeysExporter>,
     reload_handler: Option<ReloadHandler>,
     provisioner: Option<Provisioner>,
     declared_settings: Vec<String>,
@@ -156,6 +163,7 @@ impl App {
             audit_factory: None,
             realm_factory: None,
             audit_verifier: None,
+            keys_exporter: None,
             reload_handler: None,
             provisioner: None,
             declared_settings: Vec::new(),
@@ -274,6 +282,19 @@ impl App {
         F: Fn(&Path, Option<&Path>) -> Result<String> + Send + Sync + 'static,
     {
         self.audit_verifier = Some(Box::new(verifier));
+
+        self
+    }
+
+    /// Supplies how this build exports a key ring's public keys as a JWKS document.
+    ///
+    /// A build that registers none says so when asked, rather than pretending it cannot reach a ring
+    /// it simply was not told how to read.
+    pub fn with_keys_exporter<F>(mut self, exporter: F) -> Self
+    where
+        F: Fn(&Path) -> Result<String> + Send + Sync + 'static,
+    {
+        self.keys_exporter = Some(Box::new(exporter));
 
         self
     }
@@ -518,6 +539,9 @@ impl App {
             Action::Named(Command::Audit {
                 what: AuditCommand::Verify { directory, keys },
             }) => self.verify_audit(directory, keys.as_deref(), out),
+            Action::Named(Command::Keys {
+                what: KeysCommand::Export { directory },
+            }) => self.export_keys(directory, out),
         }
     }
 
@@ -537,6 +561,21 @@ impl App {
             .with_context(|| format!("checking the audit trail in {}", directory.display()))?;
 
         writeln!(out, "{summary}").context("writing the result")?;
+
+        Ok(())
+    }
+
+    /// Prints a key ring's public keys as a JWKS document.
+    fn export_keys(&self, directory: &Path, out: &mut dyn Write) -> Result<()> {
+        let exporter = self
+            .keys_exporter
+            .as_ref()
+            .context("this build cannot export a key ring")?;
+
+        let document = exporter(directory)
+            .with_context(|| format!("exporting the key ring in {}", directory.display()))?;
+
+        writeln!(out, "{document}").context("writing the key set")?;
 
         Ok(())
     }

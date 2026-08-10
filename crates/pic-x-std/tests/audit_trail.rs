@@ -279,6 +279,7 @@ fn ring(name: &str) -> std::sync::Arc<pic_x_std::keys::DirectoryKeyManager> {
             publish_ahead: Duration::from_secs(3600),
             rotate_every: Duration::from_secs(86_400),
             retain: Duration::from_secs(7 * 86_400),
+            verify_retain: Duration::from_secs(7 * 86_400),
         },
     ));
     keys.maintain().expect("the ring comes up");

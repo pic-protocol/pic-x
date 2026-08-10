@@ -693,7 +693,7 @@ fn test_a_trail_this_build_wrote_is_a_trail_this_build_can_check() {
     assert!(served.succeeded, "{}", served.stderr);
 
     let (_, volume) = config.volume();
-    let directory = format!("{volume}/audit");
+    let directory = format!("{volume}/operations/audit");
     let output = run(&["audit", "verify", "--directory", &directory]);
 
     assert!(output.status.success(), "{}", stderr_of(&output));
@@ -715,7 +715,7 @@ fn test_a_trail_somebody_edited_does_not_verify() {
     assert!(served.succeeded, "{}", served.stderr);
 
     let (_, volume) = config.volume();
-    let directory = format!("{volume}/audit");
+    let directory = format!("{volume}/operations/audit");
     let day = fs::read_dir(&directory)
         .expect("the trail is there")
         .flatten()

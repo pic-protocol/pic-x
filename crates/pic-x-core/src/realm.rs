@@ -172,7 +172,8 @@ pub struct Realm {
     mount_path: String,
     issuer: Option<String>,
     listed: bool,
-    keys: Option<Arc<dyn KeyManager>>,
+    operations_keys: Option<Arc<dyn KeyManager>>,
+    token_keys: Option<Arc<dyn KeyManager>>,
     audit: Arc<dyn AuditSink>,
     pseudonymizer: Option<Arc<dyn Pseudonymizer>>,
 }
@@ -181,15 +182,17 @@ impl Realm {
     /// Assembles a realm from its identity and the collaborators composed for it.
     ///
     /// `mount_path` is where its surface lives — `/realms/{name}` — and is what the registry resolves
-    /// a request against. `keys` is optional because a deployment may serve a realm that publishes no
-    /// signing keys yet, and `pseudonymizer` because a realm may record subjects masked rather than
-    /// pseudonymised.
+    /// a request against. Both key rings are optional: `operations_keys` (which signs the realm's
+    /// trail) because a realm may keep its trail unsigned, and `token_keys` (which signs the tokens it
+    /// issues, and is the ring its `jwks_uri` publishes) because token issuance may not exist yet.
+    /// `pseudonymizer` is optional because a realm may record subjects masked rather than pseudonymised.
     pub fn new(
         name: impl Into<String>,
         mount_path: impl Into<String>,
         issuer: Option<String>,
         listed: bool,
-        keys: Option<Arc<dyn KeyManager>>,
+        operations_keys: Option<Arc<dyn KeyManager>>,
+        token_keys: Option<Arc<dyn KeyManager>>,
         audit: Arc<dyn AuditSink>,
         pseudonymizer: Option<Arc<dyn Pseudonymizer>>,
     ) -> Self {
@@ -198,7 +201,8 @@ impl Realm {
             mount_path: mount_path.into(),
             issuer,
             listed,
-            keys,
+            operations_keys,
+            token_keys,
             audit,
             pseudonymizer,
         }
@@ -228,9 +232,21 @@ impl Realm {
         self.listed
     }
 
-    /// Returns the realm's key ring, when it has one.
-    pub fn keys(&self) -> Option<&Arc<dyn KeyManager>> {
-        self.keys.as_ref()
+    /// Returns the ring that signs this realm's trail — its operations ring, when it has one.
+    ///
+    /// An internal duty: these keys seal the realm's audit and their public halves are never served
+    /// over HTTP. The ring that signs *tokens* is [`Realm::token_keys`].
+    pub fn operations_keys(&self) -> Option<&Arc<dyn KeyManager>> {
+        self.operations_keys.as_ref()
+    }
+
+    /// Returns the ring this realm signs tokens with — the one its `jwks_uri` publishes — when it has
+    /// one.
+    ///
+    /// `None` until token issuance exists, which is the honest state today: the realm's `jwks_uri`
+    /// then publishes an empty set, because there is nothing yet that a relying party would verify.
+    pub fn token_keys(&self) -> Option<&Arc<dyn KeyManager>> {
+        self.token_keys.as_ref()
     }
 
     /// Returns the sink this realm's events are recorded to.
@@ -360,6 +376,7 @@ mod tests {
             Some(format!("https://host/realms/{name}")),
             listed,
             None,
+            None,
             Arc::new(SilentSink),
             None,
         )
@@ -409,12 +426,10 @@ mod tests {
             None,
             false,
             None,
+            None,
             Arc::new(SilentSink),
             None,
         );
-        assert_eq!(
-            local.url("/.well-known/jwks.json"),
-            "/realms/local/.well-known/jwks.json"
-        );
+        assert_eq!(local.url("/keys"), "/realms/local/keys");
     }
 }

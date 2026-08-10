@@ -32,12 +32,16 @@
 ## resolved against it. The server creates it on start. One setting instead of one per kind of file,
 ## because they were never independent: a deployment that moved its secrets moved all of it.
 ##
-##   <working_dir>/secrets   material resolved by the `directory` secret provider
-##   <working_dir>/tls       certificates and keys the listeners present
-##   <working_dir>/keys      the signing key ring, which maintains itself
-##   <working_dir>/audit     the trail, when it is kept here rather than in the log stream
-##   <working_dir>/state     what the server remembers about its own configuration
-##   <working_dir>/data      whatever the store keeps
+##   <working_dir>/operations   the record-keeping subsystem, kept together so it backs up as a unit:
+##     .../keys                 the ring that seals the trail, which maintains itself
+##     .../audit                the trail, when it is kept here rather than in the log stream
+##     .../secrets              material resolved by the `directory` secret provider
+##     .../state                what the server remembers about its own configuration
+##   <working_dir>/tls          certificates and keys the listeners present
+##   <working_dir>/data         whatever the store keeps
+##
+## A realm hosts the same `operations/` subsystem under `realms/<name>/operations/`, and — once it
+## issues tokens — its own signing keys at `realms/<name>/keys`.
 
 # working_dir: /var/lib/pic-x
 
@@ -291,13 +295,13 @@
 ##                that can read /proc and is inherited by every child
 ##   none         no store at all, and anything that needs one refuses to start
 ##
-## `directory` defaults to `<working_dir>/secrets`, so the same file works whether the material was
-## mounted or generated. Set it only to read from somewhere outside the volume. A build that needs
-## Vault, a KMS or an HSM adds it in its own composition root — nothing here changes.
+## `directory` defaults to `<working_dir>/operations/secrets`, so the same file works whether the
+## material was mounted or generated. Set it only to read from somewhere outside the volume. A build
+## that needs Vault, a KMS or an HSM adds it in its own composition root — nothing here changes.
 
 # secrets:
 #   provider: directory
-#   directory: secrets
+#   directory: operations/secrets
 #   env_prefix: PIC_X_SECRET
 
 ## ---------------------------------------------------------------------------------------------
@@ -327,7 +331,7 @@
 
 # audit:
 #   sink: file
-#   directory: audit
+#   directory: operations/audit
 #   retention: 90d
 
 ##   Audit subjects that are people can be recorded as pseudonyms instead of masked. Masking hides a
@@ -349,10 +353,12 @@
 ## Signing keys
 ## ---------------------------------------------------------------------------------------------
 ##
-## What this deployment signs with, published at /.well-known/jwks.json. A key is published before it
-## signs and stays published after it stops, because a verifier caches the set: a signature naming a
-## key nobody has fetched fails for as long as that cache lasts, and a signature made yesterday has to
-## keep verifying tomorrow.
+## The server's operations ring: what seals its system trail. Its public half is reached through the
+## administrative surface, not served over HTTP. A realm signs the tokens it issues with a separate
+## ring, which *is* published, at the realm's `jwks_uri`. Either way a key is published before it signs
+## and its public half is kept after it stops — a signature naming a key nobody has fetched fails until
+## caches refresh, and a signature made yesterday has to keep verifying tomorrow. The private half is
+## deleted at `retain`; the public half stays until the audit retention, so seals keep verifying.
 ##
 ##   publish_ahead  how long a new key sits in the set before it signs. Must be at least as long as
 ##                  the cache the set is served with (300s), or verifiers reject good signatures for
@@ -360,13 +366,18 @@
 ##   rotate_every   how long a key signs before it is replaced. Must be longer than publish_ahead
 ##   retain         how long a retired key stays published — the answer to "how far back must a
 ##                  signature still verify". Must be at least rotate_every, or there is a gap
+##   maintenance_interval  how often the lifecycle is advanced. One loop maintains every ring — the
+##                  server's and each realm's — so this is a single server-wide cadence, and a realm's
+##                  `rotate_every` can never take effect faster than it. 60s by default; development
+##                  lowers it to a second or two to watch a rotation happen
 ##
 ## The first key of a fresh deployment signs immediately: publishing ahead protects verifiers that
 ## already cached something, and a deployment starting for the first time has none.
 
 # keys:
 #   enabled: true
-#   directory: keys
+#   directory: operations/keys
 #   publish_ahead: 1h
 #   rotate_every: 30d
 #   retain: 365d
+#   maintenance_interval: 60s

@@ -636,15 +636,20 @@ fn test_a_realm_gets_its_own_resource_directories_under_the_volume() {
 
     assert_eq!(
         config.realm_keys_directory("acme"),
-        std::path::PathBuf::from("/var/lib/pic-x/realms/acme/keys")
+        std::path::PathBuf::from("/var/lib/pic-x/realms/acme/operations/keys")
     );
     assert_eq!(
         config.realm_audit_directory("acme"),
-        std::path::PathBuf::from("/var/lib/pic-x/realms/acme/audit")
+        std::path::PathBuf::from("/var/lib/pic-x/realms/acme/operations/audit")
     );
     assert_eq!(
         config.realm_secrets_directory("acme"),
-        std::path::PathBuf::from("/var/lib/pic-x/realms/acme/secrets")
+        std::path::PathBuf::from("/var/lib/pic-x/realms/acme/operations/secrets")
+    );
+    // The realm's token-signing ring is separate, at the realm's top level.
+    assert_eq!(
+        config.realm_token_keys_directory("acme"),
+        std::path::PathBuf::from("/var/lib/pic-x/realms/acme/keys")
     );
     // And the mount path is derived, not configured.
     assert_eq!(config.realms()[0].mount_path(), "/realms/acme");
