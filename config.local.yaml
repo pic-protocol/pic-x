@@ -40,7 +40,7 @@ grpc:
   addr: 127.0.0.1:7557
 
 secrets:
-  # Resolves to <working_dir>/secrets, which is where the generated key lands.
+  # Resolves to <working_dir>/operations/secrets, which is where the generated key lands.
   provider: directory
 
 audit:
