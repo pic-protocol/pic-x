@@ -1,6 +1,6 @@
 [package]
-name = "pic-x-wellknown"
-description = "The public PIC-X surface: discovery documents and whatever a client is meant to find on its own."
+name = "pic-x-realm"
+description = "The public PIC-X surface: the server control plane and per-realm issuer discovery."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

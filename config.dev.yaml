@@ -69,3 +69,16 @@ keys:
   publish_ahead: 1m
   rotate_every: 10m
   retain: 1h
+
+# Two example realms — two issuers hosted by one server — so a container run demonstrates the
+# multi-tenant shape. Both listed, so both appear in /.well-known/server-configuration; each
+# carries its own issuer, so its /realms/<name>/.well-known/pic-x-configuration advertises real
+# absolute URLs. Each gets its own keys, trail and pseudonymisation key under realms/<name>/,
+# generated on first start. A single-issuer deployment leaves this out. See docs/realms.md.
+realms:
+  - name: acme
+    issuer: http://localhost:7556/realms/acme
+    listed: true
+  - name: globex
+    issuer: http://localhost:7556/realms/globex
+    listed: true

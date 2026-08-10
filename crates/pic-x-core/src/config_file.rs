@@ -33,6 +33,7 @@ use crate::config::{
     SETTING_WEB_TLS_CERT, SETTING_WEB_TLS_CLIENT_CA, SETTING_WEB_TLS_CRL, SETTING_WEB_TLS_KEY,
     SETTING_WEB_TLS_MIN_VERSION, SETTING_WORKING_DIR,
 };
+use crate::realm::RealmInput;
 
 /// The section names this crate parses into typed settings.
 const KNOWN_SECTIONS: [&str; 10] = [
@@ -83,9 +84,85 @@ pub struct ConfigFile {
     secrets: SecretsSection,
     #[serde(default)]
     keys: KeysSection,
+    /// The issuers this deployment hosts. A list, not a flat setting, so it is carried as structured
+    /// configuration rather than through the layered key/value pipeline — realms come from the file
+    /// (and, later, a database), never from a single environment variable.
+    #[serde(default)]
+    realms: Vec<RealmSection>,
     /// Sections outside the typed ones, kept verbatim for whoever claims them.
     #[serde(flatten)]
     sections: BTreeMap<String, Value>,
+}
+
+/// One realm as the file declares it, before resolution.
+///
+/// `name` has no default: a realm without a name is a realm nothing can be routed to, and serde
+/// refuses the file rather than inventing one. Every other field — and every nested block — is
+/// optional: what a realm does not state, it inherits from the server. The blocks mirror the
+/// server's own sections, so a realm overriding its rotation reads exactly like the server setting it.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RealmSection {
+    name: String,
+    #[serde(default)]
+    issuer: Option<String>,
+    /// Whether this realm appears in the server's public catalogue. Absent means no.
+    #[serde(default)]
+    listed: Option<String>,
+    #[serde(default)]
+    keys: RealmKeysSection,
+    #[serde(default)]
+    audit: RealmAuditSection,
+    #[serde(default)]
+    secrets: RealmSecretsSection,
+}
+
+/// A realm's override of the signing-key lifecycle. Any field absent inherits the server's.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RealmKeysSection {
+    #[serde(default)]
+    enabled: Option<String>,
+    #[serde(default)]
+    publish_ahead: Option<String>,
+    #[serde(default)]
+    rotate_every: Option<String>,
+    #[serde(default)]
+    retain: Option<String>,
+}
+
+/// A realm's override of its audit trail. Any field absent inherits the server's.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RealmAuditSection {
+    #[serde(default)]
+    sink: Option<String>,
+    #[serde(default)]
+    retention: Option<String>,
+    #[serde(default)]
+    pseudonym: RealmPseudonymSection,
+}
+
+/// A realm's override of how audit subjects are pseudonymised.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RealmPseudonymSection {
+    #[serde(default)]
+    enabled: Option<String>,
+    #[serde(default)]
+    key_ref: Option<String>,
+    #[serde(default)]
+    key_version: Option<String>,
+}
+
+/// A realm's override of where its secrets come from. Any field absent inherits the server's.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RealmSecretsSection {
+    #[serde(default)]
+    provider: Option<String>,
+    #[serde(default)]
+    env_prefix: Option<String>,
 }
 
 /// Listener addresses for the user-facing web surface.
@@ -395,6 +472,33 @@ impl ConfigFile {
     /// Returns a section this crate does not parse, for whoever declared it.
     pub fn section(&self, name: &str) -> Option<&Value> {
         self.sections.get(name)
+    }
+
+    /// Returns the realms this file declares, as raw overrides to be resolved against the server.
+    ///
+    /// No value is parsed here — a duration or a boolean is read by the same rules the server uses,
+    /// which live where the server configuration is resolved. This only carries what the file said,
+    /// in the file's order, so the catalogue and the log list realms the way an operator wrote them.
+    pub fn realms(&self) -> Vec<RealmInput> {
+        self.realms
+            .iter()
+            .map(|realm| RealmInput {
+                name: realm.name.clone(),
+                issuer: realm.issuer.clone(),
+                listed: realm.listed.clone(),
+                keys_enabled: realm.keys.enabled.clone(),
+                keys_publish_ahead: realm.keys.publish_ahead.clone(),
+                keys_rotate_every: realm.keys.rotate_every.clone(),
+                keys_retain: realm.keys.retain.clone(),
+                audit_sink: realm.audit.sink.clone(),
+                audit_retention: realm.audit.retention.clone(),
+                audit_pseudonym_enabled: realm.audit.pseudonym.enabled.clone(),
+                audit_pseudonym_key_ref: realm.audit.pseudonym.key_ref.clone(),
+                audit_pseudonym_key_version: realm.audit.pseudonym.key_version.clone(),
+                secrets_provider: realm.secrets.provider.clone(),
+                secrets_env_prefix: realm.secrets.env_prefix.clone(),
+            })
+            .collect()
     }
 
     /// Returns every section outside the typed ones, in file-independent order.

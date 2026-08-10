@@ -7,7 +7,7 @@
 use std::time::Duration;
 
 use pic_x_core::config::*;
-use pic_x_core::{BuildSettings, Config, LogFormat, LogLevel, TlsVersion};
+use pic_x_core::{BuildSettings, Config, LogFormat, LogLevel, RealmInput, TlsVersion};
 
 /// The extra-settings layer of a build that declares none.
 const NO_DECLARED: [&str; 0] = [];
@@ -600,4 +600,197 @@ fn test_a_declared_setting_no_layer_supplies_stays_absent() {
     let config = declaring(&["PERMGUARD_SSO_ISSUER"], &[], &[], &[]);
 
     assert_eq!(config.setting("PERMGUARD_SSO_ISSUER"), None);
+}
+
+#[test]
+fn test_a_deployment_with_no_realms_is_a_plain_server() {
+    // The ordinary single-issuer case: nothing declared, nothing to enumerate, everything at root.
+    let config = servable();
+
+    assert!(config.realms().is_empty());
+    config.validate().expect("a server with no realms is valid");
+}
+
+/// A bare realm override that only names itself; everything else inherits the server.
+fn realm(name: &str) -> RealmInput {
+    RealmInput {
+        name: name.to_owned(),
+        ..RealmInput::default()
+    }
+}
+
+#[test]
+fn test_a_realm_gets_its_own_resource_directories_under_the_volume() {
+    // Isolation is on disk: a realm's keys, trail and secrets never share a directory with the
+    // server's or with another realm's.
+    let config = config(
+        &[
+            (SETTING_WEB_HTTP_ADDR, "0.0.0.0:5556"),
+            (SETTING_WORKING_DIR, "/var/lib/pic-x"),
+        ],
+        &[],
+        &[],
+    )
+    .with_realms([realm("acme")])
+    .expect("the realm resolves");
+
+    assert_eq!(
+        config.realm_keys_directory("acme"),
+        std::path::PathBuf::from("/var/lib/pic-x/realms/acme/keys")
+    );
+    assert_eq!(
+        config.realm_audit_directory("acme"),
+        std::path::PathBuf::from("/var/lib/pic-x/realms/acme/audit")
+    );
+    assert_eq!(
+        config.realm_secrets_directory("acme"),
+        std::path::PathBuf::from("/var/lib/pic-x/realms/acme/secrets")
+    );
+    // And the mount path is derived, not configured.
+    assert_eq!(config.realms()[0].mount_path(), "/realms/acme");
+}
+
+#[test]
+fn test_a_realm_inherits_the_servers_policy_and_overrides_only_what_it_states() {
+    let config = config(
+        &[
+            (SETTING_WEB_HTTP_ADDR, "0.0.0.0:5556"),
+            (SETTING_KEYS_ROTATE_EVERY, "30d"),
+            (SETTING_KEYS_RETAIN, "400d"),
+        ],
+        &[],
+        &[],
+    )
+    .with_realms([
+        // acme overrides only its rotation cadence; retention must inherit the server's 400d.
+        RealmInput {
+            name: "acme".to_owned(),
+            keys_rotate_every: Some("90d".to_owned()),
+            ..RealmInput::default()
+        },
+        // globex states nothing about keys, so it inherits both.
+        realm("globex"),
+    ])
+    .expect("the realms resolve");
+
+    let acme = &config.realms()[0];
+    assert_eq!(
+        acme.keys_rotate_every(),
+        std::time::Duration::from_secs(90 * 86_400)
+    );
+    assert_eq!(
+        acme.keys_retain(),
+        std::time::Duration::from_secs(400 * 86_400)
+    );
+
+    let globex = &config.realms()[1];
+    assert_eq!(
+        globex.keys_rotate_every(),
+        std::time::Duration::from_secs(30 * 86_400)
+    );
+    assert_eq!(
+        globex.keys_retain(),
+        std::time::Duration::from_secs(400 * 86_400)
+    );
+}
+
+#[test]
+fn test_a_realm_may_pseudonymise_from_the_environment_under_its_own_prefix() {
+    let config = servable()
+        .with_realms([RealmInput {
+            name: "acme".to_owned(),
+            audit_pseudonym_enabled: Some("true".to_owned()),
+            audit_pseudonym_key_ref: Some("audit-pseudonym".to_owned()),
+            secrets_provider: Some("environment".to_owned()),
+            ..RealmInput::default()
+        }])
+        .expect("the realm resolves");
+
+    let acme = &config.realms()[0];
+    assert!(acme.audit_pseudonym_enabled());
+    // The default per-realm prefix carries the realm name, so two realms cannot collide.
+    assert_eq!(acme.secrets_env_prefix(), "PIC_X_SECRET_ACME");
+    config
+        .validate()
+        .expect("a realm with a provider and a key ref is valid");
+}
+
+#[test]
+fn test_a_realm_that_pseudonymises_without_a_provider_is_refused() {
+    let config = servable()
+        .with_realms([RealmInput {
+            name: "acme".to_owned(),
+            audit_pseudonym_enabled: Some("true".to_owned()),
+            audit_pseudonym_key_ref: Some("audit-pseudonym".to_owned()),
+            secrets_provider: Some("none".to_owned()),
+            ..RealmInput::default()
+        }])
+        .expect("the realm resolves");
+
+    let error = config.validate().expect_err("no provider is refused");
+    assert!(format!("{error}").contains("nowhere"), "{error}");
+}
+
+#[test]
+fn test_a_realm_rotation_that_would_strand_its_signatures_is_refused() {
+    // The same overlap arithmetic as the server's, per realm: retain shorter than rotate.
+    let config = servable()
+        .with_realms([RealmInput {
+            name: "acme".to_owned(),
+            keys_enabled: Some("true".to_owned()),
+            keys_rotate_every: Some("30d".to_owned()),
+            keys_retain: Some("1d".to_owned()),
+            ..RealmInput::default()
+        }])
+        .expect("the realm resolves");
+
+    let error = config
+        .validate()
+        .expect_err("a stranding lifecycle is refused");
+    assert!(format!("{error}").contains("realm `acme`"), "{error}");
+}
+
+#[test]
+fn test_two_realms_with_the_same_name_are_refused() {
+    // Which key signs, which trail records, is not a question to answer by insertion order.
+    let config = servable()
+        .with_realms([realm("acme"), realm("acme")])
+        .expect("the realms resolve");
+
+    let error = config
+        .validate()
+        .expect_err("a duplicate realm name is refused");
+    assert!(format!("{error}").contains("unique"), "{error}");
+}
+
+#[test]
+fn test_a_realm_name_that_could_escape_a_path_or_a_directory_is_refused() {
+    for bad in ["../etc", "a/b", "ACME", "has space", "-lead", "trail-", ""] {
+        let config = servable()
+            .with_realms([realm(bad)])
+            .expect("the realm resolves");
+
+        assert!(
+            config.validate().is_err(),
+            "the realm name `{bad}` was accepted"
+        );
+    }
+}
+
+#[test]
+fn test_listed_defaults_to_closed_and_is_opt_in() {
+    // Fail-closed: a realm is enumerable only if it said so.
+    let config = servable()
+        .with_realms([
+            realm("hidden"),
+            RealmInput {
+                name: "shown".to_owned(),
+                listed: Some("true".to_owned()),
+                ..RealmInput::default()
+            },
+        ])
+        .expect("the realms resolve");
+
+    assert!(!config.realms()[0].listed());
+    assert!(config.realms()[1].listed());
 }

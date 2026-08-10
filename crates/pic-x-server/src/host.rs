@@ -208,6 +208,26 @@ impl ServerHost for DefaultServerHost {
 
             state(context, "server.stopped", COMPONENT, "stopped");
 
+            // Each realm's trail is sealed too, in sequence — one process, one drain, no task apiece.
+            // A realm that fails to release is named and the next is still tried: a shutdown releases
+            // as much as it can.
+            for realm in context.realms().all() {
+                match within(deadline, realm.audit().shutdown()).await {
+                    Some(Ok(())) => {}
+                    Some(Err(error)) => {
+                        warn!(
+                            event.name = "audit.shutdown.failed",
+                            component = realm.audit().name(),
+                            realm = realm.name(),
+                            error = %error,
+                            "a realm's audit sink did not release cleanly"
+                        );
+                        unfinished.push(format!("realm {}", realm.name()));
+                    }
+                    None => unfinished.push(format!("realm {}", realm.name())),
+                }
+            }
+
             // Last, and after the final record: a sink flushed before the last write loses it.
             match within(deadline, context.audit().shutdown()).await {
                 Some(Ok(())) => {}

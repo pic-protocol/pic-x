@@ -131,3 +131,16 @@ keys:
   publish_ahead: 1h
   rotate_every: 30d
   retain: 365d
+
+# The issuers this deployment hosts, one realm each, both listed so both appear in the public
+# catalogue. Set each `issuer` to the tenant's real public URL. Because this file does not
+# autogenerate, each realm's pseudonymisation key must be provided at realms/<name>/secrets/
+# audit-pseudonym, exactly as the server's is — the server refuses to start without it. See
+# docs/realms.md.
+realms:
+  - name: acme
+    issuer: https://acme.example.com
+    listed: true
+  - name: globex
+    issuer: https://globex.example.com
+    listed: true

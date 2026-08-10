@@ -13,6 +13,7 @@ use crate::keys::KEY_SET_MAX_AGE;
 use crate::limits::Limits;
 use crate::logging::{LogFormat, LogLevel};
 use crate::peer::AllowedPeer;
+use crate::realm::{RealmConfig, RealmInput};
 use crate::secrets::{SecretProvider, SecretRef};
 use crate::tls::TlsSettings;
 
@@ -382,6 +383,7 @@ pub struct Config {
     keys_publish_ahead: Duration,
     keys_rotate_every: Duration,
     keys_retain: Duration,
+    realms: Vec<RealmConfig>,
     declared: BTreeSet<String>,
     declared_values: BTreeMap<String, String>,
     sections: BTreeMap<&'static str, Arc<dyn AnyConfigSection>>,
@@ -425,6 +427,7 @@ impl Default for Config {
             keys_publish_ahead: DEFAULT_KEYS_PUBLISH_AHEAD,
             keys_rotate_every: DEFAULT_KEYS_ROTATE_EVERY,
             keys_retain: DEFAULT_KEYS_RETAIN,
+            realms: Vec::new(),
             declared: BTreeSet::new(),
             declared_values: BTreeMap::new(),
             sections: BTreeMap::new(),
@@ -479,6 +482,113 @@ impl Config {
         config.apply_pairs(layers.command_line)?;
 
         Ok(config)
+    }
+
+    /// Attaches the realms this deployment hosts, resolved from the configuration file.
+    ///
+    /// Separate from the layered settings above on purpose: a realm is a structured record, not a
+    /// flat key, and it comes only from the file (and, later, a database). There is no sensible way to
+    /// set an array of realms from a single environment variable, so it does not ride that pipeline.
+    pub fn with_realms(mut self, realms: impl IntoIterator<Item = RealmInput>) -> Result<Self> {
+        self.realms = realms
+            .into_iter()
+            .map(|input| self.resolve_realm(input))
+            .collect::<Result<Vec<_>>>()?;
+
+        Ok(self)
+    }
+
+    /// Resolves one realm's declared overrides against the server's values.
+    ///
+    /// This is the one place base ⊕ override happens: every field the realm did not state takes the
+    /// server's, parsed with the very same rules the server settings use — so `90d` means the same
+    /// thing in a realm as it does at the top level, and an unreadable value is refused here rather
+    /// than surprising something downstream. Every field it *did* state is parsed and takes over.
+    fn resolve_realm(&self, input: RealmInput) -> Result<RealmConfig> {
+        let name = input.name;
+        let mount_path = format!("/realms/{name}");
+
+        let listed = match input.listed {
+            Some(value) => parse_bool(&value)
+                .with_context(|| format!("reading `listed` for the realm `{name}`"))?,
+            None => false,
+        };
+
+        let inherit_bool = |value: Option<String>, server: bool, field: &str| -> Result<bool> {
+            match value {
+                Some(value) => parse_bool(&value)
+                    .with_context(|| format!("reading `{field}` for the realm `{name}`")),
+                None => Ok(server),
+            }
+        };
+        let inherit_duration =
+            |value: Option<String>, server: Duration, field: &str| -> Result<Duration> {
+                match value {
+                    Some(value) => parse_duration(&value)
+                        .with_context(|| format!("reading `{field}` for the realm `{name}`")),
+                    None => Ok(server),
+                }
+            };
+
+        let secrets_provider = match input.secrets_provider {
+            Some(value) => value
+                .parse()
+                .with_context(|| format!("reading the secrets provider for the realm `{name}`"))?,
+            None => self.secrets_provider,
+        };
+        let audit_destination = match input.audit_sink {
+            Some(value) => value
+                .parse()
+                .with_context(|| format!("reading the audit sink for the realm `{name}`"))?,
+            None => self.audit_destination,
+        };
+
+        Ok(RealmConfig {
+            mount_path,
+            issuer: input.issuer,
+            listed,
+            keys_enabled: inherit_bool(input.keys_enabled, self.keys_enabled, "keys.enabled")?,
+            keys_publish_ahead: inherit_duration(
+                input.keys_publish_ahead,
+                self.keys_publish_ahead,
+                "keys.publish_ahead",
+            )?,
+            keys_rotate_every: inherit_duration(
+                input.keys_rotate_every,
+                self.keys_rotate_every,
+                "keys.rotate_every",
+            )?,
+            keys_retain: inherit_duration(input.keys_retain, self.keys_retain, "keys.retain")?,
+            audit_destination,
+            audit_retention: inherit_duration(
+                input.audit_retention,
+                self.audit_retention,
+                "audit.retention",
+            )?,
+            audit_pseudonym_enabled: inherit_bool(
+                input.audit_pseudonym_enabled,
+                self.audit_pseudonym_enabled,
+                "audit.pseudonym.enabled",
+            )?,
+            audit_pseudonym_key_ref: input
+                .audit_pseudonym_key_ref
+                .map(SecretRef::new)
+                .or_else(|| self.audit_pseudonym_key_ref.clone()),
+            audit_pseudonym_key_version: input
+                .audit_pseudonym_key_version
+                .unwrap_or_else(|| self.audit_pseudonym_key_version.clone()),
+            secrets_provider,
+            secrets_env_prefix: input.secrets_env_prefix.unwrap_or_else(|| {
+                // A per-realm environment prefix defaults to the server's, suffixed with the realm, so
+                // two realms resolving from the environment cannot collide on the same variable.
+                format!(
+                    "{}_{}",
+                    self.secrets_env_prefix,
+                    name.to_uppercase().replace('-', "_")
+                )
+            }),
+            name,
+        })
     }
 
     /// Checks that the assembled config can actually start a server.
@@ -536,6 +646,7 @@ impl Config {
         self.validate_development()?;
         self.validate_admin_access()?;
         self.validate_key_lifecycle()?;
+        self.validate_realms()?;
 
         // Turning pseudonymisation on and leaving the key out is a misconfiguration, not a reason to
         // record less carefully than the deployment asked for. It stops the start.
@@ -625,21 +736,37 @@ impl Config {
             return Ok(());
         }
 
-        if self.keys_publish_ahead >= self.keys_rotate_every {
+        self.check_key_lifecycle(
+            self.keys_publish_ahead,
+            self.keys_rotate_every,
+            self.keys_retain,
+            "the server",
+        )
+    }
+
+    /// The overlap rules a key lifecycle has to satisfy, for whoever owns it — the server or a realm.
+    ///
+    /// One place, so a realm's rotation is held to exactly the same arithmetic as the server's; both
+    /// mistakes here are silent for weeks and then break everything at once.
+    fn check_key_lifecycle(
+        &self,
+        publish_ahead: Duration,
+        rotate_every: Duration,
+        retain: Duration,
+        who: &str,
+    ) -> Result<()> {
+        if publish_ahead >= rotate_every {
             bail!(
-                "a key would be replaced after {:?} but is only published {:?} before it signs: it \
-                 would never get a turn",
-                self.keys_rotate_every,
-                self.keys_publish_ahead
+                "for {who}, a key would be replaced after {rotate_every:?} but is only published \
+                 {publish_ahead:?} before it signs: it would never get a turn"
             );
         }
 
-        if self.keys_retain < self.keys_rotate_every {
+        if retain < rotate_every {
             bail!(
-                "a retired key is kept for {:?} but keys are replaced every {:?}, which leaves \
-                 signatures made in between with no published key to verify against",
-                self.keys_retain,
-                self.keys_rotate_every
+                "for {who}, a retired key is kept for {retain:?} but keys are replaced every \
+                 {rotate_every:?}, which leaves signatures made in between with no published key to \
+                 verify against"
             );
         }
 
@@ -647,15 +774,83 @@ impl Config {
         // `KEY_SET_MAX_AGE`, so a key that starts signing sooner than that is verified against a set
         // that does not contain it. Development wants short windows to watch a rotation happen, and
         // has no verifiers to break.
-        if self.keys_publish_ahead < KEY_SET_MAX_AGE && !self.development_mode {
+        if publish_ahead < KEY_SET_MAX_AGE && !self.development_mode {
             bail!(
-                "a key would start signing {:?} after it is published, but the key set is served \
-                 with a cache of {:?}: every verifier holding a cached copy would reject the \
-                 signatures made in between. Set `keys.publish_ahead` to at least {:?}",
-                self.keys_publish_ahead,
-                KEY_SET_MAX_AGE,
-                KEY_SET_MAX_AGE
+                "for {who}, a key would start signing {publish_ahead:?} after it is published, but \
+                 the key set is served with a cache of {KEY_SET_MAX_AGE:?}: every verifier holding a \
+                 cached copy would reject the signatures made in between. Publish it at least \
+                 {KEY_SET_MAX_AGE:?} ahead"
             );
+        }
+
+        Ok(())
+    }
+
+    /// Refuses a set of realms that cannot be told apart or safely mounted.
+    ///
+    /// A realm's name becomes a URL path segment and a directory on disk, so it is checked against
+    /// both roles at once: lowercase letters, digits and internal hyphens, nothing that could climb
+    /// out of the volume (`..`, a slash) or produce a surprising URL. And two realms with the same
+    /// name are refused rather than silently collapsed into one — which key would sign, which trail
+    /// would record, is not a question to answer by insertion order.
+    fn validate_realms(&self) -> Result<()> {
+        let mut seen = BTreeSet::new();
+
+        for realm in &self.realms {
+            let name = realm.name();
+
+            if !seen.insert(name.to_owned()) {
+                bail!(
+                    "two realms are named `{name}`: a realm name has to be unique, because it is what \
+                     decides whose keys sign and whose trail records"
+                );
+            }
+
+            let shaped = !name.is_empty()
+                && name.len() <= 40
+                && name
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+                && !name.starts_with('-')
+                && !name.ends_with('-');
+
+            if !shaped {
+                bail!(
+                    "the realm name `{name}` is not usable: a name becomes a URL path and a directory, \
+                     so it must be 1 to 40 characters of lowercase letters, digits and internal \
+                     hyphens — nothing else"
+                );
+            }
+
+            // A realm's rotation is held to the same overlap rules as the server's — the override
+            // does not buy an exemption from arithmetic that would strand its own signatures.
+            if realm.keys_enabled {
+                self.check_key_lifecycle(
+                    realm.keys_publish_ahead,
+                    realm.keys_rotate_every,
+                    realm.keys_retain,
+                    &format!("the realm `{name}`"),
+                )?;
+            }
+
+            // Pseudonymisation a realm turned on has to have somewhere to resolve its key from and a
+            // name to resolve — the same requirement the server has, checked per realm because a
+            // realm can enable it when the server did not.
+            if realm.audit_pseudonym_enabled {
+                if realm.secrets_provider == SecretProvider::None {
+                    bail!(
+                        "the realm `{name}` enables audit pseudonymisation but resolves secrets from \
+                         nowhere: give it a `secrets.provider`, or turn its pseudonymisation off"
+                    );
+                }
+
+                if realm.audit_pseudonym_key_ref.is_none() {
+                    bail!(
+                        "the realm `{name}` enables audit pseudonymisation but names no secret: set \
+                         `audit.pseudonym.key_ref`"
+                    );
+                }
+            }
         }
 
         Ok(())
@@ -929,6 +1124,32 @@ impl Config {
                 .as_deref()
                 .unwrap_or(DEFAULT_KEYS_SUBDIRECTORY),
         )
+    }
+
+    /// Returns the realms this deployment hosts, in a stable order.
+    ///
+    /// Empty is the ordinary single-issuer deployment: a server that hosts no separate realm and
+    /// serves everything under its own root. Adding realms is additive.
+    pub fn realms(&self) -> &[RealmConfig] {
+        &self.realms
+    }
+
+    /// Returns where `realm`'s key ring lives: `<volume>/realms/<name>/keys`.
+    ///
+    /// The convention is here, in one place, so the surface that publishes a realm's keys and the
+    /// service that rotates them cannot disagree about where they are.
+    pub fn realm_keys_directory(&self, realm: &str) -> PathBuf {
+        self.resolve(format!("realms/{realm}/keys"))
+    }
+
+    /// Returns where `realm`'s audit trail lives: `<volume>/realms/<name>/audit`.
+    pub fn realm_audit_directory(&self, realm: &str) -> PathBuf {
+        self.resolve(format!("realms/{realm}/audit"))
+    }
+
+    /// Returns where `realm`'s secret material is resolved from: `<volume>/realms/<name>/secrets`.
+    pub fn realm_secrets_directory(&self, realm: &str) -> PathBuf {
+        self.resolve(format!("realms/{realm}/secrets"))
     }
 
     /// Returns how long a new key is published before it starts signing.

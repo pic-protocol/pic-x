@@ -44,7 +44,7 @@ use anyhow::{Context, Result, bail};
 use ring::rand::{SecureRandom, SystemRandom};
 use tracing::{info, warn};
 
-use pic_x_core::{AuditDestination, Config};
+use pic_x_core::{AuditDestination, Config, SecretProvider};
 
 /// The `component` every record of provisioning carries.
 const COMPONENT: &str = "provision";
@@ -160,36 +160,66 @@ pub fn prepare(config: &Config) -> Result<()> {
 }
 
 /// Writes the secrets the configuration names and the store does not have.
+///
+/// The server's, and then one per realm in the realm's own secrets directory — a *distinct* key, so
+/// the same subject pseudonymised in two realms cannot be recognised as the same subject across them.
+/// That per-tenant key is the whole privacy point of a realm having its own secret rather than sharing.
 fn prepare_secrets(config: &Config, volume: &Volume) -> Result<()> {
-    let Some(reference) = config.audit_pseudonym_key_ref() else {
-        return Ok(());
-    };
-
-    if !config.audit_pseudonym_enabled() {
-        return Ok(());
+    // The server's own key, when the server pseudonymises.
+    if config.audit_pseudonym_enabled()
+        && let Some(reference) = config.audit_pseudonym_key_ref()
+    {
+        generate_secret(
+            &volume.secrets(config).join(reference.name()),
+            reference.name(),
+        )?;
     }
 
-    let path = volume.secrets(config).join(reference.name());
+    // Each realm that pseudonymises from a directory gets its own key, and only those: a realm with
+    // pseudonymisation off, or resolving its secrets from the environment, has nothing to generate.
+    // A realm can enable it even when the server did not, so it is decided per realm.
+    for realm in config.realms() {
+        if !realm.audit_pseudonym_enabled() || realm.secrets_provider() != SecretProvider::Directory
+        {
+            continue;
+        }
+
+        let Some(reference) = realm.audit_pseudonym_key_ref() else {
+            continue;
+        };
+
+        let directory = config.realm_secrets_directory(realm.name());
+        create_directory(&directory)?;
+        generate_secret(&directory.join(reference.name()), reference.name())?;
+    }
+
+    Ok(())
+}
+
+/// Writes `SECRET_BYTES` of random material to `path`, unless something is already there.
+///
+/// Never overwrites: a file that exists is one somebody meant to put there, and regenerating a
+/// pseudonymisation key silently would break every pseudonym written under the old one.
+fn generate_secret(path: &Path, reference: &str) -> Result<()> {
     if path.exists() {
         return Ok(());
     }
 
-    // The same generator `rustls` and the key ring already use. Drawing the one secret this module
-    // produces from a second random-number implementation would mean two of them to review, two to
-    // keep patched, and two chances for a platform to be supported by one and not the other — for a
-    // call that asks for thirty-two bytes.
+    // The same generator `rustls` and the key ring already use. Drawing this from a second
+    // random-number implementation would mean two of them to review, two to keep patched, and two
+    // chances for a platform to be supported by one and not the other — for thirty-two bytes.
     let mut material = [0_u8; SECRET_BYTES];
     SystemRandom::new()
         .fill(&mut material)
         .map_err(|_| anyhow::anyhow!("the system random number generator refused"))
         .context("drawing random bytes for a generated secret")?;
 
-    write_private(&path, hex(&material).as_bytes())?;
+    write_private(path, hex(&material).as_bytes())?;
 
     info!(
         event.name = "provision.secret",
         component = COMPONENT,
-        secret.reference = reference.name(),
+        secret.reference = reference,
         path = %path.display(),
         "generated a secret"
     );

@@ -16,6 +16,8 @@ use pic_x_admin::AdminService;
 use pic_x_core::{AuditDestination, AuditSink, JwkSet, KeyManager, Metrics};
 use pic_x_core::{BuildSettings, ProductIdentity};
 use pic_x_core::{Config, SecretProvider, SecretStore};
+use pic_x_core::{Pseudonymizer, Realm, RealmConfig};
+use pic_x_realm::WellKnownService;
 use pic_x_server::{App, DefaultServerHost};
 use pic_x_std::audit::{FileAuditSink, TracingAuditSink};
 use pic_x_std::keys::{DirectoryKeyManager, KeyPolicy, KeyService};
@@ -24,7 +26,6 @@ use pic_x_std::pseudonym::HmacPseudonymizer;
 use pic_x_std::secrets::{DirectorySecretStore, EnvironmentSecretStore};
 use pic_x_std::storage::MemoryStorage;
 use pic_x_telemetry::TelemetryService;
-use pic_x_wellknown::WellKnownService;
 
 /// The executable name shown in usage text and diagnostics.
 const BINARY_NAME: &str = "pic-x";
@@ -83,6 +84,10 @@ async fn main() -> ExitCode {
     .with_pseudonymizer_factory(|key, key_version| {
         Box::new(HmacPseudonymizer::new(key, key_version))
     })
+    // How this build assembles one realm: its own key ring, its own trail, its own pseudonymisation,
+    // each rooted in the realm's own directory. Same implementations as the server's, pointed
+    // elsewhere — which is the whole reason multi-tenancy costs a loop and not a rewrite.
+    .with_realm_factory(build_realm)
     // SIGHUP means re-read what can be re-read. What that is, in this build, is every listener's
     // transport material — so a renewed certificate is picked up without a restart.
     .with_reload_handler(|| {
@@ -226,6 +231,100 @@ fn key_manager_for(config: &Config) -> anyhow::Result<Option<Arc<dyn KeyManager>
             retain: config.keys_retain(),
         },
     ))))
+}
+
+/// Assembles one realm: its own key ring, its own trail, its own pseudonymisation.
+///
+/// The same implementations the server uses, pointed at the realm's own directories under
+/// `realms/<name>/`, on the server's lifecycle policy. That is the whole shape of multi-tenancy here
+/// — a realm is these collaborators rooted somewhere else, not a second copy of the code that builds
+/// them — and it is why this is the only function that grew.
+fn build_realm(config: &Config, realm: &RealmConfig) -> anyhow::Result<Realm> {
+    let name = realm.name();
+
+    // Its own signing keys — when it publishes any — on its own lifecycle, so a realm's tokens and
+    // its trail's seals verify against its key set and no other.
+    let keys: Option<Arc<dyn KeyManager>> = if realm.keys_enabled() {
+        Some(Arc::new(DirectoryKeyManager::new(
+            config.realm_keys_directory(name),
+            KeyPolicy {
+                publish_ahead: realm.keys_publish_ahead(),
+                rotate_every: realm.keys_rotate_every(),
+                retain: realm.keys_retain(),
+            },
+        )))
+    } else {
+        None
+    };
+
+    // Its own trail, to its own destination and retention. A file trail is sealed by the realm's own
+    // key, so its attestations are checkable against the realm's published key set alone.
+    let audit: Arc<dyn AuditSink> = match realm.audit_destination() {
+        AuditDestination::Tracing => Arc::new(TracingAuditSink::new(
+            BINARY_NAME,
+            env!("CARGO_PKG_VERSION"),
+        )),
+        AuditDestination::File => {
+            let mut sink = FileAuditSink::new(
+                config.realm_audit_directory(name),
+                BINARY_NAME,
+                config.version(),
+                realm.audit_retention(),
+            );
+            if let Some(keys) = &keys {
+                sink = sink.sealed_by(Arc::clone(keys));
+            }
+
+            sink.prepare()
+                .with_context(|| format!("preparing the audit trail for the realm `{name}`"))?;
+
+            Arc::new(sink)
+        }
+    };
+
+    // Its own pseudonymisation key, resolved from wherever this realm's secrets live — its own
+    // directory, or the environment under its own prefix. A different key per realm is the point: a
+    // subject pseudonymised in one realm cannot be correlated with the same subject in another.
+    let pseudonymizer: Option<Arc<dyn Pseudonymizer>> = if realm.audit_pseudonym_enabled() {
+        let reference = realm
+            .audit_pseudonym_key_ref()
+            .context("audit pseudonymisation is enabled but names no secret")?;
+        let store: Box<dyn SecretStore> = match realm.secrets_provider() {
+            SecretProvider::Directory => Box::new(DirectorySecretStore::new(
+                config.realm_secrets_directory(name),
+            )),
+            SecretProvider::Environment => {
+                Box::new(EnvironmentSecretStore::new(realm.secrets_env_prefix()))
+            }
+            // Validation refuses pseudonymisation with no provider before this runs.
+            SecretProvider::None => {
+                anyhow::bail!("the realm `{name}` pseudonymises but resolves secrets from nowhere")
+            }
+        };
+        let key = store.resolve(reference).with_context(|| {
+            format!(
+                "resolving the pseudonymisation key `{}` for the realm `{name}`",
+                reference.name()
+            )
+        })?;
+
+        Some(Arc::new(HmacPseudonymizer::new(
+            key.expose(),
+            realm.audit_pseudonym_key_version(),
+        )))
+    } else {
+        None
+    };
+
+    Ok(Realm::new(
+        name,
+        realm.mount_path(),
+        realm.issuer().map(ToOwned::to_owned),
+        realm.listed(),
+        keys,
+        audit,
+        pseudonymizer,
+    ))
 }
 
 /// Builds the secret store the effective configuration names.

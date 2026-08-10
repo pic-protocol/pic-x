@@ -37,7 +37,7 @@ pic-x-std = { workspace = true, features = [
 ] }
 pic-x-telemetry.workspace = true
 pic-x-transport.workspace = true
-pic-x-wellknown.workspace = true
+pic-x-realm.workspace = true
 # Reading a published key set back, to check what the audit trail's seals were signed with.
 serde_json.workspace = true
 tokio.workspace = true
@@ -71,7 +71,7 @@ pic-x-server = { path = "crates/pic-x-server", version = "0.1.0" }
 pic-x-std = { path = "crates/pic-x-std", version = "0.1.0", default-features = false }
 pic-x-telemetry = { path = "crates/pic-x-telemetry", version = "0.1.0" }
 pic-x-transport = { path = "crates/pic-x-transport", version = "0.1.0" }
-pic-x-wellknown = { path = "crates/pic-x-wellknown", version = "0.1.0" }
+pic-x-realm = { path = "crates/pic-x-realm", version = "0.1.0" }
 
 anyhow = "1"
 async-stream = "0.3"

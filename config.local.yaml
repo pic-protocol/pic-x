@@ -61,3 +61,23 @@ keys:
   publish_ahead: 1m
   rotate_every: 10m
   retain: 1h
+
+# Two example realms — two issuers hosted by one server — so `task run` shows the multi-tenant shape.
+# Both are listed, so both appear in /.well-known/server-configuration; each carries its own issuer,
+# so its /realms/<name>/.well-known/pic-x-configuration advertises real absolute URLs (a realm with no
+# issuer would advertise `issuer: null` and a relative jwks_uri — nothing worth reading). Each gets its
+# own keys, trail and pseudonymisation key under .volume/realms/<name>/, generated on first start.
+realms:
+  - name: acme
+    issuer: http://localhost:7556/realms/acme
+    listed: true
+    # A realm may override any of the server's blocks; what it leaves out, it inherits. Here acme
+    # rotates faster than the server and keeps its trail longer — watch it in .volume/realms/acme/.
+    keys:
+      rotate_every: 5m
+      retain: 30m
+    audit:
+      retention: 30d
+  - name: globex
+    issuer: http://localhost:7556/realms/globex
+    listed: true

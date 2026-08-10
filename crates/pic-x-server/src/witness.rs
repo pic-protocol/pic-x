@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 
-use pic_x_core::{Config, Pseudonymizer};
+use pic_x_core::{Config, Pseudonymizer, Realm};
 
 /// The input every key is asked to pseudonymise, so that two keys can be told apart.
 ///
@@ -41,19 +41,43 @@ pub fn witness_path(config: &Config) -> PathBuf {
     config.resolve(WITNESS_FILE)
 }
 
-/// Refuses to start when a key version now means a different key than it did.
+/// Refuses to start when the *server's* pseudonymisation key version now means a different key.
 ///
 /// Does nothing when pseudonymisation is off, and records the version the first time it sees it.
 pub fn check(config: &Config, pseudonymizer: Option<&dyn Pseudonymizer>) -> Result<()> {
+    check_at(&witness_path(config), pseudonymizer)
+}
+
+/// The same guard for one realm, against the realm's own witness under `realms/<name>/state`.
+///
+/// A realm's key is its own, so its witness is its own too: a version that means one key in realm A
+/// and another in realm B is not a mismatch, and must not read as one. A realm whose key changed
+/// without its version changing refuses the start with the realm named — a mis-rotation that would
+/// silently corrupt a realm's trail is a configuration error to fix, not a fault to serve through.
+pub fn check_realm(config: &Config, realm: &Realm) -> Result<()> {
+    let path = config.resolve(format!(
+        "realms/{}/state/audit-pseudonym-versions",
+        realm.name()
+    ));
+
+    check_at(&path, realm.pseudonymizer().map(|policy| policy.as_ref())).with_context(|| {
+        format!(
+            "checking the pseudonymisation key of the realm `{}`",
+            realm.name()
+        )
+    })
+}
+
+/// Refuses to start when a key version at `path` now means a different key than it did.
+fn check_at(path: &Path, pseudonymizer: Option<&dyn Pseudonymizer>) -> Result<()> {
     let Some(pseudonymizer) = pseudonymizer else {
         return Ok(());
     };
 
-    let path = witness_path(config);
     let version = pseudonymizer.key_version().to_owned();
     let witness = pseudonymizer.pseudonymize(WITNESS_INPUT);
 
-    let recorded = read(&path)?;
+    let recorded = read(path)?;
 
     if let Some((_, previous)) = recorded.iter().find(|(known, _)| *known == version) {
         if *previous == witness {
@@ -64,13 +88,13 @@ pub fn check(config: &Config, pseudonymizer: Option<&dyn Pseudonymizer>) -> Resu
             "the audit pseudonymisation key changed but its version did not: version `{version}` \
              has already produced records under a different key, and writing more under the same \
              version would make the two indistinguishable. Give the new key a new \
-             `audit.pseudonym.key_version`, or restore the previous key. If this deployment has \
-             genuinely never written a record under `{version}`, remove {} and start again.",
+             `audit.pseudonym.key_version`, or restore the previous key. If this has genuinely \
+             never written a record under `{version}`, remove {} and start again.",
             path.display()
         );
     }
 
-    append(&path, &version, &witness)
+    append(path, &version, &witness)
 }
 
 /// Reads the versions this deployment has already recorded under.

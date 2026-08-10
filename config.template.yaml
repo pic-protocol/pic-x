@@ -68,6 +68,44 @@
 # issuer: https://pic-x.example.com
 
 ## ---------------------------------------------------------------------------------------------
+## Realms — hosting more than one issuer
+## ---------------------------------------------------------------------------------------------
+##
+## Everything above configures one server. A deployment that hosts several issuers — several tenants —
+## declares each as a realm: its own signing keys, its own audit trail, its own pseudonymisation key,
+## served at `/realms/<name>/`. The server itself issues nothing; it lists the realms and signs the
+## system trail. Leave this out for a single-issuer deployment; it is served under the root.
+##
+## A realm inherits every setting above and overrides only its identity. Its resources live in
+## `realms/<name>/` inside the volume, isolated from the server's and from each other.
+##
+## A realm inherits every server setting it does not state, and overrides only what it does — its
+## identity, and optionally its own `keys`, `audit` and `secrets` blocks (same shape as the server's
+## above). Whatever the policy, its keys, trail and pseudonymisation key stay in its own directory.
+##
+##   realms:
+##     - name: acme                        # required; unique; lowercase letters, digits, hyphens
+##       issuer: https://acme.example.com  # advertised; a realm with none shows issuer:null, relative URLs
+##       listed: true                      # appears in the public catalogue — default false, see below
+##       keys:                             # optional; any field absent inherits the server's
+##         rotate_every: 90d
+##         retain: 400d
+##       audit:                            # optional
+##         retention: 365d
+##       secrets:                          # optional — this realm resolves its key from the environment
+##         provider: environment           # under PIC_X_SECRET_ACME_… by default, so realms cannot collide
+##     - name: globex                      # states nothing but its name → inherits everything
+##       issuer: https://globex.example.com
+##       listed: true
+##
+## `listed` is fail-closed. A realm appears in the public catalogue at
+## `/.well-known/server-configuration` only if it opts in — a deployment does not enumerate its
+## tenants to the world by default. An unlisted realm is still reachable at its own path, because a
+## client verifying a token must be able to fetch that realm's keys.
+##
+## The whole model, the endpoints and the on-disk layout are in docs/realms.md.
+
+## ---------------------------------------------------------------------------------------------
 ## The public surface
 ## ---------------------------------------------------------------------------------------------
 ##

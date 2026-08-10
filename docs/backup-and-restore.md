@@ -26,6 +26,21 @@ from the running deployment, and prove the restore before trusting it.
 
 Save the whole volume as one unit. Do not restore `audit/` from one backup and `keys/` from another.
 
+A deployment that hosts realms keeps a `keys/`, `audit/` and `secrets/` **per realm** under
+`realms/<name>/`, alongside the server's own at the root:
+
+```text
+<volume>/
+├── keys/  audit/  secrets/  state/     the server's own
+└── realms/
+    ├── acme/{keys,audit,secrets}/
+    └── beta/{keys,audit,secrets}/
+```
+
+Each realm's ring signs that realm's trail, so a realm's seals verify against that realm's key set and
+no other. Saving the whole volume together is what keeps every trail matched to the ring that sealed
+it — see [realms.md](realms.md).
+
 ## Export the Key Set
 
 The published key set is served from the active key ring and is not saved as a file in the volume.

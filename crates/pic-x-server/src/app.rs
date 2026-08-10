@@ -15,8 +15,8 @@ use clap::{Command as ClapCommand, CommandFactory, FromArgMatches};
 
 use pic_x_core::{
     AuditRecorder, AuditSink, BoxFuture, BuildSettings, Config, ConfigFile, ConfigSection,
-    KeyManager, Layers, LogFormat, Metrics, ProductIdentity, Pseudonymizer, SecretStore,
-    ServerContext, ServerHost, Service, Storage, Value,
+    KeyManager, Layers, LogFormat, Metrics, ProductIdentity, Pseudonymizer, Realm, RealmConfig,
+    Realms, SecretStore, ServerContext, ServerHost, Service, Storage, Value,
 };
 
 use crate::banner::Banner;
@@ -59,6 +59,14 @@ type AuditSinkFactory = Box<
         + Send
         + Sync,
 >;
+
+/// Builds one realm — its keys, its trail, its pseudonymisation — from its resolved configuration.
+///
+/// A single factory rather than one per collaborator, because a realm is those collaborators wired to
+/// its own directories, and assembling them is exactly the concrete-construction work that belongs in
+/// the composition root and nowhere else. The app calls it once per realm the file declares and puts
+/// the results in a registry; it never names a key manager or a sink itself.
+type RealmFactory = Box<dyn Fn(&Config, &RealmConfig) -> Result<Realm> + Send + Sync>;
 
 /// Checks an audit trail and returns what it found, in one line a human reads.
 ///
@@ -110,6 +118,7 @@ pub struct App {
     secrets_factory: Option<SecretStoreFactory>,
     keys_factory: Option<KeyManagerFactory>,
     audit_factory: Option<AuditSinkFactory>,
+    realm_factory: Option<RealmFactory>,
     audit_verifier: Option<AuditVerifier>,
     reload_handler: Option<ReloadHandler>,
     provisioner: Option<Provisioner>,
@@ -145,6 +154,7 @@ impl App {
             secrets_factory: None,
             keys_factory: None,
             audit_factory: None,
+            realm_factory: None,
             audit_verifier: None,
             reload_handler: None,
             provisioner: None,
@@ -237,6 +247,20 @@ impl App {
             + 'static,
     {
         self.audit_factory = Some(Box::new(factory));
+
+        self
+    }
+
+    /// Supplies how this build assembles one realm from its resolved configuration.
+    ///
+    /// A build that composes this can host realms; one that does not, cannot — and if a configuration
+    /// declares a realm anyway, [`App::realms_for`] refuses to start rather than silently hosting
+    /// none, because a realm nobody serves is a client's token nobody will verify.
+    pub fn with_realm_factory<F>(mut self, factory: F) -> Self
+    where
+        F: Fn(&Config, &RealmConfig) -> Result<Realm> + Send + Sync + 'static,
+    {
+        self.realm_factory = Some(Box::new(factory));
 
         self
     }
@@ -594,6 +618,32 @@ impl App {
         factory(config)
     }
 
+    /// Builds the registry of realms this deployment hosts.
+    ///
+    /// Empty for a plain single-issuer server, which is the ordinary case and needs no factory. When
+    /// realms *are* declared, a build without a realm factory is refused rather than started serving
+    /// none — a declared realm nobody serves is a client's token nobody can verify, discovered far
+    /// from here. Each realm is assembled once, in order, by the same factory; nothing is spawned.
+    pub fn realms_for(&self, config: &Config) -> Result<Realms> {
+        if config.realms().is_empty() {
+            return Ok(Realms::default());
+        }
+
+        let factory = self.realm_factory.as_ref().context(
+            "the configuration declares realms but this build composes no realm factory",
+        )?;
+
+        let mut realms = Vec::with_capacity(config.realms().len());
+        for realm in config.realms() {
+            realms.push(
+                factory(config, realm)
+                    .with_context(|| format!("assembling the realm `{}`", realm.name()))?,
+            );
+        }
+
+        Ok(Realms::new(realms))
+    }
+
     /// Builds the privacy policy the effective configuration asks for.
     ///
     /// Returns nothing when pseudonymisation is off, which is the default: principals then reach a
@@ -663,7 +713,7 @@ impl App {
             None => Vec::new(),
         };
 
-        let config = Config::from_layers(
+        let mut config = Config::from_layers(
             self.build_settings,
             self.declared_settings.clone(),
             Layers::new()
@@ -671,6 +721,15 @@ impl App {
                 .with_environment(env::vars())
                 .with_command_line(action.setting_inputs()),
         )?;
+
+        // Realms are structured, not flat settings, so they are attached here rather than merged
+        // through the layered pipeline above. They come only from the file today; a database is the
+        // same seam tomorrow. Resolution against the server's values happens inside `with_realms`.
+        if let Some((path, parsed)) = &file {
+            config = config
+                .with_realms(parsed.realms())
+                .with_context(|| format!("in the configuration file {}", path.display()))?;
+        }
 
         match &file {
             Some((path, parsed)) => self.apply_sections(config, path, parsed),
@@ -768,6 +827,16 @@ impl App {
         let keys = self.keys_for(config)?;
         let audit = self.audit_for(config, keys.as_ref())?;
 
+        // Every issuer this deployment hosts, each with its own keys and trail, built once here. A
+        // plain single-issuer server has none and this is the empty registry.
+        let realms = self.realms_for(config)?;
+
+        // The same silent-key-change guard the server just passed, once per realm against its own
+        // witness — before any realm record is written, for the same reason.
+        for realm in realms.all() {
+            witness::check_realm(config, realm)?;
+        }
+
         logging::record_build(&self.identity, config, self.server.name());
 
         let shutdown = match &self.shutdown_factory {
@@ -786,7 +855,8 @@ impl App {
         let context = self
             .context(config, pseudonymizer.as_deref(), secrets, keys)
             .with_audit(audit.as_ref())
-            .with_recorder(self.recorder(&audit, pseudonymizer.as_ref()));
+            .with_recorder(self.recorder(&audit, pseudonymizer.as_ref()))
+            .with_realms(realms);
 
         let outcome = self.server.run(&context, shutdown).await;
 

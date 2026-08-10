@@ -21,6 +21,7 @@ use crate::identity::ProductIdentity;
 use crate::keys::KeyManager;
 use crate::metrics::Metrics;
 use crate::pseudonym::Pseudonymizer;
+use crate::realm::{Realm, Realms};
 use crate::secrets::SecretStore;
 use crate::storage::Storage;
 
@@ -166,6 +167,11 @@ pub struct ServerContext<'a> {
     /// Shared rather than borrowed, for the same reason the key ring is: what records a number is
     /// usually work that outlives the call it was started from.
     metrics: Metrics,
+    /// The issuers this deployment hosts, each with its own keys, trail and pseudonymisation. Empty
+    /// for a plain single-issuer server. The collaborators above — `keys`, `audit`, `pseudonymizer` —
+    /// are the **server's own** (the system trail, the key that signs it); a realm's are reached
+    /// through here.
+    realms: Realms,
 }
 
 /// The empty service list a context starts from.
@@ -194,6 +200,7 @@ impl<'a> ServerContext<'a> {
             services: NO_SERVICES,
             health: Health::new(),
             metrics: Metrics::none(),
+            realms: Realms::default(),
         }
     }
 
@@ -274,6 +281,17 @@ impl<'a> ServerContext<'a> {
         self
     }
 
+    /// Adds the issuers this deployment hosts, each with its own collaborators.
+    ///
+    /// Composed once at the root and never mutated: a surface resolving a realm reads this registry,
+    /// and a read takes no lock. A deployment with no separate realm passes nothing and gets the
+    /// empty registry the context starts with.
+    pub fn with_realms(mut self, realms: Realms) -> Self {
+        self.realms = realms;
+
+        self
+    }
+
     /// Returns the identity of the product this context belongs to.
     pub fn identity(&self) -> &ProductIdentity {
         &self.identity
@@ -330,6 +348,19 @@ impl<'a> ServerContext<'a> {
     /// nothing has to guard a measurement.
     pub fn metrics(&self) -> &Metrics {
         &self.metrics
+    }
+
+    /// Returns every issuer this deployment hosts.
+    ///
+    /// The server-level `keys()`/`audit()`/`pseudonymizer()` above are **not** among these: they are
+    /// the server's own, for the system trail. A realm's collaborators are reached through the realm.
+    pub fn realms(&self) -> &Realms {
+        &self.realms
+    }
+
+    /// Returns the realm called `name`, when this deployment hosts it.
+    pub fn realm(&self, name: &str) -> Option<&Realm> {
+        self.realms.by_name(name)
     }
 
     /// Records one audit event under the policy this context carries.

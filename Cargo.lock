@@ -881,11 +881,11 @@ dependencies = [
  "anyhow",
  "pic-x-admin",
  "pic-x-core",
+ "pic-x-realm",
  "pic-x-server",
  "pic-x-std",
  "pic-x-telemetry",
  "pic-x-transport",
- "pic-x-wellknown",
  "serde_json",
  "tokio",
 ]
@@ -919,6 +919,22 @@ dependencies = [
  "serde_norway",
  "tokio",
  "zeroize",
+]
+
+[[package]]
+name = "pic-x-realm"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "pic-x-core",
+ "pic-x-std",
+ "pic-x-transport",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tower",
+ "tracing",
 ]
 
 [[package]]
@@ -988,22 +1004,6 @@ dependencies = [
  "tower-service",
  "tracing",
  "x509-parser 0.17.0",
-]
-
-[[package]]
-name = "pic-x-wellknown"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "axum",
- "pic-x-core",
- "pic-x-std",
- "pic-x-transport",
- "serde",
- "serde_json",
- "tokio",
- "tower",
- "tracing",
 ]
 
 [[package]]
