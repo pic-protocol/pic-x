@@ -60,11 +60,12 @@ forgotten.
 Production config enables:
 
 ```yaml
-audit:
-  pseudonym:
-    enabled: true
-    key_ref: audit-pseudonym
-    key_version: "v1"
+operations:
+  audit:
+    pseudonym:
+      enabled: true
+      key_ref: audit-pseudonym
+      key_version: "v1"
 ```
 
 `key_ref` is resolved by the configured secret store. Rotate the secret and `key_version` together.
