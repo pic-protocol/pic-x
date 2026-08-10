@@ -186,6 +186,10 @@ impl Realm {
     /// trail) because a realm may keep its trail unsigned, and `token_keys` (which signs the tokens it
     /// issues, and is the ring its `jwks_uri` publishes) because token issuance may not exist yet.
     /// `pseudonymizer` is optional because a realm may record subjects masked rather than pseudonymised.
+    // A realm *is* the bundle of collaborators an issuer needs, so its constructor names them all —
+    // grouping them behind a struct only to satisfy the argument-count heuristic would hide what a
+    // realm is made of rather than clarify it.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         name: impl Into<String>,
         mount_path: impl Into<String>,

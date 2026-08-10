@@ -98,7 +98,7 @@ grpc:
     - cn:pic-x-operator
 
 # Where secret material is resolved from. `directory` reads one file per key, which is what a mounted
-# Kubernetes secret looks like, and defaults to <working_dir>/secrets.
+# Kubernetes secret looks like, and defaults to <working_dir>/operations/secrets.
 secrets:
   provider: directory
 

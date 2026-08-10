@@ -82,8 +82,10 @@ fn test_two_runs_never_produce_the_same_secret() {
     prepare(&generating(&second, &[])).expect("the second volume");
 
     assert_ne!(
-        fs::read_to_string(first.join("operations/secrets/audit-pseudonym")).expect("the first secret"),
-        fs::read_to_string(second.join("operations/secrets/audit-pseudonym")).expect("the second secret"),
+        fs::read_to_string(first.join("operations/secrets/audit-pseudonym"))
+            .expect("the first secret"),
+        fs::read_to_string(second.join("operations/secrets/audit-pseudonym"))
+            .expect("the second secret"),
         "a generated key that repeats is not a key"
     );
 }
@@ -101,7 +103,8 @@ fn test_what_is_already_there_is_never_overwritten() {
     prepare(&generating(&root, &[])).expect("the volume is prepared");
 
     assert_eq!(
-        fs::read_to_string(root.join("operations/secrets/audit-pseudonym")).expect("the secret is there"),
+        fs::read_to_string(root.join("operations/secrets/audit-pseudonym"))
+            .expect("the secret is there"),
         "supplied-by-somebody-else",
         "a file that exists is a file somebody meant to put there"
     );
@@ -198,7 +201,11 @@ fn test_generated_material_is_readable_by_nobody_else() {
     ))
     .expect("the volume is prepared");
 
-    for private in ["operations/secrets/audit-pseudonym", "tls/server.key", "tls/ca.key"] {
+    for private in [
+        "operations/secrets/audit-pseudonym",
+        "tls/server.key",
+        "tls/ca.key",
+    ] {
         let mode = fs::metadata(root.join(private))
             .expect("the file is there")
             .permissions()

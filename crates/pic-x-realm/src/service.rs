@@ -81,12 +81,7 @@ impl WellKnownService {
     /// deployment under a path normally strips that path before forwarding, so the advertised URL has
     /// a prefix the process never sees. Deriving one from the other — as some do — is what makes a
     /// working proxy configuration hard to arrive at.
-    pub fn router(
-        &self,
-        identity: &ProductIdentity,
-        config: &Config,
-        realms: &Realms,
-    ) -> Router {
+    pub fn router(&self, identity: &ProductIdentity, config: &Config, realms: &Realms) -> Router {
         // The server surface: what this deployment is and which realms it lists. It issues nothing
         // and publishes no key set — the key that seals its system trail is internal, reached through
         // the administrative surface and never here. So there is no key route and no issuer discovery.
@@ -134,11 +129,9 @@ impl WellKnownService {
                     attestation_endpoint: realm.url("/attestations"),
                     trust_anchors_endpoint: realm.url("/trust-anchors"),
                 })
-                .merge(
-                    Router::new().route("/keys", get(jwks)).with_state(KeyRing {
-                        keys: realm.token_keys().map(Arc::clone),
-                    }),
-                );
+                .merge(Router::new().route("/keys", get(jwks)).with_state(KeyRing {
+                    keys: realm.token_keys().map(Arc::clone),
+                }));
 
             router = router.nest(realm.mount_path(), issuer);
         }

@@ -246,7 +246,8 @@ fn test_a_retired_key_stays_published_for_exactly_as_long_as_it_was_promised() {
 }
 
 #[test]
-fn test_a_keys_private_half_goes_at_retain_while_its_public_half_verifies_until_the_trail_expires() {
+fn test_a_keys_private_half_goes_at_retain_while_its_public_half_verifies_until_the_trail_expires()
+{
     // The audit-sealing lifecycle: a seal must keep verifying for as long as the trail it covers is
     // kept, which outlasts how long the key that made it should keep its private half on disk. So the
     // private half is deleted at `retain`, and the public half stays — Archived — until `verify_retain`.
@@ -278,7 +279,10 @@ fn test_a_keys_private_half_goes_at_retain_while_its_public_half_verifies_until_
     // Past `retain`: the private half is deleted, the public half stays and is Archived.
     clock.advance(Duration::from_secs(8 * 86_400));
     let report = manager.maintain().expect("a pass succeeds");
-    assert!(report.archived >= 1, "the retired key was not archived: {report:?}");
+    assert!(
+        report.archived >= 1,
+        "the retired key was not archived: {report:?}"
+    );
     assert!(
         !directory.join(format!("{first}.pem")).exists(),
         "the private half outlived `retain`, which is the exposure this avoids"
@@ -301,7 +305,10 @@ fn test_a_keys_private_half_goes_at_retain_while_its_public_half_verifies_until_
     // Past `verify_retain`: nothing it signed is expected to verify any longer, so it goes entirely.
     clock.advance(Duration::from_secs(25 * 86_400));
     let report = manager.maintain().expect("a pass succeeds");
-    assert!(report.forgotten >= 1, "the archived key was never forgotten: {report:?}");
+    assert!(
+        report.forgotten >= 1,
+        "the archived key was never forgotten: {report:?}"
+    );
     assert!(
         !manager
             .public_keys()

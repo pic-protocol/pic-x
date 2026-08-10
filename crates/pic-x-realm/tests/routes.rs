@@ -128,7 +128,10 @@ async fn test_the_server_document_says_what_this_deployment_is() {
     // It is an envelope over profiles, not an issuer document — no issuer, and no key set of its own.
     assert!(body.contains("profiles"));
     assert!(body.contains("https://pic-protocol.org/profiles/0.2"));
-    assert!(!body.contains("jwks"), "the server publishes no key set: {body}");
+    assert!(
+        !body.contains("jwks"),
+        "the server publishes no key set: {body}"
+    );
 }
 
 #[tokio::test]
@@ -320,7 +323,8 @@ async fn test_a_path_prefix_moves_where_everything_is_mounted() {
     let service = WellKnownService::new();
 
     // Mounted under the prefix...
-    let (status, body) = ask_with(&service, &config, "/pic-x/.well-known/server-configuration").await;
+    let (status, body) =
+        ask_with(&service, &config, "/pic-x/.well-known/server-configuration").await;
     assert_eq!(status, StatusCode::OK, "{body}");
 
     // ...and no longer at the root.
@@ -336,9 +340,7 @@ async fn test_a_path_prefix_moves_where_everything_is_mounted() {
 async fn test_a_realm_that_is_not_hosted_is_not_found() {
     // A realm nobody configured has no surface, whatever path is asked for.
     assert_eq!(
-        ask(&WellKnownService::new(), "/realms/ghost/keys")
-            .await
-            .0,
+        ask(&WellKnownService::new(), "/realms/ghost/keys").await.0,
         StatusCode::NOT_FOUND
     );
     assert_eq!(
