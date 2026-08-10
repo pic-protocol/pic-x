@@ -189,16 +189,7 @@ impl DirectoryKeyManager {
 
     /// Reads the ring, treating a directory with nothing in it as an empty one.
     fn read_ring(&self) -> Result<Ring> {
-        match fs::read_to_string(self.ring_path()) {
-            Ok(text) => serde_json::from_str(&text).map_err(|error| {
-                KeyError::backend(format!(
-                    "reading the key ring at {}: {error}",
-                    self.ring_path().display()
-                ))
-            }),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Ring::default()),
-            Err(error) => Err(KeyError::unavailable(error)),
-        }
+        read_ring_in(&self.directory)
     }
 
     /// Replaces the ring file, so a reader sees one whole version or the other.
@@ -488,24 +479,32 @@ impl DirectoryKeyManager {
     }
 }
 
+/// Reads the ring in `directory`, treating an absent one as empty.
+///
+/// Free of any manager: reading the ring file is not resolving a collaborator, it is parsing a
+/// format this crate owns, so both the manager and [`export`] read it the same way without either
+/// constructing the other.
+fn read_ring_in(directory: &Path) -> Result<Ring> {
+    let path = directory.join(RING_FILE);
+
+    match fs::read_to_string(&path) {
+        Ok(text) => serde_json::from_str(&text).map_err(|error| {
+            KeyError::backend(format!("reading the key ring at {}: {error}", path.display()))
+        }),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Ring::default()),
+        Err(error) => Err(KeyError::unavailable(error)),
+    }
+}
+
 /// Reads a ring on disk and returns its public keys as a JWKS document.
 ///
 /// The way to obtain an operations ring's public half without the server running: those keys are
 /// never served over HTTP, so a verifier — after a restore, or following the backup runbook — reads
-/// them here. The lifecycle policy a manager needs to *rotate* a ring is irrelevant to *reading* one
-/// already written, so this asks for none.
-pub fn export(directory: impl Into<PathBuf>) -> Result<String> {
-    let manager = DirectoryKeyManager::new(
-        directory,
-        KeyPolicy {
-            publish_ahead: Duration::ZERO,
-            rotate_every: Duration::ZERO,
-            retain: Duration::ZERO,
-            verify_retain: Duration::ZERO,
-        },
-    );
-
-    let document = JwkSet::new(manager.public_keys()?);
+/// them here. It reads only the ring file, and only the public halves it holds; no private key is
+/// opened and no manager is constructed, so this is a pure read of what is already on disk.
+pub fn export(directory: impl AsRef<Path>) -> Result<String> {
+    let ring = read_ring_in(directory.as_ref())?;
+    let document = JwkSet::new(ring.keys.iter().map(Entry::to_jwk).collect());
 
     serde_json::to_string_pretty(&document)
         .map_err(|error| KeyError::backend(format!("rendering the key set: {error}")))
