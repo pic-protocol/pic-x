@@ -76,27 +76,32 @@
 ## served at `/realms/<name>/`. The server itself issues nothing; it lists the realms and signs the
 ## system trail. Leave this out for a single-issuer deployment; it is served under the root.
 ##
-## A realm inherits every setting above and overrides only its identity. Its resources live in
-## `realms/<name>/` inside the volume, isolated from the server's and from each other.
-##
 ## A realm inherits every server setting it does not state, and overrides only what it does — its
 ## identity, and optionally its own `keys`, `audit` and `secrets` blocks (same shape as the server's
-## above). Whatever the policy, its keys, trail and pseudonymisation key stay in its own directory.
+## above). Whatever the policy, its keys, trail and pseudonymisation key stay in its own directory,
+## `realms/<name>/`, isolated from the server's and from each other. Here `acme` rotates and retains
+## on its own schedule; `globex` states only its name and inherits everything.
+
+# realms:
+#   - name: acme
+#     issuer: https://acme.example.com
+#     listed: true
+#     keys:
+#       rotate_every: 90d
+#       retain: 400d
+#     audit:
+#       retention: 365d
+#   - name: globex
+#     issuer: https://globex.example.com
+#     listed: true
+
+## A realm may also resolve its pseudonymisation key from the environment instead of its directory:
 ##
-##   realms:
-##     - name: acme                        # required; unique; lowercase letters, digits, hyphens
-##       issuer: https://acme.example.com  # advertised; a realm with none shows issuer:null, relative URLs
-##       listed: true                      # appears in the public catalogue — default false, see below
-##       keys:                             # optional; any field absent inherits the server's
-##         rotate_every: 90d
-##         retain: 400d
-##       audit:                            # optional
-##         retention: 365d
-##       secrets:                          # optional — this realm resolves its key from the environment
-##         provider: environment           # under PIC_X_SECRET_ACME_… by default, so realms cannot collide
-##     - name: globex                      # states nothing but its name → inherits everything
-##       issuer: https://globex.example.com
-##       listed: true
+##   secrets:
+##     provider: environment
+##
+## resolving it from `PIC_X_SECRET_ACME_AUDIT_PSEUDONYM` by default — the server's prefix suffixed with
+## the realm, so two realms cannot collide on one variable.
 ##
 ## `listed` is fail-closed. A realm appears in the public catalogue at
 ## `/.well-known/server-configuration` only if it opts in — a deployment does not enumerate its

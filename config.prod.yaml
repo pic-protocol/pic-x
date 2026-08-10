@@ -141,6 +141,13 @@ realms:
   - name: acme
     issuer: https://acme.example.com
     listed: true
+    # acme keeps its trail longer and rotates less often than the server default; globex
+    # inherits everything. Both still need their own secrets/audit-pseudonym provided.
+    keys:
+      rotate_every: 90d
+      retain: 400d
+    audit:
+      retention: 365d
   - name: globex
     issuer: https://globex.example.com
     listed: true

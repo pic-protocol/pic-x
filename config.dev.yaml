@@ -79,6 +79,12 @@ realms:
   - name: acme
     issuer: http://localhost:7556/realms/acme
     listed: true
+    # A realm may override any server block; what it omits, it inherits.
+    keys:
+      rotate_every: 5m
+      retain: 30m
+    audit:
+      retention: 30d
   - name: globex
     issuer: http://localhost:7556/realms/globex
     listed: true
