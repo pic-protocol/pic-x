@@ -1,0 +1,84 @@
+{
+  // Running the server from the editor.
+  //
+  // Each configuration names a file and nothing else. Everything the run needs — development mode,
+  // the volume, logging, the audit trail, the key ring, the certificates — is in that file, where it
+  // can be read, reviewed and changed in one place.
+  //
+  // That is deliberate. These used to carry fifteen environment variables each, duplicated in the
+  // Taskfile, and the two drifted: the editor and `task run` were the same command with different
+  // settings, and nothing said so. Now `task run` and "serve (local)" are the same run.
+  //
+  // The only environment left is what build.rs requires to stamp the banner, which is a build-time
+  // input rather than a runtime setting.
+  //
+  // `cwd` is the repository, so `.volume` lands beside it rather than wherever the editor happened
+  // to be.
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "pic-x: serve (local)",
+      // config.local.yaml — everything on, in the clear. Same as `task run`.
+      "type": "lldb",
+      "request": "launch",
+      "cargo": {
+        "args": ["build", "--bin=pic-x", "--package=pic-x"],
+        "filter": { "name": "pic-x", "kind": "bin" }
+      },
+      "args": ["config.local.yaml"],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PIC_X_COPYRIGHT_YEAR": "2026",
+        "PIC_X_COPYRIGHT_HOLDER": "Nitro Agility Srl"
+      }
+    },
+    {
+      "name": "pic-x: serve over TLS and mTLS (local)",
+      // config.local-tls.yaml — the same, with generated certificates. Same as `task run-as-local-tls`.
+      "type": "lldb",
+      "request": "launch",
+      "cargo": {
+        "args": ["build", "--bin=pic-x", "--package=pic-x"],
+        "filter": { "name": "pic-x", "kind": "bin" }
+      },
+      "args": ["config.local-tls.yaml"],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PIC_X_COPYRIGHT_YEAR": "2026",
+        "PIC_X_COPYRIGHT_HOLDER": "Nitro Agility Srl"
+      }
+    },
+    {
+      "name": "pic-x: verify the audit trail",
+      // Checks the local trail record by record and prints the head of the chain.
+      "type": "lldb",
+      "request": "launch",
+      "cargo": {
+        "args": ["build", "--bin=pic-x", "--package=pic-x"],
+        "filter": { "name": "pic-x", "kind": "bin" }
+      },
+      "args": ["audit", "verify", "--directory", ".volume/audit"],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PIC_X_COPYRIGHT_YEAR": "2026",
+        "PIC_X_COPYRIGHT_HOLDER": "Nitro Agility Srl"
+      }
+    },
+    {
+      "name": "pic-x: version",
+      // The short banner and the version. Needs no configuration file.
+      "type": "lldb",
+      "request": "launch",
+      "cargo": {
+        "args": ["build", "--bin=pic-x", "--package=pic-x"],
+        "filter": { "name": "pic-x", "kind": "bin" }
+      },
+      "args": ["version"],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PIC_X_COPYRIGHT_YEAR": "2026",
+        "PIC_X_COPYRIGHT_HOLDER": "Nitro Agility Srl"
+      }
+    }
+  ]
+}

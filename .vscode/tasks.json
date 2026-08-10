@@ -1,0 +1,53 @@
+{
+  // The same commands the Taskfile exposes, reachable from the palette. Nothing here sets anything
+  // up: the server creates what it needs.
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "pic-x: run (local)",
+      "detail": "Starts the server against the local volume, creating it if it is not there.",
+      "type": "shell",
+      "command": "task local:run",
+      "isBackground": true,
+      "problemMatcher": []
+    },
+    {
+      "label": "pic-x: run over TLS and mTLS (local)",
+      "detail": "The same, with the generated certificates in use.",
+      "type": "shell",
+      "command": "task local:run TLS=1",
+      "isBackground": true,
+      "problemMatcher": []
+    },
+    {
+      "label": "pic-x: run in docker",
+      "detail": "Builds the image and runs it, with the volume mounted from the host.",
+      "type": "shell",
+      "command": "task run-as-docker",
+      "isBackground": true,
+      "problemMatcher": []
+    },
+    {
+      "label": "pic-x: verify the audit trail",
+      "detail": "Checks that nothing in the local trail has been altered, and prints the head.",
+      "type": "shell",
+      "command": "task audit:verify",
+      "problemMatcher": []
+    },
+    {
+      "label": "pic-x: reload the transport material",
+      "detail": "Sends SIGHUP, which makes every listener re-read its certificates without restarting.",
+      "type": "shell",
+      "command": "pkill -HUP -f 'target/debug/pic-x' && echo 'asked every listener to re-read its material'",
+      "problemMatcher": []
+    },
+    {
+      "label": "pic-x: check",
+      "detail": "Lint, structural checks, supply chain and tests — everything the pipeline runs.",
+      "type": "shell",
+      "command": "task check",
+      "group": { "kind": "test", "isDefault": true },
+      "problemMatcher": ["$rustc"]
+    }
+  ]
+}

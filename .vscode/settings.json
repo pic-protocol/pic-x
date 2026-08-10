@@ -1,0 +1,12 @@
+{
+  // build.rs refuses to build without these, so the editor's own cargo invocations need them too —
+  // otherwise rust-analyzer reports errors the command line does not have.
+  "rust-analyzer.cargo.extraEnv": {
+    "PIC_X_COPYRIGHT_YEAR": "2026",
+    "PIC_X_COPYRIGHT_HOLDER": "Nitro Agility Srl"
+  },
+  "rust-analyzer.check.command": "clippy",
+  "rust-analyzer.check.allTargets": true,
+  "files.exclude": { "**/target": true },
+  "search.exclude": { "**/target": true, "**/.volume": true }
+}
