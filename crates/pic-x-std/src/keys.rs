@@ -489,7 +489,10 @@ fn read_ring_in(directory: &Path) -> Result<Ring> {
 
     match fs::read_to_string(&path) {
         Ok(text) => serde_json::from_str(&text).map_err(|error| {
-            KeyError::backend(format!("reading the key ring at {}: {error}", path.display()))
+            KeyError::backend(format!(
+                "reading the key ring at {}: {error}",
+                path.display()
+            ))
         }),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Ring::default()),
         Err(error) => Err(KeyError::unavailable(error)),
