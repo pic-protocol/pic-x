@@ -567,22 +567,57 @@ impl Config {
             None => self.audit_destination,
         };
 
+        // A realm's issuer defaults to the deployment's public base plus its path; an explicit issuer
+        // on the realm overrides. With no base configured it stays `None`, and URLs fall back to the
+        // realm's mount path.
+        let issuer = input.issuer.or_else(|| {
+            self.issuer()
+                .map(|base| format!("{}/realms/{name}", base.trim_end_matches('/')))
+        });
+
         Ok(RealmConfig {
             mount_path,
-            issuer: input.issuer,
+            issuer,
             listed,
-            keys_enabled: inherit_bool(input.keys_enabled, self.keys_enabled, "keys.enabled")?,
-            keys_publish_ahead: inherit_duration(
-                input.keys_publish_ahead,
+            // The token ring is on by default — a realm is an issuer — and its cadence inherits the
+            // shared operations cadence unless the realm's own `keys` block overrides it.
+            token_keys_enabled: inherit_bool(input.token_keys_enabled, true, "keys.enabled")?,
+            token_keys_publish_ahead: inherit_duration(
+                input.token_keys_publish_ahead,
                 self.keys_publish_ahead,
                 "keys.publish_ahead",
             )?,
-            keys_rotate_every: inherit_duration(
-                input.keys_rotate_every,
+            token_keys_rotate_every: inherit_duration(
+                input.token_keys_rotate_every,
                 self.keys_rotate_every,
                 "keys.rotate_every",
             )?,
-            keys_retain: inherit_duration(input.keys_retain, self.keys_retain, "keys.retain")?,
+            token_keys_retain: inherit_duration(
+                input.token_keys_retain,
+                self.keys_retain,
+                "keys.retain",
+            )?,
+            // The operations ring inherits the shared `operations` block unless the realm overrides it.
+            operations_keys_enabled: inherit_bool(
+                input.operations_keys_enabled,
+                self.keys_enabled,
+                "operations.keys.enabled",
+            )?,
+            operations_keys_publish_ahead: inherit_duration(
+                input.operations_keys_publish_ahead,
+                self.keys_publish_ahead,
+                "operations.keys.publish_ahead",
+            )?,
+            operations_keys_rotate_every: inherit_duration(
+                input.operations_keys_rotate_every,
+                self.keys_rotate_every,
+                "operations.keys.rotate_every",
+            )?,
+            operations_keys_retain: inherit_duration(
+                input.operations_keys_retain,
+                self.keys_retain,
+                "operations.keys.retain",
+            )?,
             audit_destination,
             audit_retention: inherit_duration(
                 input.audit_retention,
@@ -846,14 +881,22 @@ impl Config {
                 );
             }
 
-            // A realm's rotation is held to the same overlap rules as the server's — the override
+            // Both of a realm's rings are held to the same overlap rules as the server's — an override
             // does not buy an exemption from arithmetic that would strand its own signatures.
-            if realm.keys_enabled {
+            if realm.operations_keys_enabled {
                 self.check_key_lifecycle(
-                    realm.keys_publish_ahead,
-                    realm.keys_rotate_every,
-                    realm.keys_retain,
-                    &format!("the realm `{name}`"),
+                    realm.operations_keys_publish_ahead,
+                    realm.operations_keys_rotate_every,
+                    realm.operations_keys_retain,
+                    &format!("the operations ring of the realm `{name}`"),
+                )?;
+            }
+            if realm.token_keys_enabled {
+                self.check_key_lifecycle(
+                    realm.token_keys_publish_ahead,
+                    realm.token_keys_rotate_every,
+                    realm.token_keys_retain,
+                    &format!("the token ring of the realm `{name}`"),
                 )?;
             }
 

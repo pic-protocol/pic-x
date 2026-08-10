@@ -36,6 +36,8 @@ web:
   # Every address is 0.0.0.0 rather than loopback: loopback inside a container means the container,
   # which is not where you are.
   http: 0.0.0.0:7556
+  # The public base; realm issuers derive from it as `{public_url}/realms/<name>`.
+  public_url: http://localhost:7556
 
 telemetry:
   addr: 0.0.0.0:7558
@@ -47,44 +49,43 @@ grpc:
   # server logs `admin.unauthenticated` on every start so it can never be a quiet one.
   addr: 0.0.0.0:7557
 
-secrets:
-  # Resolves to /var/lib/pic-x/secrets, which is where the generated pseudonymisation key lands.
-  provider: directory
-
-audit:
-  # On disk and chained, so `pic-x audit verify` has something to check after the run.
-  sink: file
-  retention: 7d
-  pseudonym:
+# The shared record-keeping subsystem: sealing keys, trail, pseudonymisation. Realms inherit it.
+operations:
+  keys:
     enabled: true
-    key_ref: audit-pseudonym
-    key_version: "v1"
-
-keys:
-  enabled: true
-  # Short windows for development — an hour, not a month — so a rotation happens within a working
-  # session. The maintenance loop's default 60s tick is fine here; lower `maintenance_interval` only
-  # to watch a rotation live. A sub-300s `publish_ahead` would break a real verifier, but there are
-  # none here and `development_mode` allows it.
-  publish_ahead: 5m
-  rotate_every: 1h
-  retain: 1d
+    # Short windows for development — an hour, not a month — so a rotation happens within a working
+    # session. The maintenance loop's default 60s tick is fine here; lower `maintenance_interval` only
+    # to watch a rotation live. A sub-300s `publish_ahead` would break a real verifier, but there are
+    # none here and `development_mode` allows it.
+    publish_ahead: 5m
+    rotate_every: 1h
+    retain: 1d
+  secrets:
+    # Resolves to /var/lib/pic-x/operations/secrets, where the generated pseudonymisation key lands.
+    provider: directory
+  audit:
+    # On disk and chained, so `pic-x audit verify` has something to check after the run.
+    sink: file
+    retention: 7d
+    pseudonym:
+      enabled: true
+      key_ref: audit-pseudonym
+      key_version: "v1"
 
 # Two example realms — two issuers hosted by one server — so a container run demonstrates the
-# multi-tenant shape. Both listed, so both appear in /.well-known/server-configuration; each
-# carries its own issuer, so its /realms/<name>/.well-known/pic-x-configuration advertises real
-# absolute URLs. Each gets its own keys, trail and pseudonymisation key under realms/<name>/,
-# generated on first start. A single-issuer deployment leaves this out. See docs/realms.md.
+# multi-tenant shape. Both listed, so both appear in /.well-known/server-configuration; each derives
+# its issuer from `web.public_url`. Each gets its own token keys, operations keys, trail and
+# pseudonymisation key under realms/<name>/, generated on first start. A single-issuer deployment
+# leaves this out. See docs/realms.md.
 realms:
   - name: acme
-    issuer: http://localhost:7556/realms/acme
     listed: true
-    # A realm may override any server block; what it omits, it inherits.
+    # A realm may override any block; what it omits, it inherits.
     keys:
       rotate_every: 30m
       retain: 12h
-    audit:
-      retention: 30d
+    operations:
+      audit:
+        retention: 30d
   - name: globex
-    issuer: http://localhost:7556/realms/globex
     listed: true

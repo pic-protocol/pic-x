@@ -667,10 +667,10 @@ fn test_a_realm_inherits_the_servers_policy_and_overrides_only_what_it_states() 
         &[],
     )
     .with_realms([
-        // acme overrides only its rotation cadence; retention must inherit the server's 400d.
+        // acme overrides only its operations rotation cadence; retention must inherit the server's 400d.
         RealmInput {
             name: "acme".to_owned(),
-            keys_rotate_every: Some("90d".to_owned()),
+            operations_keys_rotate_every: Some("90d".to_owned()),
             ..RealmInput::default()
         },
         // globex states nothing about keys, so it inherits both.
@@ -680,21 +680,21 @@ fn test_a_realm_inherits_the_servers_policy_and_overrides_only_what_it_states() 
 
     let acme = &config.realms()[0];
     assert_eq!(
-        acme.keys_rotate_every(),
+        acme.operations_keys_rotate_every(),
         std::time::Duration::from_secs(90 * 86_400)
     );
     assert_eq!(
-        acme.keys_retain(),
+        acme.operations_keys_retain(),
         std::time::Duration::from_secs(400 * 86_400)
     );
 
     let globex = &config.realms()[1];
     assert_eq!(
-        globex.keys_rotate_every(),
+        globex.operations_keys_rotate_every(),
         std::time::Duration::from_secs(30 * 86_400)
     );
     assert_eq!(
-        globex.keys_retain(),
+        globex.operations_keys_retain(),
         std::time::Duration::from_secs(400 * 86_400)
     );
 }
@@ -742,9 +742,9 @@ fn test_a_realm_rotation_that_would_strand_its_signatures_is_refused() {
     let config = servable()
         .with_realms([RealmInput {
             name: "acme".to_owned(),
-            keys_enabled: Some("true".to_owned()),
-            keys_rotate_every: Some("30d".to_owned()),
-            keys_retain: Some("1d".to_owned()),
+            operations_keys_enabled: Some("true".to_owned()),
+            operations_keys_rotate_every: Some("30d".to_owned()),
+            operations_keys_retain: Some("1d".to_owned()),
             ..RealmInput::default()
         }])
         .expect("the realm resolves");

@@ -28,6 +28,8 @@ log:
 
 web:
   http: 127.0.0.1:7556
+  # The public base over TLS; realm issuers derive from it as `{public_url}/realms/<name>`.
+  public_url: https://localhost:7556
   tls:
     # Relative to the volume. Generated on the first start.
     cert: tls/server.pem
@@ -56,39 +58,39 @@ grpc:
     # still the wrong habit to demonstrate.
     - cn:local-operator
 
-secrets:
-  provider: directory
-
-audit:
-  sink: file
-  retention: 7d
-  pseudonym:
+# The shared record-keeping subsystem: sealing keys, trail, pseudonymisation. Realms inherit it.
+operations:
+  keys:
     enabled: true
-    key_ref: audit-pseudonym
-    key_version: "v1"
+    publish_ahead: 5m
+    rotate_every: 1h
+    retain: 1d
+    # The maintenance loop's default 60s tick applies. To watch a rotation live, set a small
+    # `maintenance_interval` (e.g. 2s) — it is one server-wide cadence, and a realm's `rotate_every`
+    # can never take effect faster than it.
+  secrets:
+    provider: directory
+  audit:
+    sink: file
+    retention: 7d
+    pseudonym:
+      enabled: true
+      key_ref: audit-pseudonym
+      key_version: "v1"
 
-keys:
-  enabled: true
-  publish_ahead: 5m
-  rotate_every: 1h
-  retain: 1d
-  # The maintenance loop's default 60s tick applies. To watch a rotation live, set a small
-  # `maintenance_interval` (e.g. 2s) — it is one server-wide cadence, and a realm's `rotate_every`
-  # can never take effect faster than it.
-
-# Two example realms, both listed, each with its own issuer over TLS. Generated material
-# (keys, trail, pseudonymisation key) lands under .volume/realms/<name>/ on first start.
+# Two example realms, both listed, issuers derived from `web.public_url` over TLS. Generated material
+# (token keys, operations keys, trail, pseudonymisation key) lands under .volume/realms/<name>/ on
+# first start.
 realms:
   - name: acme
-    issuer: https://localhost:7556/realms/acme
     listed: true
-    # acme rotates and retains on its own schedule; globex inherits the server's. publish_ahead is
-    # inherited (5m). Lower the server's maintenance_interval to watch acme churn in realms/acme/keys.
+    # acme signs its tokens on its own schedule and keeps its trail longer; globex inherits everything.
+    # publish_ahead is inherited (5m). Lower the maintenance_interval to watch acme churn.
     keys:
       rotate_every: 30m
       retain: 12h
-    audit:
-      retention: 30d
+    operations:
+      audit:
+        retention: 30d
   - name: globex
-    issuer: https://localhost:7556/realms/globex
     listed: true

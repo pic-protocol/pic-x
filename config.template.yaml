@@ -61,30 +61,26 @@
 
 # autogenerate: false
 
-## The public URL clients are told to reach this deployment at.
-##
-## What clients are told, not what the process binds: a deployment behind a proxy is reached at a name
-## the process never sees, and no header a proxy sets is trustworthy enough to derive it from. Only a
-## loopback address may be plain http.
-##
-## Left unset, the discovery document advertises relative paths, which is never wrong.
-
-# issuer: https://pic-x.example.com
-
 ## ---------------------------------------------------------------------------------------------
 ## Realms — hosting more than one issuer
 ## ---------------------------------------------------------------------------------------------
 ##
 ## Everything above configures one server. A deployment that hosts several issuers — several tenants —
-## declares each as a realm: its own signing keys, its own audit trail, its own pseudonymisation key,
-## served at `/realms/<name>/`. The server itself issues nothing; it lists the realms and signs the
-## system trail. Leave this out for a single-issuer deployment; it is served under the root.
+## declares each as a realm: its own token-signing keys, its own audit trail, its own pseudonymisation
+## key, served at `/realms/<name>/`. The server itself issues nothing; it lists the realms and signs
+## the system trail. Leave this out for a single-issuer deployment; it is served under the root.
 ##
-## A realm inherits every server setting it does not state, and overrides only what it does — its
-## identity, and optionally its own `keys`, `audit` and `secrets` blocks (same shape as the server's
-## above). Whatever the policy, its keys, trail and pseudonymisation key stay in its own directory,
-## `realms/<name>/`, isolated from the server's and from each other. Here `acme` rotates and retains
-## on its own schedule; `globex` states only its name and inherits everything.
+## A realm inherits every server setting it does not state, and overrides only what it does:
+##
+##   - `keys`         its token-signing ring (what it signs the tokens it issues with). On by default;
+##                    cadence inherited from `operations.keys` unless stated here.
+##   - `operations`   its override of the shared `operations` block below — the keys that seal its
+##                    trail, the trail itself, and its pseudonymisation. Same shape as the top level.
+##   - `issuer`       defaults to `{web.public_url}/realms/<name>`; set it only when the realm lives on
+##                    its own host, as `acme` does here. `globex` states only its name.
+##
+## Whatever the policy, a realm's keys, trail and pseudonymisation key stay in its own directory,
+## `realms/<name>/`, isolated from the server's and from each other.
 
 # realms:
 #   - name: acme
@@ -93,16 +89,17 @@
 #     keys:
 #       rotate_every: 90d
 #       retain: 400d
-#     audit:
-#       retention: 365d
+#     operations:
+#       audit:
+#         retention: 365d
 #   - name: globex
-#     issuer: https://globex.example.com
 #     listed: true
 
 ## A realm may also resolve its pseudonymisation key from the environment instead of its directory:
 ##
-##   secrets:
-##     provider: environment
+##   operations:
+##     secrets:
+##       provider: environment
 ##
 ## resolving it from `PIC_X_SECRET_ACME_AUDIT_PSEUDONYM` by default — the server's prefix suffixed with
 ## the realm, so two realms cannot collide on one variable.
@@ -128,8 +125,16 @@
 # web:
 #   http: 0.0.0.0:7556
 
+##   The public URL clients are told to reach this deployment at — what clients are told, not what the
+##   process binds: behind a proxy the deployment is reached at a name the process never sees, and no
+##   proxy header is trustworthy enough to derive it from. Realm issuers default to
+##   `{public_url}/realms/<name>`. Only a loopback address may be plain http; left unset, discovery
+##   advertises relative paths, which is never wrong.
+
+#   public_url: https://pic-x.example.com
+
 ##   Where the surface is mounted. Empty — the root — unless a proxy forwards a path unstripped, which
-##   most do not: they strip it, and the advertised URL comes from `issuer` instead.
+##   most do not: they strip it, and the advertised URL comes from `web.public_url` instead.
 
 #   path_prefix: ""
 
@@ -283,10 +288,16 @@
 #   timeout: 30s
 
 ## ---------------------------------------------------------------------------------------------
-## Secrets
+## Operations — the record-keeping subsystem
 ## ---------------------------------------------------------------------------------------------
 ##
-## Where secret material is resolved from. Nothing in this section is itself a secret: it says where
+## The keys that seal a trail, the trail itself, and the secret that pseudonymises it — the server's
+## own, and the defaults every realm inherits (a realm overrides parts in its own `operations:`). On
+## disk this is `operations/`; see "The volume" above.
+
+# operations:
+
+## Secrets — where secret material is resolved from. Nothing here is itself a secret: it says where
 ## to look, and the store says what is there.
 ##
 ##   directory    one file per key, named after it — which is both what a mounted Kubernetes secret
@@ -299,14 +310,12 @@
 ## material was mounted or generated. Set it only to read from somewhere outside the volume. A build
 ## that needs Vault, a KMS or an HSM adds it in its own composition root — nothing here changes.
 
-# secrets:
-#   provider: directory
-#   directory: operations/secrets
-#   env_prefix: PIC_X_SECRET
+#   secrets:
+#     provider: directory
+#     directory: operations/secrets
+#     env_prefix: PIC_X_SECRET
 
-## ---------------------------------------------------------------------------------------------
 ## The audit trail
-## ---------------------------------------------------------------------------------------------
 ##
 ##   sink: tracing   records go into the log stream, and from there wherever it goes. Right when
 ##                   something else is already responsible for keeping them; it has no integrity of
@@ -329,10 +338,10 @@
 ## volume. Making it so means keeping the key somewhere they cannot reach — which is what the key
 ## manager contract exists to allow.
 
-# audit:
-#   sink: file
-#   directory: operations/audit
-#   retention: 90d
+#   audit:
+#     sink: file
+#     directory: operations/audit
+#     retention: 90d
 
 ##   Audit subjects that are people can be recorded as pseudonyms instead of masked. Masking hides a
 ##   person and loses the trail with them; a pseudonym keeps the trail and drops the identity.
@@ -344,21 +353,20 @@
 ##   version produces for one fixed input and refuses to start if a version ever produces something
 ##   else, because doing one without the other fails silently and ruins the trail slowly.
 
-#   pseudonym:
-#     enabled: true
-#     key_ref: audit-pseudonym
-#     key_version: "v1"
+#     pseudonym:
+#       enabled: true
+#       key_ref: audit-pseudonym
+#       key_version: "v1"
 
-## ---------------------------------------------------------------------------------------------
-## Signing keys
-## ---------------------------------------------------------------------------------------------
+## Signing keys — the operations ring
 ##
-## The server's operations ring: what seals its system trail. Its public half is reached through the
-## administrative surface, not served over HTTP. A realm signs the tokens it issues with a separate
-## ring, which *is* published, at the realm's `jwks_uri`. Either way a key is published before it signs
-## and its public half is kept after it stops — a signature naming a key nobody has fetched fails until
-## caches refresh, and a signature made yesterday has to keep verifying tomorrow. The private half is
-## deleted at `retain`; the public half stays until the audit retention, so seals keep verifying.
+## What seals the trail. Its public half is reached through the administrative surface, not served
+## over HTTP. (A realm signs the tokens it issues with a separate ring — its own `keys` block — which
+## *is* published, at the realm's `jwks_uri`, and has the same lifecycle knobs.) A key is published
+## before it signs and its public half is kept after it stops — a signature naming a key nobody has
+## fetched fails until caches refresh, and a signature made yesterday has to keep verifying tomorrow.
+## The private half is deleted at `retain`; the public half stays until the audit retention, so seals
+## keep verifying.
 ##
 ##   publish_ahead  how long a new key sits in the set before it signs. Must be at least as long as
 ##                  the cache the set is served with (300s), or verifiers reject good signatures for
@@ -374,10 +382,10 @@
 ## The first key of a fresh deployment signs immediately: publishing ahead protects verifiers that
 ## already cached something, and a deployment starting for the first time has none.
 
-# keys:
-#   enabled: true
-#   directory: operations/keys
-#   publish_ahead: 1h
-#   rotate_every: 30d
-#   retain: 365d
-#   maintenance_interval: 60s
+#   keys:
+#     enabled: true
+#     directory: operations/keys
+#     publish_ahead: 1h
+#     rotate_every: 30d
+#     retain: 365d
+#     maintenance_interval: 60s

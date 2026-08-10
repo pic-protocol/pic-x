@@ -270,16 +270,16 @@ fn build_realm(config: &Config, realm: &RealmConfig) -> anyhow::Result<Realm> {
     let name = realm.name();
 
     // The realm's operations ring — when it keeps a signed trail — on its own lifecycle, so this
-    // realm's seals verify against this realm's keys and no other. Internal: it seals the trail, and
-    // its public half is never served over HTTP. The ring a realm signs *tokens* with is separate,
-    // reserved at `realms/<name>/keys`, and does not exist until token issuance does.
-    let operations_keys: Option<Arc<dyn KeyManager>> = if realm.keys_enabled() {
+    // realm's seals verify against this realm's keys and no other. Internal: it seals the trail and
+    // its public half is never served over HTTP. Its settings come from the realm's resolved
+    // `operations` block (inherited from the server's, or overridden).
+    let operations_keys: Option<Arc<dyn KeyManager>> = if realm.operations_keys_enabled() {
         Some(Arc::new(DirectoryKeyManager::new(
             config.realm_keys_directory(name),
             KeyPolicy {
-                publish_ahead: realm.keys_publish_ahead(),
-                rotate_every: realm.keys_rotate_every(),
-                retain: realm.keys_retain(),
+                publish_ahead: realm.operations_keys_publish_ahead(),
+                rotate_every: realm.operations_keys_rotate_every(),
+                retain: realm.operations_keys_retain(),
                 // Its public half outlives its private one by the realm's own audit retention, so
                 // this realm's seals verify for as long as this realm keeps its trail.
                 verify_retain: realm.audit_retention(),
@@ -294,14 +294,14 @@ fn build_realm(config: &Config, realm: &RealmConfig) -> anyhow::Result<Realm> {
     // It reuses the same Ed25519 ring as everything else here; the wire algorithm the discovery
     // advertises is `EdDSA` to match. (When real issuance lands, a profile that mandates ES256 gets
     // ES256 added to the ring then.)
-    let token_keys: Option<Arc<dyn KeyManager>> = if realm.keys_enabled() {
+    let token_keys: Option<Arc<dyn KeyManager>> = if realm.token_keys_enabled() {
         Some(Arc::new(DirectoryKeyManager::new(
             config.realm_token_keys_directory(name),
             KeyPolicy {
-                publish_ahead: realm.keys_publish_ahead(),
-                rotate_every: realm.keys_rotate_every(),
-                retain: realm.keys_retain(),
-                verify_retain: realm.keys_retain(),
+                publish_ahead: realm.token_keys_publish_ahead(),
+                rotate_every: realm.token_keys_rotate_every(),
+                retain: realm.token_keys_retain(),
+                verify_retain: realm.token_keys_retain(),
             },
         )))
     } else {

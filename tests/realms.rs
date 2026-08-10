@@ -165,10 +165,11 @@ fn config_in(volume: &std::path::Path) -> PathBuf {
              working_dir: {}/vol\n\
              log:\n  level: info\n  format: json\n\
              web:\n  http: 127.0.0.1:0\n\
-             secrets:\n  provider: directory\n\
-             audit:\n  sink: file\n  retention: 7d\n  \
-             pseudonym:\n    enabled: true\n    key_ref: audit-pseudonym\n    key_version: \"v1\"\n\
-             keys:\n  enabled: true\n  publish_ahead: 1m\n  rotate_every: 10m\n  retain: 1h\n\
+             operations:\n  \
+             secrets:\n    provider: directory\n  \
+             audit:\n    sink: file\n    retention: 7d\n    \
+             pseudonym:\n      enabled: true\n      key_ref: audit-pseudonym\n      key_version: \"v1\"\n  \
+             keys:\n    enabled: true\n    publish_ahead: 1m\n    rotate_every: 10m\n    retain: 1h\n\
              realms:\n  \
              - name: acme\n    issuer: https://acme.example.com\n    listed: true\n  \
              - name: beta\n    listed: false\n",

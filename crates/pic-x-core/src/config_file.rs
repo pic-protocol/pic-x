@@ -36,17 +36,15 @@ use crate::config::{
 use crate::realm::RealmInput;
 
 /// The section names this crate parses into typed settings.
-const KNOWN_SECTIONS: [&str; 10] = [
+const KNOWN_SECTIONS: [&str; 8] = [
     "web",
     "telemetry",
     "grpc",
     "tls",
     "limits",
     "log",
-    "audit",
     "shutdown",
-    "secrets",
-    "keys",
+    "operations",
 ];
 
 /// The parsed contents of a PIC-X configuration file.
@@ -61,9 +59,6 @@ pub struct ConfigFile {
     /// Whether this deployment is somebody's laptop. False unless said otherwise.
     #[serde(default)]
     development_mode: Option<String>,
-    /// The public URL this deployment is reached at. Stated, never inferred from a proxy header.
-    #[serde(default)]
-    issuer: Option<String>,
     #[serde(default)]
     web: WebSection,
     #[serde(default)]
@@ -77,13 +72,11 @@ pub struct ConfigFile {
     #[serde(default)]
     log: LogSection,
     #[serde(default)]
-    audit: AuditSection,
-    #[serde(default)]
     shutdown: ShutdownSection,
+    /// The record-keeping subsystem — the keys that seal a trail, the trail itself, and the secret
+    /// that pseudonymises it. These are the server's own, and the defaults every realm inherits.
     #[serde(default)]
-    secrets: SecretsSection,
-    #[serde(default)]
-    keys: KeysSection,
+    operations: OperationsSection,
     /// The issuers this deployment hosts. A list, not a flat setting, so it is carried as structured
     /// configuration rather than through the layered key/value pipeline — realms come from the file
     /// (and, later, a database), never from a single environment variable.
@@ -109,6 +102,20 @@ struct RealmSection {
     /// Whether this realm appears in the server's public catalogue. Absent means no.
     #[serde(default)]
     listed: Option<String>,
+    /// The realm's token-signing keys — what it signs the tokens it issues with. Its own ring.
+    #[serde(default)]
+    keys: RealmKeysSection,
+    /// The realm's override of the shared `operations` block: the keys that seal its trail, the trail
+    /// itself, and its pseudonymisation. Any field absent inherits the server's `operations`.
+    #[serde(default)]
+    operations: RealmOperationsSection,
+}
+
+/// A realm's override of the shared `operations` block. Each sub-block mirrors the server's, so a
+/// realm overriding its audit retention reads exactly like the server setting it.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RealmOperationsSection {
     #[serde(default)]
     keys: RealmKeysSection,
     #[serde(default)]
@@ -171,6 +178,12 @@ struct RealmSecretsSection {
 struct WebSection {
     #[serde(default)]
     http: Option<String>,
+    /// The public URL this deployment is reached at. Stated, never inferred from a proxy header. It
+    /// is the base a realm's `issuer` defaults to (`{public_url}/realms/<name>`) and, when it carries
+    /// a path, what the surface's mount prefix is derived from. The server issues nothing, so this is
+    /// a public *address*, not a token issuer.
+    #[serde(default)]
+    public_url: Option<String>,
     /// Where the surface is mounted. Empty — the root — unless a proxy forwards a path unstripped.
     #[serde(default)]
     path_prefix: Option<String>,
@@ -232,6 +245,21 @@ struct LimitsSection {
     header_timeout: Option<String>,
     #[serde(default)]
     body_bytes: Option<String>,
+}
+
+/// The record-keeping subsystem: the ring that seals a trail, the trail, and the pseudonym secret.
+///
+/// One block at the top level is the server's own and the default every realm inherits; a realm's
+/// `operations` override has the same shape.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OperationsSection {
+    #[serde(default)]
+    keys: KeysSection,
+    #[serde(default)]
+    audit: AuditSection,
+    #[serde(default)]
+    secrets: SecretsSection,
 }
 
 /// The keys this deployment signs with and publishes.
@@ -386,7 +414,7 @@ impl ConfigFile {
             (SETTING_WORKING_DIR, self.working_dir.as_ref()),
             (SETTING_AUTOGENERATE, self.autogenerate.as_ref()),
             (SETTING_DEVELOPMENT_MODE, self.development_mode.as_ref()),
-            (SETTING_ISSUER, self.issuer.as_ref()),
+            (SETTING_ISSUER, self.web.public_url.as_ref()),
             (SETTING_GRPC_ALLOW, allow.as_ref()),
             (SETTING_TLS_RELOAD, self.tls.reload.as_ref()),
             (
@@ -413,17 +441,32 @@ impl ConfigFile {
             (SETTING_LIMITS_BODY_BYTES, self.limits.body_bytes.as_ref()),
             (SETTING_WEB_TLS_CRL, self.web.tls.crl.as_ref()),
             (SETTING_GRPC_TLS_CRL, self.grpc.tls.crl.as_ref()),
-            (SETTING_AUDIT_SINK, self.audit.sink.as_ref()),
-            (SETTING_AUDIT_DIRECTORY, self.audit.directory.as_ref()),
-            (SETTING_AUDIT_RETENTION, self.audit.retention.as_ref()),
-            (SETTING_KEYS_ENABLED, self.keys.enabled.as_ref()),
-            (SETTING_KEYS_DIRECTORY, self.keys.directory.as_ref()),
-            (SETTING_KEYS_PUBLISH_AHEAD, self.keys.publish_ahead.as_ref()),
-            (SETTING_KEYS_ROTATE_EVERY, self.keys.rotate_every.as_ref()),
-            (SETTING_KEYS_RETAIN, self.keys.retain.as_ref()),
+            (SETTING_AUDIT_SINK, self.operations.audit.sink.as_ref()),
+            (
+                SETTING_AUDIT_DIRECTORY,
+                self.operations.audit.directory.as_ref(),
+            ),
+            (
+                SETTING_AUDIT_RETENTION,
+                self.operations.audit.retention.as_ref(),
+            ),
+            (SETTING_KEYS_ENABLED, self.operations.keys.enabled.as_ref()),
+            (
+                SETTING_KEYS_DIRECTORY,
+                self.operations.keys.directory.as_ref(),
+            ),
+            (
+                SETTING_KEYS_PUBLISH_AHEAD,
+                self.operations.keys.publish_ahead.as_ref(),
+            ),
+            (
+                SETTING_KEYS_ROTATE_EVERY,
+                self.operations.keys.rotate_every.as_ref(),
+            ),
+            (SETTING_KEYS_RETAIN, self.operations.keys.retain.as_ref()),
             (
                 SETTING_KEYS_MAINTENANCE_INTERVAL,
-                self.keys.maintenance_interval.as_ref(),
+                self.operations.keys.maintenance_interval.as_ref(),
             ),
             (SETTING_WEB_PATH_PREFIX, self.web.path_prefix.as_ref()),
             (SETTING_WEB_HTTP_ADDR, self.web.http.as_ref()),
@@ -452,20 +495,29 @@ impl ConfigFile {
             ),
             (SETTING_LOG_FORMAT, self.log.format.as_ref()),
             (SETTING_SHUTDOWN_TIMEOUT, self.shutdown.timeout.as_ref()),
-            (SETTING_SECRETS_PROVIDER, self.secrets.provider.as_ref()),
-            (SETTING_SECRETS_DIRECTORY, self.secrets.directory.as_ref()),
-            (SETTING_SECRETS_ENV_PREFIX, self.secrets.env_prefix.as_ref()),
+            (
+                SETTING_SECRETS_PROVIDER,
+                self.operations.secrets.provider.as_ref(),
+            ),
+            (
+                SETTING_SECRETS_DIRECTORY,
+                self.operations.secrets.directory.as_ref(),
+            ),
+            (
+                SETTING_SECRETS_ENV_PREFIX,
+                self.operations.secrets.env_prefix.as_ref(),
+            ),
             (
                 SETTING_AUDIT_PSEUDONYM_ENABLED,
-                self.audit.pseudonym.enabled.as_ref(),
+                self.operations.audit.pseudonym.enabled.as_ref(),
             ),
             (
                 SETTING_AUDIT_PSEUDONYM_KEY_REF,
-                self.audit.pseudonym.key_ref.as_ref(),
+                self.operations.audit.pseudonym.key_ref.as_ref(),
             ),
             (
                 SETTING_AUDIT_PSEUDONYM_KEY_VERSION,
-                self.audit.pseudonym.key_version.as_ref(),
+                self.operations.audit.pseudonym.key_version.as_ref(),
             ),
         ];
 
@@ -492,17 +544,21 @@ impl ConfigFile {
                 name: realm.name.clone(),
                 issuer: realm.issuer.clone(),
                 listed: realm.listed.clone(),
-                keys_enabled: realm.keys.enabled.clone(),
-                keys_publish_ahead: realm.keys.publish_ahead.clone(),
-                keys_rotate_every: realm.keys.rotate_every.clone(),
-                keys_retain: realm.keys.retain.clone(),
-                audit_sink: realm.audit.sink.clone(),
-                audit_retention: realm.audit.retention.clone(),
-                audit_pseudonym_enabled: realm.audit.pseudonym.enabled.clone(),
-                audit_pseudonym_key_ref: realm.audit.pseudonym.key_ref.clone(),
-                audit_pseudonym_key_version: realm.audit.pseudonym.key_version.clone(),
-                secrets_provider: realm.secrets.provider.clone(),
-                secrets_env_prefix: realm.secrets.env_prefix.clone(),
+                token_keys_enabled: realm.keys.enabled.clone(),
+                token_keys_publish_ahead: realm.keys.publish_ahead.clone(),
+                token_keys_rotate_every: realm.keys.rotate_every.clone(),
+                token_keys_retain: realm.keys.retain.clone(),
+                operations_keys_enabled: realm.operations.keys.enabled.clone(),
+                operations_keys_publish_ahead: realm.operations.keys.publish_ahead.clone(),
+                operations_keys_rotate_every: realm.operations.keys.rotate_every.clone(),
+                operations_keys_retain: realm.operations.keys.retain.clone(),
+                audit_sink: realm.operations.audit.sink.clone(),
+                audit_retention: realm.operations.audit.retention.clone(),
+                audit_pseudonym_enabled: realm.operations.audit.pseudonym.enabled.clone(),
+                audit_pseudonym_key_ref: realm.operations.audit.pseudonym.key_ref.clone(),
+                audit_pseudonym_key_version: realm.operations.audit.pseudonym.key_version.clone(),
+                secrets_provider: realm.operations.secrets.provider.clone(),
+                secrets_env_prefix: realm.operations.secrets.env_prefix.clone(),
             })
             .collect()
     }

@@ -35,14 +35,15 @@ log:
 # In Kubernetes those are two mounted secrets. There is no step that produces them here, and that is
 # the point: material this process could create is material nobody else has to trust.
 
-# The public URL clients are told to reach this deployment at — your ingress or proxy, not the address
-# below. Left unset, the discovery document advertises relative paths, which is never wrong and is
-# rarely useful. Only a loopback address may be plain http.
-#
-# issuer: https://pic-x.example.com
-
 web:
   http: 0.0.0.0:7556
+
+  # The public URL clients reach this deployment at — your ingress or proxy, not the address above.
+  # Realm issuers default to `{public_url}/realms/<name>`; a realm that lives on its own host overrides
+  # with its own `issuer` (both realms below do). Left unset, discovery advertises relative paths,
+  # which is never wrong and rarely useful. Only a loopback address may be plain http.
+  #
+  # public_url: https://pic-x.example.com
 
   # Remove this block, and only this block, when something in front already terminates TLS. Behind an
   # ingress that does, running in the clear is correct rather than lazy — but it has to be a decision
@@ -97,59 +98,61 @@ grpc:
   allow:
     - cn:pic-x-operator
 
-# Where secret material is resolved from. `directory` reads one file per key, which is what a mounted
-# Kubernetes secret looks like, and defaults to <working_dir>/operations/secrets.
-secrets:
-  provider: directory
-
-audit:
-  # Kept here and chained, so that an edit, a removed line or a missing day stops the chain verifying.
-  # Switch to `tracing` when something else is already collecting the log stream durably and is
-  # responsible for keeping it.
-  sink: file
-  retention: 90d
-
-  # Recording people as pseudonyms rather than masking them keeps the trail answerable — "did this
-  # account do that" — without putting an identifier in it. It resolves `audit-pseudonym` from the
-  # secret store above and refuses to start without it.
-  #
-  # Rotating means changing the key **and** `key_version` together. The server remembers what each
-  # version produces for one fixed input and refuses to start if a version ever produces something
-  # else, because doing one without the other fails silently and ruins the trail slowly.
-  pseudonym:
+# The record-keeping subsystem: the keys that seal a trail, the trail itself, and the pseudonymisation
+# secret. One block for the server's own, and the defaults every realm inherits unless it overrides
+# them in its `operations:`.
+operations:
+  keys:
+    # The operations ring: what seals a trail. Its public half is reached through the administrative
+    # surface, not served over HTTP. A key is published before it signs; after it stops, its private
+    # half is deleted at `retain` while its public half is kept until the audit retention, so a seal
+    # keeps verifying for as long as the trail it covers is kept.
+    #
+    # `publish_ahead` must be at least the 300s a key set is served with — shorter is refused outside
+    # development mode. (A realm's token ring, its `keys` block, has the same lifecycle knobs.)
     enabled: true
-    key_ref: audit-pseudonym
-    key_version: "v1"
+    publish_ahead: 1h
+    rotate_every: 7d
+    retain: 30d
+  secrets:
+    # `directory` reads one file per key, which is what a mounted Kubernetes secret looks like, and
+    # defaults to <working_dir>/operations/secrets.
+    provider: directory
+  audit:
+    # Kept here and chained, so that an edit, a removed line or a missing day stops the chain
+    # verifying. Switch to `tracing` when something else durably collects the log stream.
+    sink: file
+    retention: 90d
 
-keys:
-  # The operations ring: what seals this deployment's system trail, maintained here. Its public half
-  # is reached through the administrative surface, not served over HTTP. A key is published before it
-  # signs; after it stops, its private half is deleted at `retain` while its public half is kept until
-  # the audit retention, so a seal keeps verifying for as long as the trail it covers is kept.
-  #
-  # `publish_ahead` must be at least the 300s a key set is served with — shorter is refused outside
-  # development mode. The same lifecycle governs a realm's token keys, which a verifier does cache.
-  enabled: true
-  publish_ahead: 1h
-  rotate_every: 7d
-  retain: 30d
+    # Recording people as pseudonyms rather than masking them keeps the trail answerable — "did this
+    # account do that" — without putting an identifier in it. It resolves `audit-pseudonym` from the
+    # secret store above and refuses to start without it.
+    #
+    # Rotating means changing the key **and** `key_version` together. The server remembers what each
+    # version produces for one fixed input and refuses to start if a version ever produces something
+    # else, because doing one without the other fails silently and ruins the trail slowly.
+    pseudonym:
+      enabled: true
+      key_ref: audit-pseudonym
+      key_version: "v1"
 
 # The issuers this deployment hosts, one realm each, both listed so both appear in the public
-# catalogue. Set each `issuer` to the tenant's real public URL. Because this file does not
-# autogenerate, each realm's pseudonymisation key must be provided at
-# realms/<name>/operations/secrets/audit-pseudonym, exactly as the server's is — the server refuses
-# to start without it. See docs/realms.md.
+# catalogue. Each lives on its own host, so each sets its own `issuer` rather than deriving one from
+# `web.public_url`. Because this file does not autogenerate, each realm's pseudonymisation key must be
+# provided at realms/<name>/operations/secrets/audit-pseudonym, exactly as the server's is — the
+# server refuses to start without it. See docs/realms.md.
 realms:
   - name: acme
     issuer: https://acme.example.com
     listed: true
-    # acme keeps its trail longer and rotates less often than the server default; globex
-    # inherits everything. Both still need their own secrets/audit-pseudonym provided.
-    keys:
-      rotate_every: 30d
-      retain: 90d
-    audit:
-      retention: 365d
+    # acme keeps its trail longer and its operations ring rotates less often than the shared default;
+    # globex inherits everything. Both still need their own operations/secrets/audit-pseudonym.
+    operations:
+      keys:
+        rotate_every: 30d
+        retain: 90d
+      audit:
+        retention: 365d
   - name: globex
     issuer: https://globex.example.com
     listed: true

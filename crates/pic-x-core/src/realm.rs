@@ -46,10 +46,17 @@ pub struct RealmInput {
     pub name: String,
     pub issuer: Option<String>,
     pub listed: Option<String>,
-    pub keys_enabled: Option<String>,
-    pub keys_publish_ahead: Option<String>,
-    pub keys_rotate_every: Option<String>,
-    pub keys_retain: Option<String>,
+    /// The realm's token-signing keys (the `keys` block). Its own ring.
+    pub token_keys_enabled: Option<String>,
+    pub token_keys_publish_ahead: Option<String>,
+    pub token_keys_rotate_every: Option<String>,
+    pub token_keys_retain: Option<String>,
+    /// The realm's override of the shared `operations` block: the sealing keys, the trail, the
+    /// pseudonymisation. Anything absent inherits the server's `operations`.
+    pub operations_keys_enabled: Option<String>,
+    pub operations_keys_publish_ahead: Option<String>,
+    pub operations_keys_rotate_every: Option<String>,
+    pub operations_keys_retain: Option<String>,
     pub audit_sink: Option<String>,
     pub audit_retention: Option<String>,
     pub audit_pseudonym_enabled: Option<String>,
@@ -72,10 +79,16 @@ pub struct RealmConfig {
     pub(crate) mount_path: String,
     pub(crate) issuer: Option<String>,
     pub(crate) listed: bool,
-    pub(crate) keys_enabled: bool,
-    pub(crate) keys_publish_ahead: Duration,
-    pub(crate) keys_rotate_every: Duration,
-    pub(crate) keys_retain: Duration,
+    // The token-signing ring.
+    pub(crate) token_keys_enabled: bool,
+    pub(crate) token_keys_publish_ahead: Duration,
+    pub(crate) token_keys_rotate_every: Duration,
+    pub(crate) token_keys_retain: Duration,
+    // The operations ring — the one that seals this realm's trail.
+    pub(crate) operations_keys_enabled: bool,
+    pub(crate) operations_keys_publish_ahead: Duration,
+    pub(crate) operations_keys_rotate_every: Duration,
+    pub(crate) operations_keys_retain: Duration,
     pub(crate) audit_destination: AuditDestination,
     pub(crate) audit_retention: Duration,
     pub(crate) audit_pseudonym_enabled: bool,
@@ -106,24 +119,44 @@ impl RealmConfig {
         self.listed
     }
 
-    /// Whether this realm publishes signing keys.
-    pub fn keys_enabled(&self) -> bool {
-        self.keys_enabled
+    /// Whether this realm signs tokens (its token ring is enabled).
+    pub fn token_keys_enabled(&self) -> bool {
+        self.token_keys_enabled
     }
 
-    /// How long a new key of this realm is published before it signs.
-    pub fn keys_publish_ahead(&self) -> Duration {
-        self.keys_publish_ahead
+    /// How long a new token key of this realm is published before it signs.
+    pub fn token_keys_publish_ahead(&self) -> Duration {
+        self.token_keys_publish_ahead
     }
 
-    /// How long a key of this realm signs before it is replaced.
-    pub fn keys_rotate_every(&self) -> Duration {
-        self.keys_rotate_every
+    /// How long a token key of this realm signs before it is replaced.
+    pub fn token_keys_rotate_every(&self) -> Duration {
+        self.token_keys_rotate_every
     }
 
-    /// How long a retired key of this realm stays published.
-    pub fn keys_retain(&self) -> Duration {
-        self.keys_retain
+    /// How long a retired token key of this realm stays published.
+    pub fn token_keys_retain(&self) -> Duration {
+        self.token_keys_retain
+    }
+
+    /// Whether this realm's operations ring — the one that seals its trail — is enabled.
+    pub fn operations_keys_enabled(&self) -> bool {
+        self.operations_keys_enabled
+    }
+
+    /// How long a new operations key of this realm is published before it signs.
+    pub fn operations_keys_publish_ahead(&self) -> Duration {
+        self.operations_keys_publish_ahead
+    }
+
+    /// How long an operations key of this realm signs before it is replaced.
+    pub fn operations_keys_rotate_every(&self) -> Duration {
+        self.operations_keys_rotate_every
+    }
+
+    /// How long a retired operations key of this realm stays published.
+    pub fn operations_keys_retain(&self) -> Duration {
+        self.operations_keys_retain
     }
 
     /// Where this realm's trail is written.

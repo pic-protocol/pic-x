@@ -383,7 +383,7 @@ impl Pseudonymizer for StubPolicy {
     }
 }
 
-const PSEUDONYM_ON: &str = "web:\n  http: 0.0.0.0:5556\nsecrets:\n  provider: environment\n  env_prefix: PIC_X_APP_TEST\naudit:\n  pseudonym:\n    enabled: true\n    key_ref: audit-pseudonym\n    key_version: \"v7\"\n";
+const PSEUDONYM_ON: &str = "web:\n  http: 0.0.0.0:5556\noperations:\n  secrets:\n    provider: environment\n    env_prefix: PIC_X_APP_TEST\n  audit:\n    pseudonym:\n      enabled: true\n      key_ref: audit-pseudonym\n      key_version: \"v7\"\n";
 
 /// A store holding the one secret these tests name.
 fn secrets() -> Box<dyn SecretStore> {

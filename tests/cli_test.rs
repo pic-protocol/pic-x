@@ -360,7 +360,7 @@ fn test_an_unreadable_log_setting_is_refused_with_what_was_expected() {
 fn test_pseudonymisation_without_a_key_refuses_to_start() {
     let config = ConfigFixture::new(
         "pseudonym-nokey",
-        "web:\n  http: 127.0.0.1:0\nsecrets:\n  provider: environment\naudit:\n  pseudonym:\n    enabled: true\n",
+        "web:\n  http: 127.0.0.1:0\noperations:\n  secrets:\n    provider: environment\n  audit:\n    pseudonym:\n      enabled: true\n",
     );
     let output = run(&[config.as_arg()]);
 
@@ -372,7 +372,7 @@ fn test_pseudonymisation_without_a_key_refuses_to_start() {
 fn test_pseudonymisation_without_anywhere_to_resolve_the_key_refuses_to_start() {
     let config = ConfigFixture::new(
         "pseudonym-no-store",
-        "web:\n  http: 127.0.0.1:0\naudit:\n  pseudonym:\n    enabled: true\n    key_ref: audit-pseudonym\n",
+        "web:\n  http: 127.0.0.1:0\noperations:\n  audit:\n    pseudonym:\n      enabled: true\n      key_ref: audit-pseudonym\n",
     );
     let output = run(&[config.as_arg()]);
 
@@ -384,7 +384,7 @@ fn test_pseudonymisation_without_anywhere_to_resolve_the_key_refuses_to_start() 
 fn test_a_secret_the_store_does_not_have_refuses_to_start_naming_the_reference() {
     let config = ConfigFixture::new(
         "pseudonym-absent",
-        "web:\n  http: 127.0.0.1:0\nsecrets:\n  provider: environment\n  env_prefix: PIC_X_NOTHING\naudit:\n  pseudonym:\n    enabled: true\n    key_ref: audit-pseudonym\n",
+        "web:\n  http: 127.0.0.1:0\noperations:\n  secrets:\n    provider: environment\n    env_prefix: PIC_X_NOTHING\n  audit:\n    pseudonym:\n      enabled: true\n      key_ref: audit-pseudonym\n",
     );
     let output = run(&[config.as_arg()]);
 
@@ -399,7 +399,7 @@ fn test_a_secret_the_store_does_not_have_refuses_to_start_naming_the_reference()
 fn test_a_key_resolved_from_the_environment_starts_and_pseudonymises() {
     let config = ConfigFixture::new(
         "pseudonym-resolved",
-        "web:\n  http: 127.0.0.1:0\nsecrets:\n  provider: environment\n  env_prefix: PIC_X_TEST_SECRET\naudit:\n  pseudonym:\n    enabled: true\n    key_ref: audit-pseudonym\n",
+        "web:\n  http: 127.0.0.1:0\noperations:\n  secrets:\n    provider: environment\n    env_prefix: PIC_X_TEST_SECRET\n  audit:\n    pseudonym:\n      enabled: true\n      key_ref: audit-pseudonym\n",
     );
 
     let served = serve(
@@ -686,7 +686,7 @@ fn test_the_same_surface_on_loopback_starts() {
 fn test_a_trail_this_build_wrote_is_a_trail_this_build_can_check() {
     let config = ConfigFixture::new(
         "audit-verify",
-        "web:\n  http: 127.0.0.1:0\ntelemetry:\n  addr: 127.0.0.1:0\naudit:\n  sink: file\n",
+        "web:\n  http: 127.0.0.1:0\ntelemetry:\n  addr: 127.0.0.1:0\noperations:\n  audit:\n    sink: file\n",
     );
 
     let served = serve(&[config.as_arg()], &[config.volume()]);
@@ -708,7 +708,7 @@ fn test_a_trail_this_build_wrote_is_a_trail_this_build_can_check() {
 fn test_a_trail_somebody_edited_does_not_verify() {
     let config = ConfigFixture::new(
         "audit-tampered",
-        "web:\n  http: 127.0.0.1:0\naudit:\n  sink: file\n",
+        "web:\n  http: 127.0.0.1:0\noperations:\n  audit:\n    sink: file\n",
     );
 
     let served = serve(&[config.as_arg()], &[config.volume()]);
