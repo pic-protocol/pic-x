@@ -14,8 +14,8 @@ use pic_x_transport::Surface;
 
 use crate::COMPONENT;
 use crate::routes::{
-    CatalogRealm, KeyRing, ProfileEntry, RealmMeta, Server, jwks, realm_configuration, root,
-    server_configuration,
+    CatalogRealm, KeyRing, ProfileEntry, RealmLanding, RealmMeta, Server, jwks,
+    realm_configuration, realm_root, root, server_configuration,
 };
 
 /// Contributes routes to the public surface.
@@ -88,6 +88,8 @@ impl WellKnownService {
         let server = Server {
             product: identity.product_name().to_owned(),
             version: config.version().to_owned(),
+            logo: identity.logo().to_owned(),
+            tagline: identity.tagline().to_owned(),
             profiles: vec![ProfileEntry {
                 profile: PIC_PROFILE,
                 realms: realms
@@ -119,20 +121,42 @@ impl WellKnownService {
         // here. It is empty until token issuance exists; the ring that seals the realm's trail is a
         // different, internal ring and is never on this surface.
         for realm in realms.all() {
+            let landing = RealmLanding {
+                product: identity.product_name().to_owned(),
+                version: config.version().to_owned(),
+                tagline: identity.tagline().to_owned(),
+                logo: identity.logo().to_owned(),
+                name: realm.name().to_owned(),
+                configuration_url: realm.url("/.well-known/pic-x-configuration"),
+                jwks_uri: realm.url("/keys"),
+            };
+
             let issuer = Router::new()
-                .route("/.well-known/pic-x-configuration", get(realm_configuration))
-                .with_state(RealmMeta {
-                    issuer: realm.issuer().map(ToOwned::to_owned),
-                    token_endpoint: realm.url("/token"),
-                    jwks_uri: realm.url("/keys"),
-                    attestations_endpoint: realm.url("/attestations"),
-                    trust_anchors_endpoint: realm.url("/trust-anchors"),
-                })
+                .route("/", get(realm_root))
+                .with_state(landing.clone())
+                .merge(
+                    Router::new()
+                        .route("/.well-known/pic-x-configuration", get(realm_configuration))
+                        .with_state(RealmMeta {
+                            issuer: realm.issuer().map(ToOwned::to_owned),
+                            token_endpoint: realm.url("/token"),
+                            jwks_uri: realm.url("/keys"),
+                            attestations_endpoint: realm.url("/attestations"),
+                            trust_anchors_endpoint: realm.url("/trust-anchors"),
+                        }),
+                )
                 .merge(Router::new().route("/keys", get(jwks)).with_state(KeyRing {
                     keys: realm.token_keys().map(Arc::clone),
                 }));
 
-            router = router.nest(realm.mount_path(), issuer);
+            // The nest answers the realm's path and everything under it, but a nested `/` route matches
+            // only the path *without* a trailing slash. A browser often adds one, so `/realms/<name>/`
+            // gets the same landing, registered explicitly beside the nest.
+            let trailing = Router::new()
+                .route(&format!("{}/", realm.mount_path()), get(realm_root))
+                .with_state(landing);
+
+            router = router.nest(realm.mount_path(), issuer).merge(trailing);
         }
 
         for provider in &self.providers {

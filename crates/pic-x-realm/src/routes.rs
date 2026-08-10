@@ -19,13 +19,19 @@ use std::sync::Arc;
 
 use axum::extract::State;
 use axum::http::{StatusCode, header};
-use axum::{Json, response::IntoResponse, response::Response};
+use axum::{Json, response::Html, response::IntoResponse, response::Response};
 use serde::Serialize;
 use tracing::warn;
 
 use pic_x_core::{JwkSet, KeyManager, PIC_PROFILE};
 
 use crate::COMPONENT;
+
+/// The generic landing shell — structure and style, no product in it.
+///
+/// The branding it renders (logo, name, tagline) is supplied per request from the product identity,
+/// so this crate stays reusable: a different product drops in its own logo and this page is its page.
+const LANDING_TEMPLATE: &str = include_str!("../assets/landing.html");
 
 /// How long a client may cache a key set.
 ///
@@ -52,6 +58,11 @@ pub(crate) struct Server {
     pub(crate) product: String,
     pub(crate) version: String,
     pub(crate) profiles: Vec<ProfileEntry>,
+    // Branding for the human landing only — never part of the machine document, hence skipped.
+    #[serde(skip)]
+    pub(crate) logo: String,
+    #[serde(skip)]
+    pub(crate) tagline: String,
 }
 
 /// One profile this server speaks, and what it hosts under it.
@@ -87,6 +98,21 @@ pub(crate) struct RealmMeta {
     pub(crate) jwks_uri: String,
     pub(crate) attestations_endpoint: String,
     pub(crate) trust_anchors_endpoint: String,
+}
+
+/// What a realm's landing page shows.
+///
+/// Enough to tell an operator which realm this is and where its machine-readable documents are, so
+/// opening the realm's own path in a browser lands on something rather than a bare 404.
+#[derive(Clone)]
+pub(crate) struct RealmLanding {
+    pub(crate) product: String,
+    pub(crate) version: String,
+    pub(crate) tagline: String,
+    pub(crate) logo: String,
+    pub(crate) name: String,
+    pub(crate) configuration_url: String,
+    pub(crate) jwks_uri: String,
 }
 
 /// The issuer discovery document, as a type so its fields serialise in the order they are declared.
@@ -135,20 +161,124 @@ struct Continuity {
     continuity_modes_supported: &'static [&'static str],
 }
 
+/// One link a landing page offers: a label and the path it points at.
+struct Link {
+    label: String,
+    href: String,
+}
+
+/// Escapes the few characters that would otherwise let a configured value break out of the HTML.
+///
+/// Realm names are already restricted to `[a-z0-9-]`, but a product name, tagline or issuer is
+/// whatever a deployment wrote, so nothing interpolated into the page is trusted to be inert.
+fn escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
+}
+
+/// Fills the landing shell with one page's branding and links.
+///
+/// The logo is a `data:` URI from the product identity and is *not* escaped — it is trusted material
+/// the binary compiled in, not a configured value. Everything else is escaped.
+fn landing(
+    title: &str,
+    logo: &str,
+    name: &str,
+    subtitle: &str,
+    foot: &str,
+    links: &[Link],
+) -> Html<String> {
+    let hero = if logo.is_empty() {
+        format!("<h1 class=\"wordmark\">{}</h1>", escape(name))
+    } else {
+        format!(
+            "<img class=\"logo\" src=\"{}\" alt=\"{}\" />",
+            logo,
+            escape(name)
+        )
+    };
+
+    let rows = links
+        .iter()
+        .map(|link| {
+            format!(
+                "<a class=\"row\" href=\"{href}\"><span class=\"label\">{label}</span><span class=\"path\">{href}</span></a>",
+                href = escape(&link.href),
+                label = escape(&link.label),
+            )
+        })
+        .collect::<String>();
+
+    let page = LANDING_TEMPLATE
+        .replace("{{TITLE}}", &escape(title))
+        .replace("{{HERO}}", &hero)
+        .replace("{{SUBTITLE}}", &escape(subtitle))
+        .replace("{{ROWS}}", &rows)
+        .replace("{{FOOT}}", &escape(foot));
+
+    Html(page)
+}
+
 /// Answers the request an operator makes first: opening the address in a browser.
 ///
 /// A 404 here is indistinguishable from a server that is not running, which is the worst possible
-/// answer to "is it up?". It points at the machine-readable documents rather than repeating them.
+/// answer to "is it up?". A branded landing points at the machine-readable documents rather than
+/// repeating them, and reaches off the host for nothing — the logo is inlined.
 pub(crate) async fn root(State(server): State<Server>) -> impl IntoResponse {
-    let realms: usize = server
-        .profiles
-        .iter()
-        .map(|profile| profile.realms.len())
-        .sum();
+    let mut links = vec![Link {
+        label: "Server configuration".to_owned(),
+        href: "/.well-known/server-configuration".to_owned(),
+    }];
+    for profile in &server.profiles {
+        for realm in &profile.realms {
+            links.push(Link {
+                label: format!("Realm — {}", realm.name),
+                href: realm.configuration_url.clone(),
+            });
+        }
+    }
 
-    format!(
-        "{} {}\n\nServer:  /.well-known/server-configuration\nRealms:  {realms} listed\n",
-        server.product, server.version
+    landing(
+        &server.product,
+        &server.logo,
+        &server.product,
+        &format!("v{}", server.version),
+        &server.tagline,
+        &links,
+    )
+}
+
+/// Answers a browser opening a realm's own path, the way [`root`] answers the server's.
+///
+/// A realm is reachable at its path whether it is listed or not — a token verifier must reach its
+/// discovery and keys — so a bare 404 here is the same unhelpful "is it even up?" the server root
+/// exists to avoid. It names the realm and points at its documents rather than repeating them.
+pub(crate) async fn realm_root(State(realm): State<RealmLanding>) -> impl IntoResponse {
+    let links = vec![
+        Link {
+            label: "Discovery".to_owned(),
+            href: realm.configuration_url.clone(),
+        },
+        Link {
+            label: "Keys".to_owned(),
+            href: realm.jwks_uri.clone(),
+        },
+    ];
+
+    landing(
+        &format!("{} \u{2014} {}", realm.product, realm.name),
+        &realm.logo,
+        &realm.product,
+        &format!(
+            "realm \u{201c}{}\u{201d} \u{00b7} v{}",
+            realm.name, realm.version
+        ),
+        &realm.tagline,
+        &links,
     )
 }
 

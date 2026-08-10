@@ -337,21 +337,42 @@ async fn test_a_path_prefix_moves_where_everything_is_mounted() {
 }
 
 #[tokio::test]
+async fn test_a_realm_lands_on_a_page_at_its_own_path() {
+    // Opening the realm's path in a browser lands on something, not a bare 404 — with or without the
+    // trailing slash a browser might add — and points at the machine-readable documents.
+    let realms = Realms::new([realm("acme", Some("https://acme.example.com"), true)]);
+
+    for path in ["/realms/acme", "/realms/acme/"] {
+        let (status, body) =
+            ask_full(&WellKnownService::new(), &config_with(&[]), &realms, path).await;
+
+        assert_eq!(status, StatusCode::OK, "{path} did not land");
+        assert!(
+            body.contains("acme"),
+            "{path} does not name the realm: {body}"
+        );
+        assert!(
+            body.contains(".well-known/pic-x-configuration"),
+            "{path} does not point at the discovery document: {body}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn test_a_realm_that_is_not_hosted_is_not_found() {
-    // A realm nobody configured has no surface, whatever path is asked for.
-    assert_eq!(
-        ask(&WellKnownService::new(), "/realms/ghost/keys").await.0,
-        StatusCode::NOT_FOUND
-    );
-    assert_eq!(
-        ask(
-            &WellKnownService::new(),
-            "/realms/ghost/.well-known/pic-x-configuration"
-        )
-        .await
-        .0,
-        StatusCode::NOT_FOUND
-    );
+    // A realm nobody configured has no surface, whatever path is asked for — landing included.
+    for path in [
+        "/realms/ghost",
+        "/realms/ghost/",
+        "/realms/ghost/keys",
+        "/realms/ghost/.well-known/pic-x-configuration",
+    ] {
+        assert_eq!(
+            ask(&WellKnownService::new(), path).await.0,
+            StatusCode::NOT_FOUND,
+            "{path} should not be found"
+        );
+    }
 }
 
 #[tokio::test]

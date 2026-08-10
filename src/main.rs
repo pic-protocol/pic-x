@@ -54,7 +54,15 @@ async fn main() -> ExitCode {
         PRODUCT_TAGLINE,
         PRODUCT_ABOUT,
         BANNER_ART,
-    );
+    )
+    // The web logo the public landing renders, inline and self-contained: the transparent mini logo
+    // as a `data:` URI, so the page reaches off the host for nothing. Branding lives here, in the
+    // binary. `build.rs` encodes it from `assets/pic-x-logo-mini.png` on every build, so changing the
+    // image is all it takes — there is no derived file to keep in sync.
+    .with_logo(include_str!(concat!(
+        env!("OUT_DIR"),
+        "/pic-x-logo.datauri"
+    )));
 
     let build_settings = BuildSettings::new(
         env!("CARGO_PKG_VERSION"),
@@ -140,15 +148,6 @@ fn audit_sink_for(
     }
 }
 
-/// Checks a trail written by the file sink, and says what checking it found.
-///
-/// The head is the value that matters and is printed for that reason: one digest stands for every
-/// record before it, so writing it down somewhere this process cannot reach is what turns tamper
-/// evidence into something an attacker with write access cannot undo.
-///
-/// When a key set is named, every seal's signature is checked against it. The set has to be named
-/// rather than found: verifying against keys taken from the machine under suspicion checks a
-/// signature against a key the same attacker could have replaced.
 /// Prints an operations ring's public keys as the JWKS a verifier checks seals against.
 ///
 /// The counterpart to `audit verify --keys`. An operations ring is never served over HTTP, so this
@@ -160,6 +159,15 @@ fn export_keys(directory: &std::path::Path) -> anyhow::Result<String> {
         .with_context(|| format!("reading the key ring in {}", directory.display()))
 }
 
+/// Checks a trail written by the file sink, and says what checking it found.
+///
+/// The head is the value that matters and is printed for that reason: one digest stands for every
+/// record before it, so writing it down somewhere this process cannot reach is what turns tamper
+/// evidence into something an attacker with write access cannot undo.
+///
+/// When a key set is named, every seal's signature is checked against it. The set has to be named
+/// rather than found: verifying against keys taken from the machine under suspicion checks a
+/// signature against a key the same attacker could have replaced.
 fn verify_audit_trail(
     directory: &std::path::Path,
     keys: Option<&std::path::Path>,

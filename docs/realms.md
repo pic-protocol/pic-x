@@ -45,6 +45,7 @@ cross-tenant escalation.
 
 ```text
 /.well-known/server-configuration                 the deployment: product, version, listed realms
+/realms/<name>/                                    a human landing for that realm, pointing at its documents
 /realms/<name>/.well-known/pic-x-configuration     that realm's issuer discovery (endpoints, capabilities)
 {issuer}/keys  (i.e. /realms/<name>/keys)          that realm's token keys — empty until issuance exists
 ```

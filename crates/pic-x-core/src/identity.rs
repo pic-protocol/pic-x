@@ -14,6 +14,7 @@ pub struct ProductIdentity {
     tagline: &'static str,
     about: &'static str,
     art: &'static str,
+    logo: &'static str,
 }
 
 impl ProductIdentity {
@@ -37,7 +38,20 @@ impl ProductIdentity {
             tagline,
             about,
             art,
+            logo: "",
         }
+    }
+
+    /// Supplies the web logo the public landing renders, inline and self-contained.
+    ///
+    /// A `data:` URI or an inline SVG — never a URL, because the landing must not reach off the host
+    /// for anything. Empty by default: a build that sets none simply renders its name as text. Kept
+    /// here, beside the ASCII `art`, because a logo is branding and branding belongs to the binary,
+    /// not to a crate a different product reuses.
+    pub fn with_logo(mut self, logo: &'static str) -> Self {
+        self.logo = logo;
+
+        self
     }
 
     /// Returns the executable name shown in usage text and diagnostics.
@@ -63,6 +77,11 @@ impl ProductIdentity {
     /// Returns the ASCII art rendered by the full banner.
     pub fn art(&self) -> &'static str {
         self.art
+    }
+
+    /// Returns the web logo the public landing renders, or an empty string when none was supplied.
+    pub fn logo(&self) -> &'static str {
+        self.logo
     }
 }
 
