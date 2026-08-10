@@ -18,14 +18,16 @@ use tracing::{debug, info, warn};
 use pic_x_core::metrics::Metric;
 use pic_x_core::{BoxFuture, KeyManager, Metrics, ServerContext, Service, ready};
 
-/// Whether an issuer currently has a key that will sign — 1 or 0, labelled by realm.
+/// Whether an issuer currently has a key that will sign — 1 or 0, labelled by realm and role.
 ///
-/// The one number worth alerting on per issuer: a realm sitting at 0 publishes a key set nothing can
-/// verify a fresh token against. `realm=server` is the control plane's own ring. The label set is the
-/// configured realms, which is bounded, so this cannot grow without bound the way a path label would.
+/// The one number worth alerting on per issuer: a ring sitting at 0 publishes a key set nothing can
+/// verify a signature against. `realm=server` is the control plane's own ring. `role` separates the
+/// `operations` ring (seals the trail) from the `tokens` ring (signs issued tokens), so a realm with
+/// both does not collapse into one gauge. The label set is the configured realms times two roles,
+/// which is bounded, so this cannot grow without bound the way a path label would.
 const KEYS_ACTIVE: Metric = Metric::gauge(
     "picx_keys_active",
-    "Whether an issuer has an active signing key (1) or not (0), by realm.",
+    "Whether an issuer has an active signing key (1) or not (0), by realm and role.",
 );
 
 // The manager is taken from the context rather than from a constructor, because which manager
@@ -94,6 +96,7 @@ impl KeyService {
             event.name = "keys.maintained",
             component = COMPONENT,
             realm = ring.realm.as_deref(),
+            keys.role = ring.role,
             keys.published = report.published,
             keys.activated = report.activated,
             keys.retired = report.retired,
@@ -110,17 +113,23 @@ impl KeyService {
         let realm = ring.realm.as_deref().unwrap_or("server");
         let active = f64::from(u8::from(ring.keys.active_key_id().is_ok()));
 
-        metrics.set(&KEYS_ACTIVE, &[("realm", realm)], active);
+        metrics.set(
+            &KEYS_ACTIVE,
+            &[("realm", realm), ("role", ring.role)],
+            active,
+        );
     }
 }
 
-/// One key ring this service maintains, and which issuer it belongs to.
+/// One key ring this service maintains, which issuer it belongs to, and what it is for.
 ///
-/// `realm` is `None` for the server's own ring — the one that signs the system trail — and the realm
-/// name otherwise. It is what lets a single sequential loop maintain every issuer without a task
-/// apiece, and what names each ring in the log.
+/// `realm` is `None` for the server's own ring and the realm name otherwise. `role` is `operations`
+/// for the ring that seals a trail or `tokens` for the ring that signs issued tokens — a realm has
+/// both, so the two must be told apart. Together they let a single sequential loop maintain every
+/// ring without a task apiece, and name each one in the log.
 struct Ring {
     realm: Option<String>,
+    role: &'static str,
     keys: Arc<dyn KeyManager>,
 }
 
@@ -128,8 +137,8 @@ impl Ring {
     /// How this ring is named in a record and an error.
     fn label(&self) -> String {
         match &self.realm {
-            Some(name) => format!("the realm `{name}`"),
-            None => "the server".to_owned(),
+            Some(name) => format!("the {} ring of the realm `{name}`", self.role),
+            None => format!("the {} ring of the server", self.role),
         }
     }
 }
@@ -148,15 +157,25 @@ impl Service for KeyService {
             if let Some(keys) = context.keys() {
                 rings.push(Ring {
                     realm: None,
+                    role: "operations",
                     keys: Arc::clone(keys),
                 });
             }
-            // A realm's operations ring — the one that seals its trail. Its token ring, once token
-            // issuance exists, is a second ring maintained the same way; there is none yet.
+            // Each realm brings up to two rings, maintained the same way in this one loop: its
+            // operations ring, which seals its trail, and its token ring, which signs the tokens it
+            // issues. A realm may have either, both, or neither.
             for realm in context.realms().all() {
                 if let Some(keys) = realm.operations_keys() {
                     rings.push(Ring {
                         realm: Some(realm.name().to_owned()),
+                        role: "operations",
+                        keys: Arc::clone(keys),
+                    });
+                }
+                if let Some(keys) = realm.token_keys() {
+                    rings.push(Ring {
+                        realm: Some(realm.name().to_owned()),
+                        role: "tokens",
                         keys: Arc::clone(keys),
                     });
                 }
@@ -186,6 +205,7 @@ impl Service for KeyService {
                             event.name = "keys.realm_unavailable",
                             component = COMPONENT,
                             realm = name.as_str(),
+                            keys.role = ring.role,
                             error = %format!("{error:#}"),
                             "this realm's key ring could not be prepared; it will not sign until it can"
                         ),
@@ -199,6 +219,7 @@ impl Service for KeyService {
                     event.name = "keys.ready",
                     component = COMPONENT,
                     realm = ring.realm.as_deref(),
+                    keys.role = ring.role,
                     keys.manager = ring.keys.name(),
                     keys.active = ring
                         .keys
@@ -235,6 +256,7 @@ impl Service for KeyService {
                                         event.name = "keys.maintenance_failed",
                                         component = COMPONENT,
                                         realm = ring.realm.as_deref(),
+                                        keys.role = ring.role,
                                         error = %format!("{error:#}"),
                                         "the key lifecycle did not advance"
                                     );

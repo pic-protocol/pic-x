@@ -250,18 +250,18 @@ async fn test_a_realm_serves_its_own_discovery_and_keys_at_its_path() {
         document.contains(r#""token_endpoint":"https://acme.example.com/token""#),
         "{document}"
     );
-    assert!(
-        !document.contains("revocation_endpoint"),
-        "revocation is not advertised for now: {document}"
-    );
-    assert!(
-        document.contains(r#""attestations_endpoint":"https://acme.example.com/attestations""#),
-        "{document}"
-    );
-    assert!(
-        document.contains(r#""trust_anchors_endpoint":"https://acme.example.com/trust-anchors""#),
-        "{document}"
-    );
+    // Only the token surface is advertised: this deployment hosts no revocation, attestation or
+    // trust-anchor endpoints.
+    for absent in [
+        "revocation_endpoint",
+        "attestations_endpoint",
+        "trust_anchors_endpoint",
+    ] {
+        assert!(
+            !document.contains(absent),
+            "{absent} should not be advertised: {document}"
+        );
+    }
     assert!(
         document.contains("https://pic-protocol.org/profiles/0.2"),
         "{document}"
@@ -272,7 +272,8 @@ async fn test_a_realm_serves_its_own_discovery_and_keys_at_its_path() {
         "{document}"
     );
 
-    // Its key set is reachable at `{issuer}/keys` — and empty, because there are no token keys yet.
+    // Its key set is reachable at `{issuer}/keys`. This test realm has no token ring, so it is empty;
+    // a realm with token keys enabled publishes them here.
     let (status, keys) = ask_full(
         &WellKnownService::new(),
         &config_with(&[]),
@@ -281,7 +282,45 @@ async fn test_a_realm_serves_its_own_discovery_and_keys_at_its_path() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(keys, r#"{"keys":[]}"#, "the realm has no token keys yet");
+    assert_eq!(
+        keys, r#"{"keys":[]}"#,
+        "this test realm was built with no token ring"
+    );
+}
+
+#[tokio::test]
+async fn test_the_token_endpoint_is_a_post_that_reports_it_is_not_implemented() {
+    let realms = Realms::new([realm("acme", Some("https://acme.example.com"), true)]);
+    let service = WellKnownService::new();
+
+    // A POST is answered — with 501, because issuance is not built — not a 404.
+    let response = service
+        .router(&identity(), &config_with(&[]), &realms)
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/realms/acme/token")
+                .body(Body::empty())
+                .expect("the request builds"),
+        )
+        .await
+        .expect("the route answers");
+    assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("the body is readable");
+    assert!(
+        String::from_utf8_lossy(&body).contains("not_implemented"),
+        "the 501 should say why"
+    );
+
+    // The method is part of the contract: a GET is refused with 405, not served.
+    assert_eq!(
+        ask_full(&service, &config_with(&[]), &realms, "/realms/acme/token")
+            .await
+            .0,
+        StatusCode::METHOD_NOT_ALLOWED
+    );
 }
 
 #[tokio::test]

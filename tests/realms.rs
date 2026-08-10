@@ -5,7 +5,8 @@
 //! and a single process — one maintenance loop, no task per realm — seals each realm's trail with a
 //! *different* key. Those sealing keys are the realms' operations keys, which are internal and never
 //! served over HTTP, so the "different key" claim is checked on disk; the HTTP key set is the realm's
-//! token ring, empty until issuance exists. If any of that regresses, this fails.
+//! token ring, now enabled and populated, and the token endpoint answers a POST. If any of that
+//! regresses, this fails.
 
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -130,6 +131,29 @@ fn get(address: &str, path: &str) -> (String, String) {
     (status, body.to_owned())
 }
 
+/// Sends an empty POST to one path and returns `(status_line, body)`.
+fn post(address: &str, path: &str) -> (String, String) {
+    let mut stream = TcpStream::connect(address).expect("the surface accepts a connection");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .expect("the read timeout is set");
+    write!(
+        stream,
+        "POST {path} HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+    )
+    .expect("the request is sent");
+
+    let mut answer = String::new();
+    stream
+        .read_to_string(&mut answer)
+        .expect("the answer is readable");
+
+    let (head, body) = answer.split_once("\r\n\r\n").unwrap_or((&answer, ""));
+    let status = head.lines().next().unwrap_or_default().to_owned();
+
+    (status, body.to_owned())
+}
+
 /// Writes a two-realm development configuration into `volume`.
 fn config_in(volume: &std::path::Path) -> PathBuf {
     let path = volume.join("config.yaml");
@@ -211,8 +235,9 @@ fn test_two_realms_each_get_their_own_issuer_surface_and_key() {
         "the unlisted realm is unreachable: {beta_status}"
     );
 
-    // Over HTTP, a realm's key set is its *token* ring — empty until issuance exists — and the server
-    // publishes none at all. The sealing keys are checked on disk below.
+    // Over HTTP, a realm's key set is its *token* ring, published at `/keys` now that token keys are
+    // enabled — so it is populated. The server publishes none of its own. The sealing keys are checked
+    // on disk below.
     let (server_keys_status, _) = get(&server.web, "/.well-known/jwks.json");
     assert!(
         server_keys_status.contains("404"),
@@ -220,10 +245,19 @@ fn test_two_realms_each_get_their_own_issuer_surface_and_key() {
     );
     let (acme_keys_status, acme_token_keys) = get(&server.web, "/realms/acme/keys");
     assert!(acme_keys_status.contains("200"), "{acme_keys_status}");
-    assert_eq!(
-        acme_token_keys.trim(),
-        r#"{"keys":[]}"#,
-        "the realm should publish no token keys yet: {acme_token_keys}"
+    assert!(
+        !kids(&acme_token_keys).is_empty(),
+        "the realm publishes no token keys: {acme_token_keys}"
+    );
+    // The token endpoint answers a POST — with 501, since issuance is not built — rather than 404.
+    let (token_status, token_body) = post(&server.web, "/realms/acme/token");
+    assert!(
+        token_status.contains("501"),
+        "the token endpoint should answer a POST: {token_status}"
+    );
+    assert!(
+        token_body.contains("not_implemented"),
+        "the 501 should say why: {token_body}"
     );
     // The old realm key path is gone; the key set moved to `{issuer}/keys`.
     let (old_path_status, _) = get(&server.web, "/realms/acme/.well-known/jwks.json");
@@ -250,6 +284,18 @@ fn test_two_realms_each_get_their_own_issuer_surface_and_key() {
         "the server and acme share a signing key"
     );
     assert_ne!(acme_kids, beta_kids, "two realms share a signing key");
+
+    // A realm's token ring is a *second*, distinct ring beside its operations ring — its own keys at
+    // `realms/<name>/keys`, different from the ones that seal its trail.
+    let acme_token_kids = kids(&read(&vol.join("realms/acme/keys/ring.json")));
+    assert!(
+        !acme_token_kids.is_empty(),
+        "acme has no token ring of its own"
+    );
+    assert_ne!(
+        acme_token_kids, acme_kids,
+        "acme's token ring and operations ring share a key"
+    );
 
     // Each realm left its material behind, in its own directory — isolation on disk.
     for realm in ["acme", "beta"] {

@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result, anyhow};
 use axum::Router;
-use axum::routing::get;
+use axum::routing::{get, post};
 use tracing::info;
 
 use pic_x_core::{
@@ -15,7 +15,7 @@ use pic_x_transport::Surface;
 use crate::COMPONENT;
 use crate::routes::{
     CatalogRealm, KeyRing, ProfileEntry, RealmLanding, RealmMeta, Server, jwks,
-    realm_configuration, realm_root, root, server_configuration,
+    realm_configuration, realm_root, root, server_configuration, token,
 };
 
 /// Contributes routes to the public surface.
@@ -141,13 +141,14 @@ impl WellKnownService {
                             issuer: realm.issuer().map(ToOwned::to_owned),
                             token_endpoint: realm.url("/token"),
                             jwks_uri: realm.url("/keys"),
-                            attestations_endpoint: realm.url("/attestations"),
-                            trust_anchors_endpoint: realm.url("/trust-anchors"),
                         }),
                 )
                 .merge(Router::new().route("/keys", get(jwks)).with_state(KeyRing {
                     keys: realm.token_keys().map(Arc::clone),
-                }));
+                }))
+                // The token endpoint. A POST — a GET gets a 405 — that returns "not implemented"
+                // until real issuance exists. It takes no state, so it needs no `with_state`.
+                .merge(Router::new().route("/token", post(token)));
 
             // The nest answers the realm's path and everything under it, but a nested `/` route matches
             // only the path *without* a trailing slash. A browser often adds one, so `/realms/<name>/`

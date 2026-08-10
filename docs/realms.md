@@ -12,7 +12,7 @@ everything under its own root. Realms are additive.
 | | the server (control plane) | a realm (an issuer) |
 | --- | --- | --- |
 | issues tokens | no | yes |
-| token-signing keys | none | `realms/<name>/keys/` — published at its `jwks_uri`, reserved until token issuance exists |
+| token-signing keys | none | `realms/<name>/keys/` — enabled and rotating, published at its `jwks_uri` |
 | operations keys (seal the trail) | `operations/keys/` — the **system trail** | `realms/<name>/operations/keys/` — that realm's trail |
 | audit trail | `operations/audit/` | `realms/<name>/operations/audit/` |
 | pseudonymisation key | `operations/secrets/audit-pseudonym` | `realms/<name>/operations/secrets/audit-pseudonym` — a *distinct* key |
@@ -32,8 +32,9 @@ The keys split by **who has to trust them**:
   is kept.
 - **token keys** sign what a realm hands to third parties. Their public halves are the realm's
   `jwks_uri`, read by relying parties worldwide, and are short-lived — a token older than `retain` has
-  expired, so nothing needs to verify it. This ring is reserved (`realms/<name>/keys/`) and does not
-  exist until token issuance does; until then a realm's `jwks_uri` publishes an empty set.
+  expired, so nothing needs to verify it (`verify_retain` = `retain`, no archive phase). This ring
+  (`realms/<name>/keys/`) is enabled and rotating; the `token_endpoint` that would use it answers
+  `POST` with `501 Not Implemented` until issuance is built.
 
 The server, being control plane, has an operations ring only.
 
@@ -47,12 +48,14 @@ cross-tenant escalation.
 /.well-known/server-configuration                 the deployment: product, version, listed realms
 /realms/<name>/                                    a human landing for that realm, pointing at its documents
 /realms/<name>/.well-known/pic-x-configuration     that realm's issuer discovery (endpoints, capabilities)
-{issuer}/keys  (i.e. /realms/<name>/keys)          that realm's token keys — empty until issuance exists
+{issuer}/keys  (i.e. /realms/<name>/keys)          that realm's token keys (GET)
+{issuer}/token (i.e. /realms/<name>/token)         token exchange (POST) — 501 until issuance is built
 ```
 
 The server publishes **no key set**: it issues nothing, and its operations key is internal. The realm
-discovery document roots every endpoint (`token_endpoint`, `jwks_uri`, `attestations_endpoint`,
-`trust_anchors_endpoint`) at the realm's `issuer`.
+discovery document roots its endpoints (`token_endpoint`, `jwks_uri`) at the realm's `issuer`. Only
+the token surface is advertised — this deployment hosts no revocation, attestation or trust-anchor
+endpoints.
 
 The server document is a generic envelope over a `profiles` array — today one entry, the PIC profile
 `https://pic-protocol.org/profiles/0.2`, carrying the realms. A future profile is another entry, not
@@ -126,7 +129,7 @@ that will sign — the one number worth alerting on per realm.
 │   └── keys/  audit/  secrets/  state/
 └── realms/
     ├── acme/
-    │   ├── keys/                        acme's token ring (reserved until issuance exists)
+    │   ├── keys/                        acme's token ring (enabled, rotating, published at jwks)
     │   └── operations/                  acme's own keys/ audit/ secrets/ state/ — isolated
     └── beta/
         ├── keys/

@@ -100,8 +100,6 @@ pub(crate) struct RealmMeta {
     pub(crate) issuer: Option<String>,
     pub(crate) token_endpoint: String,
     pub(crate) jwks_uri: String,
-    pub(crate) attestations_endpoint: String,
-    pub(crate) trust_anchors_endpoint: String,
 }
 
 /// What a realm's landing page shows.
@@ -129,8 +127,6 @@ struct Discovery {
     profile: &'static str,
     token_endpoint: String,
     jwks_uri: String,
-    attestations_endpoint: String,
-    trust_anchors_endpoint: String,
     grant_types_supported: &'static [&'static str],
     subject_token_types_supported: &'static [&'static str],
     issued_token_types_supported: &'static [&'static str],
@@ -310,10 +306,12 @@ pub(crate) async fn server_configuration(State(server): State<Server>) -> impl I
 
 /// The issuer discovery a client integrates a realm against.
 ///
-/// The `issuer` and the endpoint URLs are the realm's own; everything else is the PIC profile 0.2
-/// capability set this build implements, fixed for now. The endpoints below `jwks_uri` are advertised
-/// ahead of the issuance they describe: a client learns the contract here, and the handlers that
-/// answer `/token`, `/attestations` and `/trust-anchors` arrive with token issuance.
+/// The `issuer`, `token_endpoint` and `jwks_uri` are the realm's own; everything else is the PIC
+/// profile 0.2 capability set this build implements, fixed for now. Only the token surface is
+/// advertised — this deployment does not host revocation, attestation or trust-anchor endpoints.
+/// The `token_endpoint` is advertised ahead of the issuance it describes: a client learns the
+/// contract here, and the handler answering `POST /token` returns "not implemented" until real
+/// issuance lands.
 pub(crate) async fn realm_configuration(State(realm): State<RealmMeta>) -> impl IntoResponse {
     // A typed document rather than a `json!` value: `json!` builds an ordered map and serialises its
     // members alphabetically, which scrambles a document whose order is meaningful. A struct
@@ -324,9 +322,6 @@ pub(crate) async fn realm_configuration(State(realm): State<RealmMeta>) -> impl 
 
         token_endpoint: realm.token_endpoint,
         jwks_uri: realm.jwks_uri,
-
-        attestations_endpoint: realm.attestations_endpoint,
-        trust_anchors_endpoint: realm.trust_anchors_endpoint,
 
         grant_types_supported: &["urn:ietf:params:oauth:grant-type:token-exchange"],
 
@@ -359,7 +354,9 @@ pub(crate) async fn realm_configuration(State(realm): State<RealmMeta>) -> impl 
 
         continuity: Continuity {
             token_type: "https://pic-protocol.org/definitions/token-types/continuity",
-            transition_signing_alg_values_supported: &["ES256"],
+            // EdDSA to match the token ring this build signs with. A profile that mandates ES256 gets
+            // it when real issuance lands and the ring gains an EC algorithm.
+            transition_signing_alg_values_supported: &["EdDSA"],
             formats_supported: &["jwt"],
             continuity_modes_supported: &["centralized-continuity", "decentralized-continuity"],
         },
@@ -395,6 +392,23 @@ pub(crate) async fn jwks(State(ring): State<KeyRing>) -> Response {
                 .into_response()
         }
     }
+}
+
+/// The realm's token endpoint — a `POST`, per OAuth 2.0 Token Exchange.
+///
+/// Advertised in the realm's discovery so a client learns the contract, and mounted so it answers
+/// rather than 404s — but it mints nothing yet: continuity-token issuance is a protocol this build
+/// does not implement, so it returns `501` with a machine-readable reason. The method is part of the
+/// contract, so a `GET` gets a `405` from the router, not this handler.
+pub(crate) async fn token() -> Response {
+    (
+        StatusCode::NOT_IMPLEMENTED,
+        Json(serde_json::json!({
+            "error": "not_implemented",
+            "error_description": "token issuance is not implemented on this build yet"
+        })),
+    )
+        .into_response()
 }
 
 /// Serves a key set with the cache directive its lifecycle assumes.

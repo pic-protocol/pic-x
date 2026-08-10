@@ -288,7 +288,25 @@ fn build_realm(config: &Config, realm: &RealmConfig) -> anyhow::Result<Realm> {
     } else {
         None
     };
-    let token_keys: Option<Arc<dyn KeyManager>> = None;
+    // The realm's token-signing ring, at `realms/<name>/keys`, published at its `jwks_uri`. Unlike
+    // the operations ring, a token key's public half dies with its private one (`verify_retain` =
+    // `retain`): a token older than `retain` has expired, so nothing needs to verify it afterwards.
+    // It reuses the same Ed25519 ring as everything else here; the wire algorithm the discovery
+    // advertises is `EdDSA` to match. (When real issuance lands, a profile that mandates ES256 gets
+    // ES256 added to the ring then.)
+    let token_keys: Option<Arc<dyn KeyManager>> = if realm.keys_enabled() {
+        Some(Arc::new(DirectoryKeyManager::new(
+            config.realm_token_keys_directory(name),
+            KeyPolicy {
+                publish_ahead: realm.keys_publish_ahead(),
+                rotate_every: realm.keys_rotate_every(),
+                retain: realm.keys_retain(),
+                verify_retain: realm.keys_retain(),
+            },
+        )))
+    } else {
+        None
+    };
 
     // Its own trail, to its own destination and retention. A file trail is sealed by the realm's own
     // key, so its attestations are checkable against the realm's published key set alone.
