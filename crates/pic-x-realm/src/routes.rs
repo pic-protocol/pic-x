@@ -83,6 +83,10 @@ pub(crate) struct CatalogRealm {
     pub(crate) issuer: Option<String>,
     pub(crate) configuration_url: String,
     pub(crate) jwks_uri: String,
+    // The realm's local path, for the landing's link to it — a short, same-host path, not the public
+    // issuer URL, so the human page navigates here rather than wrapping a long absolute URL.
+    #[serde(skip)]
+    pub(crate) mount_path: String,
 }
 
 /// What a realm's own configuration document says.
@@ -111,8 +115,8 @@ pub(crate) struct RealmLanding {
     pub(crate) tagline: String,
     pub(crate) logo: String,
     pub(crate) name: String,
-    pub(crate) configuration_url: String,
-    pub(crate) jwks_uri: String,
+    // The realm's local path; the landing's links to its documents hang off it, same-host and short.
+    pub(crate) mount_path: String,
 }
 
 /// The issuer discovery document, as a type so its fields serialise in the order they are declared.
@@ -192,7 +196,7 @@ fn landing(
     foot: &str,
     links: &[Link],
 ) -> Html<String> {
-    let hero = if logo.is_empty() {
+    let mark = if logo.is_empty() {
         format!("<h1 class=\"wordmark\">{}</h1>", escape(name))
     } else {
         format!(
@@ -201,6 +205,9 @@ fn landing(
             escape(name)
         )
     };
+    // The logo is the way home: clicking it goes to the site root, which on a realm page is the way
+    // back to the server. On the root itself it simply reloads — harmless, and consistent.
+    let hero = format!("<a class=\"home\" href=\"/\" aria-label=\"Home\">{mark}</a>");
 
     let rows = links
         .iter()
@@ -235,9 +242,11 @@ pub(crate) async fn root(State(server): State<Server>) -> impl IntoResponse {
     }];
     for profile in &server.profiles {
         for realm in &profile.realms {
+            // Link to the realm's own landing — a short same-host path, not its long public issuer
+            // URL — so the human page drills down rather than wrapping an absolute URL.
             links.push(Link {
                 label: format!("Realm — {}", realm.name),
-                href: realm.configuration_url.clone(),
+                href: format!("{}/", realm.mount_path),
             });
         }
     }
@@ -259,13 +268,18 @@ pub(crate) async fn root(State(server): State<Server>) -> impl IntoResponse {
 /// exists to avoid. It names the realm and points at its documents rather than repeating them.
 pub(crate) async fn realm_root(State(realm): State<RealmLanding>) -> impl IntoResponse {
     let links = vec![
+        // A way back to the server, first, then the realm's own documents. Local same-host paths.
+        Link {
+            label: "Server configuration".to_owned(),
+            href: "/.well-known/server-configuration".to_owned(),
+        },
         Link {
             label: "Discovery".to_owned(),
-            href: realm.configuration_url.clone(),
+            href: format!("{}/.well-known/pic-x-configuration", realm.mount_path),
         },
         Link {
             label: "Keys".to_owned(),
-            href: realm.jwks_uri.clone(),
+            href: format!("{}/keys", realm.mount_path),
         },
     ];
 

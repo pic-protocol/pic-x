@@ -99,6 +99,7 @@ impl WellKnownService {
                         issuer: realm.issuer().map(ToOwned::to_owned),
                         configuration_url: realm.url("/.well-known/pic-x-configuration"),
                         jwks_uri: realm.url("/keys"),
+                        mount_path: realm.mount_path().to_owned(),
                     })
                     .collect(),
             }],
@@ -127,8 +128,7 @@ impl WellKnownService {
                 tagline: identity.tagline().to_owned(),
                 logo: identity.logo().to_owned(),
                 name: realm.name().to_owned(),
-                configuration_url: realm.url("/.well-known/pic-x-configuration"),
-                jwks_uri: realm.url("/keys"),
+                mount_path: realm.mount_path().to_owned(),
             };
 
             let issuer = Router::new()

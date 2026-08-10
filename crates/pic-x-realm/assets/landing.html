@@ -32,6 +32,14 @@
         max-width: 560px;
         text-align: center;
       }
+      .home {
+        display: block;
+        text-decoration: none;
+        transition: opacity 0.15s ease;
+      }
+      .home:hover {
+        opacity: 0.85;
+      }
       .logo {
         width: min(260px, 72%);
         height: auto;
@@ -84,9 +92,11 @@
       }
       .row .path {
         color: var(--muted);
-        font-size: 0.82rem;
+        font-size: 0.8rem;
         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-        word-break: break-all;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
       }
       .foot {
         margin-top: 2rem;
