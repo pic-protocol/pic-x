@@ -251,11 +251,11 @@ async fn test_a_realm_serves_its_own_discovery_and_keys_at_its_path() {
         "{document}"
     );
     assert!(
-        document.contains(r#""revocation_endpoint":"https://acme.example.com/revoke""#),
-        "{document}"
+        !document.contains("revocation_endpoint"),
+        "revocation is not advertised for now: {document}"
     );
     assert!(
-        document.contains(r#""attestation_endpoint":"https://acme.example.com/attestations""#),
+        document.contains(r#""attestations_endpoint":"https://acme.example.com/attestations""#),
         "{document}"
     );
     assert!(

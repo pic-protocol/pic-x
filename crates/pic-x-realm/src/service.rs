@@ -124,9 +124,8 @@ impl WellKnownService {
                 .with_state(RealmMeta {
                     issuer: realm.issuer().map(ToOwned::to_owned),
                     token_endpoint: realm.url("/token"),
-                    revocation_endpoint: realm.url("/revoke"),
                     jwks_uri: realm.url("/keys"),
-                    attestation_endpoint: realm.url("/attestations"),
+                    attestations_endpoint: realm.url("/attestations"),
                     trust_anchors_endpoint: realm.url("/trust-anchors"),
                 })
                 .merge(Router::new().route("/keys", get(jwks)).with_state(KeyRing {

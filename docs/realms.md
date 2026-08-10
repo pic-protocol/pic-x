@@ -50,8 +50,8 @@ cross-tenant escalation.
 ```
 
 The server publishes **no key set**: it issues nothing, and its operations key is internal. The realm
-discovery document roots every endpoint (`token_endpoint`, `jwks_uri`, `revocation_endpoint`,
-`attestation_endpoint`, `trust_anchors_endpoint`) at the realm's `issuer`.
+discovery document roots every endpoint (`token_endpoint`, `jwks_uri`, `attestations_endpoint`,
+`trust_anchors_endpoint`) at the realm's `issuer`.
 
 The server document is a generic envelope over a `profiles` array — today one entry, the PIC profile
 `https://pic-protocol.org/profiles/0.2`, carrying the realms. A future profile is another entry, not

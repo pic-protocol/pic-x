@@ -84,9 +84,8 @@ pub(crate) struct CatalogRealm {
 pub(crate) struct RealmMeta {
     pub(crate) issuer: Option<String>,
     pub(crate) token_endpoint: String,
-    pub(crate) revocation_endpoint: String,
     pub(crate) jwks_uri: String,
-    pub(crate) attestation_endpoint: String,
+    pub(crate) attestations_endpoint: String,
     pub(crate) trust_anchors_endpoint: String,
 }
 
@@ -99,9 +98,8 @@ struct Discovery {
     issuer: Option<String>,
     profile: &'static str,
     token_endpoint: String,
-    revocation_endpoint: String,
     jwks_uri: String,
-    attestation_endpoint: String,
+    attestations_endpoint: String,
     trust_anchors_endpoint: String,
     grant_types_supported: &'static [&'static str],
     subject_token_types_supported: &'static [&'static str],
@@ -171,7 +169,7 @@ pub(crate) async fn server_configuration(State(server): State<Server>) -> impl I
 /// The `issuer` and the endpoint URLs are the realm's own; everything else is the PIC profile 0.2
 /// capability set this build implements, fixed for now. The endpoints below `jwks_uri` are advertised
 /// ahead of the issuance they describe: a client learns the contract here, and the handlers that
-/// answer `/token`, `/revoke`, `/attestations` and `/trust-anchors` arrive with token issuance.
+/// answer `/token`, `/attestations` and `/trust-anchors` arrive with token issuance.
 pub(crate) async fn realm_configuration(State(realm): State<RealmMeta>) -> impl IntoResponse {
     // A typed document rather than a `json!` value: `json!` builds an ordered map and serialises its
     // members alphabetically, which scrambles a document whose order is meaningful. A struct
@@ -181,10 +179,9 @@ pub(crate) async fn realm_configuration(State(realm): State<RealmMeta>) -> impl 
         profile: PIC_PROFILE,
 
         token_endpoint: realm.token_endpoint,
-        revocation_endpoint: realm.revocation_endpoint,
         jwks_uri: realm.jwks_uri,
 
-        attestation_endpoint: realm.attestation_endpoint,
+        attestations_endpoint: realm.attestations_endpoint,
         trust_anchors_endpoint: realm.trust_anchors_endpoint,
 
         grant_types_supported: &["urn:ietf:params:oauth:grant-type:token-exchange"],
