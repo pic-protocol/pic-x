@@ -9,19 +9,38 @@
   Verifiable Authority Continuity across execution boundaries.
 </p>
 
-> Experimental: this repository is not production-ready yet.
+## Start Here
 
-## Quick Start
+PIC-X is a local-first Rust service with three surfaces: public discovery, administrative gRPC and
+telemetry. The repository uses [Task](https://taskfile.dev/) as the command runner so the useful paths
+are one command away and still visible in plain YAML.
 
-Requirements: Rust 1.97 or later. The examples use [Task](https://taskfile.dev/); without it, use
-the `cargo run` commands shown in [docs/start-server.md](docs/start-server.md).
+### Requirements
+
+| Tool | Why | Install |
+| --- | --- | --- |
+| Rust 1.97+ | Build and run PIC-X locally | <https://rustup.rs/> |
+| Task | Run project workflows | <https://taskfile.dev/installation/> |
+| Docker | Run the lab stack | <https://docs.docker.com/get-docker/> |
+| Python 3 | Run the lab demo script | <https://www.python.org/downloads/> |
+| grpcurl | Exercise the admin gRPC endpoint | <https://github.com/fullstorydev/grpcurl> |
+| curl | Call HTTP endpoints from the shell | Usually already installed |
+
+See every available workflow with:
+
+```sh
+task --list
+```
+
+## Run PIC-X
 
 ```sh
 task run
 ```
 
 This starts the local development config, creates `.volume/`, writes a file audit trail, creates the
-pseudonymisation secret and maintains a signing key ring.
+pseudonymisation secret and maintains a signing key ring. It stays on loopback and uses plain HTTP so
+the first run is boring in the best possible way.
 
 ```sh
 curl http://127.0.0.1:7556/
@@ -29,7 +48,15 @@ curl http://127.0.0.1:7556/.well-known/server-configuration
 curl http://127.0.0.1:7558/healthz
 ```
 
-To exercise TLS and mutual TLS locally:
+The admin surface is gRPC:
+
+```sh
+grpcurl -plaintext \
+  -import-path crates/pic-x-admin/proto -proto picx/admin/v1/admin.proto \
+  localhost:7557 picx.admin.v1.Admin/GetVersion
+```
+
+For the TLS and mTLS local profile:
 
 ```sh
 task run-as-local-tls
@@ -37,15 +64,58 @@ task run-as-local-tls
 
 ```sh
 curl --cacert .volume/tls/ca.pem https://localhost:7556/.well-known/server-configuration
-
 grpcurl -cacert .volume/tls/ca.pem \
-        -cert .volume/tls/client.pem -key .volume/tls/client.key \
-        -import-path crates/pic-x-admin/proto -proto picx/admin/v1/admin.proto \
-        localhost:7557 picx.admin.v1.Admin/GetVersion
+  -cert .volume/tls/client.pem -key .volume/tls/client.key \
+  -import-path crates/pic-x-admin/proto -proto picx/admin/v1/admin.proto \
+  localhost:7557 picx.admin.v1.Admin/GetVersion
 ```
 
-The product APIs are still scaffolding. Today the useful surfaces are discovery/JWKS, health,
-metrics, the admin version endpoint and audit verification.
+## Run The Lab
+
+The lab is the fast path for seeing the moving pieces together:
+
+- Keycloak with an imported example realm: <http://localhost:18080/>
+- PIC-X built from this checkout and run with [config.lab.yaml](config.lab.yaml): <http://localhost:17556/>
+- A tiny public Rust API built from [trust-lab/](trust-lab/): <http://localhost:17080/>
+
+Everything is HTTP-only and bound to `127.0.0.1`, so there is no certificate setup and nothing is
+published to your network. The first `lab-up` builds the local PIC-X and trust-lab images, so it can
+take a few minutes.
+
+```sh
+task lab-up
+task lab-demo
+task lab-down
+```
+
+The demo checks that the three services are reachable, gets a token from the example IdP and prints
+the next step the exchange flow will grow into. It uses terminal colors automatically; set
+`LAB_DEMO_COLOR=never` if you need plain output. A healthy run starts like this:
+
+```text
+:: PIC-X local trust lab demo
+-----------------------------
+local | docker compose | example IdP | public API
+
+[1] Checking lab services (up to 30s)
+    ok  Keycloak IdP: http://localhost:18080/realms/acme-idp
+    ok  Trust Lab API: public trust lab API
+    ok  PIC-X public API: PIC-X 0.1.0
+
+[2] Requesting a token from the example IdP
+    realm: acme-idp
+    client: acme-idp-client
+    user: alice
+```
+
+Useful lab commands:
+
+```sh
+task lab-get-idp-config
+task lab-get-idp-jwt
+curl -fsS http://localhost:17080/
+curl -fsS http://localhost:17556/.well-known/server-configuration
+```
 
 ## Surfaces
 
@@ -74,6 +144,7 @@ The ports are separate so administration is not accidentally exposed through the
 | --- | --- |
 | [config.local.yaml](config.local.yaml) | Local development, no TLS, loopback only; used by `task run` |
 | [config.local-tls.yaml](config.local-tls.yaml) | Local development with TLS and mTLS; used by `task run-as-local-tls` |
+| [config.lab.yaml](config.lab.yaml) | Docker Compose lab config for the PIC-X container |
 | [config.dev.yaml](config.dev.yaml) | Container development, no TLS; used by `task run-as-docker-dev` |
 | [config.prod.yaml](config.prod.yaml) | Production-shaped default copied into the image; refuses missing TLS/secrets |
 | [config.template.yaml](config.template.yaml) | Full annotated reference; not meant to be run directly |
@@ -90,6 +161,7 @@ task test
 task lab-up
 task lab-get-idp-config
 task lab-get-idp-jwt
+task lab-demo
 task lab-down
 task run-as-docker-dev
 ```

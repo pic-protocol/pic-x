@@ -2,7 +2,8 @@
 
 Use `docker-compose.lab.yml` when you need a local OpenID Connect issuer beside a tiny
 unauthenticated public REST service. The stack starts Keycloak in development mode, imports the realm in
-`dev/keycloak/acme-idp-realm.json`, and builds the Rust service in `trust-lab/`.
+`dev/keycloak/acme-idp-realm.json`, builds PIC-X from the local checkout with `config.lab.yaml`, and
+builds the Rust service in `trust-lab/`.
 
 The lab is intentionally HTTP-only and bound to localhost. That keeps it easy to run on a fresh
 developer machine: no local CA, no certificate trust-store changes, no browser-specific setup. Do not
@@ -14,9 +15,9 @@ use this setup outside local development: it uses static credentials and Keycloa
 task lab-up
 ```
 
-Keycloak is exposed at <http://localhost:18080/> and the trust lab REST service is exposed at
-<http://localhost:17080/>. Both ports are published on `127.0.0.1` only by the compose file. Open the
-admin console at <http://localhost:18080/admin/> with:
+Keycloak is exposed at <http://localhost:18080/>, PIC-X at <http://localhost:17556/> and the trust
+lab REST service at <http://localhost:17080/>. All ports are published on `127.0.0.1` only by the
+compose file. Open the admin console at <http://localhost:18080/admin/> with:
 
 | Field | Value |
 | --- | --- |
@@ -75,6 +76,24 @@ task lab-get-idp-jwt KEYCLOAK_USERNAME=alice KEYCLOAK_PASSWORD=alice-password
 ```sh
 curl -fsS http://localhost:17080/
 ```
+
+PIC-X is available in the same lab:
+
+```sh
+curl -fsS http://localhost:17556/.well-known/server-configuration
+```
+
+## Run The Demo
+
+```sh
+task lab-demo
+```
+
+The demo checks Keycloak, PIC-X and trust-lab, requests an example IdP token and prints a short,
+didactic summary of what happened.
+
+The demo uses terminal colors when stdout is interactive. Override with `LAB_DEMO_COLOR=always` or
+disable with `LAB_DEMO_COLOR=never`.
 
 ## Stop
 

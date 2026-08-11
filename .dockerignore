@@ -1,5 +1,6 @@
 # Build output and VCS metadata never belong in the build context.
 target/
+trust-lab/target/
 .git/
 .gitignore
 
@@ -7,5 +8,6 @@ target/
 Dockerfile
 .dockerignore
 
-# Large files the build does not read.
-assets/
+# Large files the build does not read. The binary embeds the mini logo in build.rs.
+assets/*
+!assets/pic-x-logo-mini.png

@@ -1,0 +1,46 @@
+# PIC-X — local Docker Compose lab.
+#
+# This is intentionally HTTP-only and localhost-bound by docker-compose.lab.yml. It is here to make
+# the lab easy to run on a fresh developer machine, not to model production transport security.
+
+development_mode: true
+autogenerate: true
+working_dir: /var/lib/pic-x
+
+log:
+  level: debug
+  format: json
+
+public:
+  http: 0.0.0.0:7556
+  url: http://localhost:17556
+
+telemetry:
+  addr: 0.0.0.0:7558
+
+admin:
+  addr: 0.0.0.0:7557
+
+operations:
+  keys:
+    enabled: true
+    publish_ahead: 5m
+    rotate_every: 1h
+    retain: 1d
+  secrets:
+    provider: directory
+  audit:
+    sink: file
+    retention: 7d
+    pseudonym:
+      enabled: true
+      key_ref: audit-pseudonym
+      key_version: "v1"
+
+realms:
+  - name: acme
+    listed: true
+    keys:
+      publish_ahead: 5m
+      rotate_every: 30m
+      retain: 12h

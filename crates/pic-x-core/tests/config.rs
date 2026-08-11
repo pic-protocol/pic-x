@@ -326,27 +326,58 @@ fn test_a_trailing_slash_on_the_issuer_never_doubles_up() {
 
 #[test]
 fn test_an_issuer_that_offers_no_protection_is_refused() {
-    let public = config(
-        &[
-            (SETTING_PUBLIC_HTTP_ADDR, "0.0.0.0:5556"),
-            (SETTING_ISSUER, "http://login.example.com"),
-        ],
-        &[],
-        &[],
-    );
-    let error = public.validate().expect_err("http is not a public issuer");
-    assert!(format!("{error}").contains("not https"));
+    // The issuer is a public identity clients fetch keys from — RFC 8414 requires https — so a
+    // plaintext one is refused outside development, and loopback is not an exception: nobody
+    // advertises a loopback issuer to real clients.
+    for plaintext in ["http://login.example.com", "http://localhost:7556"] {
+        let refused = config(
+            &[
+                (SETTING_PUBLIC_HTTP_ADDR, "0.0.0.0:5556"),
+                (SETTING_ISSUER, plaintext),
+            ],
+            &[],
+            &[],
+        );
+        let error = refused
+            .validate()
+            .expect_err("a plaintext issuer is refused in production");
+        assert!(format!("{error}").contains("not https"), "{error}");
+    }
 
-    // Loopback is the exception: there is nothing in between to protect the client from.
+    // Development mode is the single switch that relaxes it, the same one every other relaxation is
+    // justified against — a local run over http on localhost is exactly what it is for.
     let local = config(
         &[
             (SETTING_PUBLIC_HTTP_ADDR, "0.0.0.0:5556"),
             (SETTING_ISSUER, "http://localhost:7556"),
+            (SETTING_DEVELOPMENT_MODE, "true"),
         ],
         &[],
         &[],
     );
-    assert!(local.validate().is_ok());
+    assert!(local.validate().is_ok(), "development mode permits http");
+}
+
+#[test]
+fn test_a_realm_issuer_is_held_to_the_same_https_rule_as_the_server() {
+    // A realm's own issuer is a public identity too, so a plaintext one is refused in production —
+    // the check reaches each realm, not only the deployment's public URL.
+    let refused = servable()
+        .with_realms([RealmInput {
+            name: "acme".to_owned(),
+            issuer: Some("http://acme.example.com".to_owned()),
+            token_keys_publish_ahead: Some("1h".to_owned()),
+            token_keys_rotate_every: Some("30d".to_owned()),
+            token_keys_retain: Some("400d".to_owned()),
+            ..RealmInput::default()
+        }])
+        .expect("the realm resolves");
+    let error = refused
+        .validate()
+        .expect_err("a plaintext realm issuer is refused");
+    let error = format!("{error}");
+    assert!(error.contains("realm `acme`"), "{error}");
+    assert!(error.contains("not https"), "{error}");
 }
 
 #[test]

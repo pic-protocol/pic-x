@@ -687,19 +687,7 @@ impl Config {
         }
 
         if let Some(issuer) = self.issuer() {
-            // The issuer is what a client is told to trust, so a scheme that offers no protection is
-            // refused rather than warned about — except against a loopback address, where there is
-            // nothing between the client and the process to protect it from.
-            let local = ["http://localhost", "http://127.0.0.1", "http://[::1]"]
-                .iter()
-                .any(|prefix| issuer.starts_with(prefix));
-
-            if !issuer.starts_with("https://") && !local {
-                bail!(
-                    "the issuer {issuer} is not https: clients are told to trust this URL, and only \
-                     a loopback address may be plain http"
-                );
-            }
+            self.require_public_https(issuer, "issuer")?;
         }
 
         if !self.public_path_prefix.is_empty() && !self.public_path_prefix.starts_with('/') {
@@ -802,6 +790,32 @@ impl Config {
         }
 
         Ok(())
+    }
+
+    /// Refuses a client-facing URL that is not https, outside development.
+    ///
+    /// An issuer — the server's, and each realm's — is a public identity: it is what a relying party
+    /// is told to trust and fetches keys from, and RFC 8414 requires it to use `https`. A plaintext
+    /// one is refused rather than warned about, because a downgraded issuer is invisible right up to
+    /// the moment a token travels over it in the clear. `development_mode` is the single switch that
+    /// relaxes it — the same one every other relaxation is justified against — and loopback is *not*
+    /// special-cased: nobody advertises a loopback issuer to real clients, and a local run says
+    /// `development_mode: true` anyway.
+    ///
+    /// The listener is a separate question. A deployment behind an ingress or a service mesh that
+    /// terminates TLS serves this issuer over plain http on the wire and is right to — which is why
+    /// this checks the URL clients are *told*, never the address the process binds.
+    fn require_public_https(&self, url: &str, field: &str) -> Result<()> {
+        if self.development_mode || url.starts_with("https://") {
+            return Ok(());
+        }
+
+        bail!(
+            "the {field} {url} is not https: it is a public identity clients are told to trust and \
+             fetch their verification keys from, so it must use https (RFC 8414). Put it behind \
+             something that terminates TLS and state the https URL here, or say \
+             `development_mode: true` for a local run"
+        );
     }
 
     /// Refuses a key lifecycle whose windows do not overlap.
@@ -912,6 +926,12 @@ impl Config {
                      so it must be 1 to 40 characters of lowercase letters, digits and internal \
                      hyphens — nothing else"
                 );
+            }
+
+            // A realm's issuer is a public identity too — an explicit one it set for its own host,
+            // or one derived from the deployment's public URL — so it is held to the same https rule.
+            if let Some(issuer) = realm.issuer() {
+                self.require_public_https(issuer, &format!("issuer of the realm `{name}`"))?;
             }
 
             // Both of a realm's rings are held to the same overlap rules as the server's — an override

@@ -41,7 +41,9 @@ public:
   # The public URL clients reach this deployment at — your ingress or proxy, not the address above.
   # Realm issuers default to `{url}/realms/<name>`; a realm that lives on its own host overrides
   # with its own `issuer` (both realms below do). Left unset, discovery advertises relative paths,
-  # which is never wrong and rarely useful. Only a loopback address may be plain http.
+  # which is never wrong and rarely useful. It must be https: clients are told to trust this URL and
+  # fetch keys from it (RFC 8414), so outside development mode a plain-http issuer is refused — the
+  # http listener above is fine, this is the address in front of it that terminates TLS.
   #
   # url: https://pic-x.example.com
 

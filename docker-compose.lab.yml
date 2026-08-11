@@ -1,6 +1,19 @@
 name: pic-x-compose-lab
 
 services:
+  pic-x:
+    build:
+      context: .
+    command:
+      - /etc/pic-x/config.lab.yaml
+    ports:
+      - "127.0.0.1:${PIC_X_PUBLIC_PORT:-17556}:7556"
+      - "127.0.0.1:${PIC_X_ADMIN_PORT:-17557}:7557"
+      - "127.0.0.1:${PIC_X_TELEMETRY_PORT:-17558}:7558"
+    volumes:
+      - ./config.lab.yaml:/etc/pic-x/config.lab.yaml:ro
+      - pic-x-lab-data:/var/lib/pic-x
+
   keycloak:
     image: ${KEYCLOAK_IMAGE:-quay.io/keycloak/keycloak:26.7.0}
     command:
@@ -26,3 +39,6 @@ services:
       - "127.0.0.1:${TRUST_LAB_HTTP_PORT:-17080}:7080"
     depends_on:
       - keycloak
+
+volumes:
+  pic-x-lab-data:

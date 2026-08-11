@@ -18,3 +18,9 @@ Example:
 ```sh
 curl -fsS http://localhost:17080/
 ```
+
+The repository-level lab walkthrough is:
+
+```sh
+task lab-demo
+```

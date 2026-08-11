@@ -134,7 +134,9 @@
 ##   The public URL clients are told to reach this deployment at — what clients are told, not what the
 ##   process binds: behind a proxy the deployment is reached at a name the process never sees, and no
 ##   proxy header is trustworthy enough to derive it from. Realm issuers default to
-##   `{url}/realms/<name>`. Only a loopback address may be plain http; left unset, discovery
+##   `{url}/realms/<name>`. It must be https — clients trust this URL and fetch keys from it (RFC
+##   8414), so outside development mode a plain-http one is refused, loopback included; the listener
+##   below may still be plain http behind something that terminates TLS. Left unset, discovery
 ##   advertises relative paths, which is never wrong.
 
 #   url: https://pic-x.example.com

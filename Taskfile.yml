@@ -278,15 +278,15 @@ tasks:
     silent: true
     summary: |
       Start the local compose stack. It imports the `acme-idp` example IdP realm into Keycloak,
-      exposes Keycloak on localhost:18080 and builds the local trust-lab REST service on
-      localhost:17080.
+      exposes Keycloak on localhost:18080, builds PIC-X from the local source with config.lab.yaml,
+      and builds the local trust-lab REST service on localhost:17080.
 
       Examples:
         task lab-up
 
       See docs/keycloak.md for credentials and lab commands.
     cmds:
-      - docker compose -f docker-compose.lab.yml up -d
+      - docker compose -f docker-compose.lab.yml up --build -d
 
   lab-down:
     desc: Stop the local Docker Compose lab.
@@ -359,6 +359,28 @@ tasks:
         --data-urlencode "username={{.KEYCLOAK_USERNAME}}"
         --data-urlencode "password={{.KEYCLOAK_PASSWORD}}"
         | sed -n 's/.*"access_token"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p'
+
+  lab-demo:
+    desc: Run the local lab walkthrough.
+    silent: true
+    summary: |
+      Run the didactic lab walkthrough. It checks that Keycloak, PIC-X and trust-lab are reachable,
+      requests an example IdP token and prints the token with a short explanation of what happened.
+
+      Start the lab first with `task lab-up`.
+
+      Examples:
+        task lab-demo
+    vars:
+      PYTHON: '{{.PYTHON | default "python3"}}'
+    cmds:
+      - '{{.PYTHON}} trust-lab/scripts/pic-x-demo.py'
+
+  lab-run-demo:
+    desc: Alias for lab-demo.
+    silent: true
+    cmds:
+      - task: lab-demo
 
   run-as-docker:
     desc: Build the image and run what it ships — production, which refuses to start unprepared.
