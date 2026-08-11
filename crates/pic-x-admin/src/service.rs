@@ -97,7 +97,7 @@ impl AdminService {
         }
 
         let mut policy = Authorization::new(
-            context.config().grpc_allow().to_vec(),
+            context.config().admin_allow().to_vec(),
             context.config().development_mode(),
         );
 
@@ -141,17 +141,17 @@ impl Service for AdminService {
 
     fn start<'a>(&'a self, context: &'a ServerContext<'a>) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
-            let Some(configured) = context.config().grpc_addr() else {
+            let Some(configured) = context.config().admin_addr() else {
                 info!(
                     event.name = "admin.disabled",
                     component = COMPONENT,
-                    "no gRPC address is configured"
+                    "no admin address is configured"
                 );
 
                 return Ok(());
             };
 
-            let secured = context.config().grpc_tls();
+            let secured = context.config().admin_tls();
             let surface = Surface::listener(
                 COMPONENT,
                 configured,

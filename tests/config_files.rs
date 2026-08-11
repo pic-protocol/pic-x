@@ -90,9 +90,9 @@ fn start(config: &Path, volume: &Path) -> Outcome {
     let mut child = Command::new(env!("CARGO_BIN_EXE_pic-x"))
         .arg(config)
         .env("PIC_X_WORKING_DIR", volume)
-        .args(["--web-http-addr", "127.0.0.1:0"])
+        .args(["--public-http-addr", "127.0.0.1:0"])
         .args(["--telemetry-addr", "127.0.0.1:0"])
-        .args(["--grpc-addr", "127.0.0.1:0"])
+        .args(["--admin-addr", "127.0.0.1:0"])
         // JSON regardless of what the file asks for: the terminal format styles field names with
         // escape codes, and a test that greps for `mutual_tls=true` would be asserting about a
         // colour scheme.
@@ -207,9 +207,9 @@ fn test_the_template_leaves_nothing_it_documents_commented_out() {
     let uncommented = uncomment(&shipped("config.template.yaml"));
 
     for section in [
-        "web:",
+        "public:",
         "telemetry:",
-        "grpc:",
+        "admin:",
         "tls:",
         "limits:",
         "log:",
@@ -229,7 +229,7 @@ fn test_the_template_leaves_nothing_it_documents_commented_out() {
         "working_dir:",
         "development_mode:",
         "autogenerate:",
-        "public_url:",
+        "url:",
         "issuer:",
         "path_prefix:",
         "client_ca:",

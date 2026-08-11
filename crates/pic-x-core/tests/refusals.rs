@@ -28,7 +28,7 @@ fn config(settings: &[(&str, &str)]) -> Config {
 
 /// The least a configuration needs before any of the rules below are the reason it fails.
 fn serving(extra: &[(&str, &str)]) -> Config {
-    let mut settings = vec![(SETTING_WEB_HTTP_ADDR, "0.0.0.0:7556")];
+    let mut settings = vec![(SETTING_PUBLIC_HTTP_ADDR, "0.0.0.0:7556")];
     settings.extend_from_slice(extra);
 
     config(&settings)
@@ -62,7 +62,7 @@ fn test_generating_material_is_refused_to_a_deployment_that_has_not_said_it_is_a
 #[test]
 fn test_an_administrative_surface_the_world_can_reach_must_demand_a_certificate() {
     // The configuration that reads as fine and hands administration to anyone who can route to it.
-    let exposed = serving(&[(SETTING_GRPC_ADDR, "0.0.0.0:7557")]);
+    let exposed = serving(&[(SETTING_ADMIN_ADDR, "0.0.0.0:7557")]);
     let why = refusal(&exposed);
 
     assert!(why.contains("0.0.0.0:7557"));
@@ -72,7 +72,7 @@ fn test_an_administrative_surface_the_world_can_reach_must_demand_a_certificate(
 #[test]
 fn test_the_same_surface_on_loopback_is_allowed() {
     for address in ["127.0.0.1:7557", "localhost:7557", "[::1]:7557"] {
-        serving(&[(SETTING_GRPC_ADDR, address)])
+        serving(&[(SETTING_ADMIN_ADDR, address)])
             .validate()
             .unwrap_or_else(|error| panic!("{address} was refused: {error:#}"));
     }
@@ -92,19 +92,19 @@ fn test_mutual_tls_without_a_list_of_peers_is_refused_outside_development() {
 
     let mutual = [
         (SETTING_WORKING_DIR, volume),
-        (SETTING_GRPC_ADDR, "0.0.0.0:7557"),
-        (SETTING_GRPC_TLS_CERT, "tls/server.pem"),
-        (SETTING_GRPC_TLS_KEY, "tls/server.key"),
-        (SETTING_GRPC_TLS_CLIENT_CA, "tls/ca.pem"),
+        (SETTING_ADMIN_ADDR, "0.0.0.0:7557"),
+        (SETTING_ADMIN_TLS_CERT, "tls/server.pem"),
+        (SETTING_ADMIN_TLS_KEY, "tls/server.key"),
+        (SETTING_ADMIN_TLS_CLIENT_CA, "tls/ca.pem"),
     ];
 
     // Mutual TLS answers "who is this". It does not answer "may they", and a deployment that
     // believes otherwise has granted administration to every client its authority ever signed.
     let why = refusal(&serving(&mutual));
-    assert!(why.contains("grpc.allow"), "{why}");
+    assert!(why.contains("admin.allow"), "{why}");
 
     let mut listed = mutual.to_vec();
-    listed.push((SETTING_GRPC_ALLOW, "cn:local-operator"));
+    listed.push((SETTING_ADMIN_ALLOW, "cn:local-operator"));
     serving(&listed)
         .validate()
         .expect("naming a peer is what the rule asked for");
@@ -120,14 +120,14 @@ fn test_mutual_tls_without_a_list_of_peers_is_refused_outside_development() {
 #[test]
 fn test_a_list_of_peers_is_read_one_entry_per_line() {
     let listed = serving(&[(
-        SETTING_GRPC_ALLOW,
+        SETTING_ADMIN_ALLOW,
         // A distinguished name contains commas, which is why lines separate the entries.
         "cn:first\ndn:CN=second,O=PIC-X\n\n",
     )]);
 
-    assert_eq!(listed.grpc_allow().len(), 2);
-    assert_eq!(listed.grpc_allow()[0].to_string(), "cn:first");
-    assert_eq!(listed.grpc_allow()[1].to_string(), "dn:CN=second,O=PIC-X");
+    assert_eq!(listed.admin_allow().len(), 2);
+    assert_eq!(listed.admin_allow()[0].to_string(), "cn:first");
+    assert_eq!(listed.admin_allow()[1].to_string(), "dn:CN=second,O=PIC-X");
 }
 
 #[test]
@@ -138,7 +138,7 @@ fn test_a_peer_that_cannot_be_read_stops_the_start_rather_than_being_skipped() {
         BuildSettings::new("1.2.3", "2026", "Build Holder"),
         NO_DECLARED,
         Layers::new().with_file(vec![(
-            SETTING_GRPC_ALLOW.to_owned(),
+            SETTING_ADMIN_ALLOW.to_owned(),
             "sha256:nonsense".to_owned(),
         )]),
     )
@@ -167,11 +167,37 @@ fn test_a_retention_shorter_than_the_rotation_is_refused() {
     // published key to verify against — which is indistinguishable from forgery to whoever holds one.
     let forgetful = serving(&[
         (SETTING_KEYS_ENABLED, "true"),
+        (SETTING_KEYS_PUBLISH_AHEAD, "1h"),
         (SETTING_KEYS_ROTATE_EVERY, "30d"),
         (SETTING_KEYS_RETAIN, "1d"),
     ]);
 
     assert!(refusal(&forgetful).contains("no published key"));
+}
+
+#[test]
+fn test_an_enabled_ring_whose_lifecycle_was_never_stated_is_refused() {
+    // Signing policy is security, so it must be stated, not defaulted: an operations ring turned on
+    // without a lifecycle would otherwise rotate on windows nobody chose. The refusal names the first
+    // knob it is missing rather than inventing one.
+    let undeclared = serving(&[(SETTING_KEYS_ENABLED, "true")]);
+    assert!(
+        refusal(&undeclared).contains("`operations.keys.publish_ahead` is not set"),
+        "{}",
+        refusal(&undeclared)
+    );
+
+    // Stating two of the three is still short: each knob is required on its own.
+    let partial = serving(&[
+        (SETTING_KEYS_ENABLED, "true"),
+        (SETTING_KEYS_PUBLISH_AHEAD, "1h"),
+        (SETTING_KEYS_ROTATE_EVERY, "30d"),
+    ]);
+    assert!(
+        refusal(&partial).contains("`operations.keys.retain` is not set"),
+        "{}",
+        refusal(&partial)
+    );
 }
 
 #[test]
@@ -191,9 +217,9 @@ fn test_a_revocation_list_with_nothing_to_revoke_against_is_refused() {
     // Naming a list without a client authority reads as stricter than it is: the file is configured,
     // nobody is checked against it, and the deployment believes otherwise.
     let pointless = serving(&[
-        (SETTING_WEB_TLS_CERT, "tls/server.pem"),
-        (SETTING_WEB_TLS_KEY, "tls/server.key"),
-        (SETTING_WEB_TLS_CRL, "tls/ca.crl"),
+        (SETTING_PUBLIC_TLS_CERT, "tls/server.pem"),
+        (SETTING_PUBLIC_TLS_KEY, "tls/server.key"),
+        (SETTING_PUBLIC_TLS_CRL, "tls/ca.crl"),
     ]);
 
     assert!(refusal(&pointless).contains("no client authority"));
@@ -221,21 +247,21 @@ fn test_durations_are_read_in_the_units_a_deployment_writes_them_in() {
 #[test]
 fn test_transport_material_is_re_read_unless_a_deployment_says_otherwise() {
     let default = serving(&[
-        (SETTING_WEB_TLS_CERT, "tls/server.pem"),
-        (SETTING_WEB_TLS_KEY, "tls/server.key"),
+        (SETTING_PUBLIC_TLS_CERT, "tls/server.pem"),
+        (SETTING_PUBLIC_TLS_KEY, "tls/server.key"),
     ]);
 
     // On by default: the failure mode of not reloading is a certificate that expires on a Sunday.
     assert!(default.tls_reload());
-    assert!(default.web_tls().and_then(|tls| tls.reload()).is_some());
+    assert!(default.public_tls().and_then(|tls| tls.reload()).is_some());
 
     let pinned = serving(&[
-        (SETTING_WEB_TLS_CERT, "tls/server.pem"),
-        (SETTING_WEB_TLS_KEY, "tls/server.key"),
+        (SETTING_PUBLIC_TLS_CERT, "tls/server.pem"),
+        (SETTING_PUBLIC_TLS_KEY, "tls/server.key"),
         (SETTING_TLS_RELOAD, "false"),
     ]);
 
-    assert!(pinned.web_tls().and_then(|tls| tls.reload()).is_none());
+    assert!(pinned.public_tls().and_then(|tls| tls.reload()).is_none());
 }
 
 #[test]
@@ -244,8 +270,8 @@ fn test_the_volume_is_where_everything_the_configuration_names_resolves() {
         (SETTING_WORKING_DIR, "/var/lib/pic-x"),
         (SETTING_KEYS_ENABLED, "true"),
         (SETTING_AUDIT_SINK, "file"),
-        (SETTING_WEB_TLS_CERT, "tls/server.pem"),
-        (SETTING_WEB_TLS_KEY, "tls/server.key"),
+        (SETTING_PUBLIC_TLS_CERT, "tls/server.pem"),
+        (SETTING_PUBLIC_TLS_KEY, "tls/server.key"),
     ]);
 
     assert_eq!(
@@ -261,7 +287,10 @@ fn test_the_volume_is_where_everything_the_configuration_names_resolves() {
         std::path::Path::new("/var/lib/pic-x/operations/secrets")
     );
     assert_eq!(
-        deployed.web_tls().expect("it is configured").certificate(),
+        deployed
+            .public_tls()
+            .expect("it is configured")
+            .certificate(),
         std::path::Path::new("/var/lib/pic-x/tls/server.pem")
     );
 }

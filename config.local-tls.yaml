@@ -26,10 +26,10 @@ log:
   level: debug
   format: terminal
 
-web:
+public:
   http: 127.0.0.1:7556
-  # The public base over TLS; realm issuers derive from it as `{public_url}/realms/<name>`.
-  public_url: https://localhost:7556
+  # The public base over TLS; realm issuers derive from it as `{url}/realms/<name>`.
+  url: https://localhost:7556
   tls:
     # Relative to the volume. Generated on the first start.
     cert: tls/server.pem
@@ -41,7 +41,7 @@ telemetry:
     cert: tls/server.pem
     key: tls/server.key
 
-grpc:
+admin:
   addr: 127.0.0.1:7557
   tls:
     cert: tls/server.pem
@@ -78,15 +78,17 @@ operations:
       key_ref: audit-pseudonym
       key_version: "v1"
 
-# Two example realms, both listed, issuers derived from `web.public_url` over TLS. Generated material
+# Two example realms, both listed, issuers derived from `public.url` over TLS. Generated material
 # (token keys, operations keys, trail, pseudonymisation key) lands under .volume/realms/<name>/ on
 # first start.
 realms:
   - name: acme
     listed: true
-    # acme signs its tokens on its own schedule and keeps its trail longer; globex inherits everything.
-    # publish_ahead is inherited (5m). Lower the maintenance_interval to watch acme churn.
+    # Each realm states its own token-signing `keys` (signing policy is not inherited). acme rotates
+    # fast and keeps its trail longer; globex takes plainer values. Lower the maintenance_interval to
+    # watch acme churn.
     keys:
+      publish_ahead: 5m
       rotate_every: 30m
       retain: 12h
     operations:
@@ -94,3 +96,7 @@ realms:
         retention: 30d
   - name: globex
     listed: true
+    keys:
+      publish_ahead: 5m
+      rotate_every: 1h
+      retain: 1d

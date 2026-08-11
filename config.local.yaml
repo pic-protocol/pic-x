@@ -27,16 +27,16 @@ log:
   level: debug
   format: terminal
 
-web:
+public:
   http: 127.0.0.1:7556
-  # The deployment's public base. Realm issuers default to `{public_url}/realms/<name>`, so the two
+  # The deployment's public base. Realm issuers default to `{url}/realms/<name>`, so the two
   # realms below need no `issuer` of their own.
-  public_url: http://localhost:7556
+  url: http://localhost:7556
 
 telemetry:
   addr: 127.0.0.1:7558
 
-grpc:
+admin:
   # Loopback, and no client certificate: the point of this file is to start with no ceremony. That is
   # only defensible because nothing outside this machine can reach it — the same address on 0.0.0.0
   # without `tls.client_ca` is refused before anything binds.
@@ -69,15 +69,16 @@ operations:
 
 # Two example realms — two issuers hosted by one server — so `task run` shows the multi-tenant shape.
 # Both are listed, so both appear in /.well-known/server-configuration; each derives its issuer from
-# `web.public_url` above. Each gets its own token keys, operations keys, trail and pseudonymisation
+# `public.url` above. Each gets its own token keys, operations keys, trail and pseudonymisation
 # key under .volume/realms/<name>/, generated on first start.
 realms:
   - name: acme
     listed: true
-    # A realm may override any block; what it leaves out, it inherits. acme signs its tokens on a
-    # faster cadence than the shared default, and keeps its trail longer — watch it in
-    # .volume/realms/acme/.
+    # Every realm must state its own token-signing `keys` — signing policy is security, never
+    # inherited or defaulted. acme rotates its tokens fast and keeps its trail longer than the shared
+    # default (via the `operations` override) — watch it in .volume/realms/acme/.
     keys:
+      publish_ahead: 5m
       rotate_every: 30m
       retain: 12h
     operations:
@@ -85,3 +86,7 @@ realms:
         retention: 30d
   - name: globex
     listed: true
+    keys:
+      publish_ahead: 5m
+      rotate_every: 1h
+      retain: 1d

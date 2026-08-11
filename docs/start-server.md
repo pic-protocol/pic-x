@@ -53,7 +53,7 @@ grpcurl -cacert .volume/tls/ca.pem \
         localhost:7557 picx.admin.v1.Admin/GetVersion
 ```
 
-A client certificate must both be signed by the configured authority and match `grpc.allow`.
+A client certificate must both be signed by the configured authority and match `admin.allow`.
 
 ## Direct Cargo Form
 
@@ -68,9 +68,9 @@ Runtime overrides are passed after the config file:
 
 ```sh
 cargo run --bin pic-x -- config.local.yaml \
-  --web-http-addr 127.0.0.1:7556 \
+  --public-http-addr 127.0.0.1:7556 \
   --telemetry-addr 127.0.0.1:7558 \
-  --grpc-addr 127.0.0.1:7557 \
+  --admin-addr 127.0.0.1:7557 \
   --log-level debug \
   --log-format terminal
 ```

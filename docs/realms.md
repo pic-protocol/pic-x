@@ -64,16 +64,17 @@ a new shape.
 ## Configuration
 
 ```yaml
-# ... web, telemetry, grpc, tls, log, limits, and the shared `operations` block ...
+# ... public, telemetry, admin, tls, log, limits, and the shared `operations` block ...
 
-web:
-  public_url: https://pic-x.example.com  # realm issuers default to {public_url}/realms/<name>
+public:
+  url: https://pic-x.example.com  # realm issuers default to {public.url}/realms/<name>
 
 realms:
   - name: acme                        # required; unique; [a-z0-9-], 1–40 chars (a URL path and a directory)
-    issuer: https://acme.example.com  # optional; defaults to {web.public_url}/realms/acme
+    issuer: https://acme.example.com  # optional; defaults to {public.url}/realms/acme
     listed: true                      # optional; default false — see below
-    keys:                             # optional; the realm's TOKEN keys; cadence inherits operations.keys
+    keys:                             # REQUIRED; the realm's TOKEN keys — its own lifecycle, never inherited
+      publish_ahead: 1h
       rotate_every: 90d
       retain: 400d
     operations:                       # optional; overrides the shared operations block below
@@ -83,15 +84,22 @@ realms:
           key_version: "v2"
       secrets:
         provider: environment         # this realm resolves its key from the environment instead
-  - name: beta                        # states nothing but its name → inherits everything
+  - name: beta                        # inherits every operations setting, but still states its own keys
+    keys:
+      publish_ahead: 1h
+      rotate_every: 30d
+      retain: 365d
 ```
 
-**Base ⊕ override.** A realm inherits every server setting it does not state, and overrides only what
-it does: its identity (`issuer`, `listed`), its **token keys** (`keys.enabled/publish_ahead/
-rotate_every/retain`), and its **operations** — the keys that seal its trail, the trail, and its
-pseudonymisation (`operations.keys.*`, `operations.audit.*`, `operations.secrets.*`). Resolution
-happens once, at load; the rest of the build reads a realm's complete, already-resolved configuration
-and never "the server's unless…".
+**Base ⊕ override, with one exception.** A realm inherits every server setting it does not state, and
+overrides only what it does: its identity (`issuer`, `listed`) and its **operations** — the keys that
+seal its trail, the trail, and its pseudonymisation (`operations.keys.*`, `operations.audit.*`,
+`operations.secrets.*`). The exception is its **token keys** (`keys.publish_ahead/rotate_every/
+retain`): signing policy is security, so a realm that signs tokens — every realm, unless it sets
+`keys.enabled: false` — states its own token-ring lifecycle explicitly. It is **never** inherited from
+`operations.keys` (a different key, sealing a different thing) and this build defaults none; a realm
+that omits it is refused at load. Resolution happens once, at load; the rest of the build reads a
+realm's complete, already-resolved configuration and never "the server's unless…".
 
 Whatever the policy, a realm always keeps its **own** keys, trail and pseudonymisation key in its own
 directory — the override changes the *cadence and destination*, never the *isolation*. Two realms with

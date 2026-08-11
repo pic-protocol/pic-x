@@ -58,7 +58,7 @@ fn declaring(
 }
 
 fn servable() -> Config {
-    config(&[(SETTING_WEB_HTTP_ADDR, "0.0.0.0:5556")], &[], &[])
+    config(&[(SETTING_PUBLIC_HTTP_ADDR, "0.0.0.0:5556")], &[], &[])
 }
 
 #[test]
@@ -139,8 +139,8 @@ fn test_unknown_inputs_do_not_change_typed_config() {
 
     assert_eq!(with_noise.version(), without.version());
     assert_eq!(with_noise.copyright_holder(), without.copyright_holder());
-    assert_eq!(with_noise.web_http_addr(), without.web_http_addr());
-    assert_eq!(with_noise.grpc_addr(), without.grpc_addr());
+    assert_eq!(with_noise.public_http_addr(), without.public_http_addr());
+    assert_eq!(with_noise.admin_addr(), without.admin_addr());
     assert_eq!(with_noise.log_level(), without.log_level());
     assert_eq!(with_noise.log_format(), without.log_format());
 }
@@ -178,74 +178,74 @@ fn test_a_registered_section_reads_back_as_its_own_type() {
 fn test_listen_addresses_have_no_built_in_default() {
     let config = config(&[], &[], &[]);
 
-    assert_eq!(config.web_http_addr(), None);
+    assert_eq!(config.public_http_addr(), None);
     assert_eq!(config.telemetry_addr(), None);
-    assert_eq!(config.grpc_addr(), None);
+    assert_eq!(config.admin_addr(), None);
 }
 
 #[test]
 fn test_command_line_addresses_override_the_configuration_file() {
     let config = config(
         &[
-            (SETTING_WEB_HTTP_ADDR, "0.0.0.0:5556"),
-            (SETTING_GRPC_ADDR, "127.0.0.1:5557"),
+            (SETTING_PUBLIC_HTTP_ADDR, "0.0.0.0:5556"),
+            (SETTING_ADMIN_ADDR, "127.0.0.1:5557"),
         ],
         &[],
-        &[(SETTING_WEB_HTTP_ADDR, "127.0.0.1:9999")],
+        &[(SETTING_PUBLIC_HTTP_ADDR, "127.0.0.1:9999")],
     );
 
-    assert_eq!(config.web_http_addr(), Some("127.0.0.1:9999"));
-    assert_eq!(config.grpc_addr(), Some("127.0.0.1:5557"));
+    assert_eq!(config.public_http_addr(), Some("127.0.0.1:9999"));
+    assert_eq!(config.admin_addr(), Some("127.0.0.1:5557"));
 }
 
 #[test]
-fn test_validate_accepts_a_config_with_a_web_address() {
+fn test_validate_accepts_a_config_with_a_public_address() {
     assert!(servable().validate().is_ok());
 }
 
 #[test]
-fn test_validate_rejects_a_config_with_no_web_address() {
-    let config = config(&[(SETTING_GRPC_ADDR, "127.0.0.1:5557")], &[], &[]);
+fn test_validate_rejects_a_config_with_no_public_address() {
+    let config = config(&[(SETTING_ADMIN_ADDR, "127.0.0.1:5557")], &[], &[]);
 
-    let error = config.validate().expect_err("no web address is invalid");
-    assert!(format!("{error}").contains("web listen address"));
+    let error = config.validate().expect_err("no public address is invalid");
+    assert!(format!("{error}").contains("public listen address"));
 }
 
 #[test]
 fn test_the_public_surface_has_one_address_and_tls_is_a_property_of_it() {
     // There is no second address for "the same surface, but encrypted": whether it is HTTP or HTTPS
-    // is decided by `web.tls`. A surface that accepted an https address and never bound it would be
+    // is decided by `public.tls`. A surface that accepted an https address and never bound it would be
     // a configuration that looks served and is not.
-    let plain = config(&[(SETTING_WEB_HTTP_ADDR, "0.0.0.0:5556")], &[], &[]);
+    let plain = config(&[(SETTING_PUBLIC_HTTP_ADDR, "0.0.0.0:5556")], &[], &[]);
     assert!(plain.validate().is_ok());
-    assert!(plain.web_tls().is_none());
+    assert!(plain.public_tls().is_none());
 
     let secured = config(
         &[
-            (SETTING_WEB_HTTP_ADDR, "0.0.0.0:5556"),
-            (SETTING_WEB_TLS_CERT, "/nonexistent/server.pem"),
-            (SETTING_WEB_TLS_KEY, "/nonexistent/server.key"),
+            (SETTING_PUBLIC_HTTP_ADDR, "0.0.0.0:5556"),
+            (SETTING_PUBLIC_TLS_CERT, "/nonexistent/server.pem"),
+            (SETTING_PUBLIC_TLS_KEY, "/nonexistent/server.key"),
         ],
         &[],
         &[],
     );
-    assert_eq!(secured.web_http_addr(), Some("0.0.0.0:5556"));
-    assert!(secured.web_tls().is_some());
+    assert_eq!(secured.public_http_addr(), Some("0.0.0.0:5556"));
+    assert!(secured.public_tls().is_some());
 }
 
 #[test]
 fn test_validate_rejects_a_blank_declared_address() {
     let config = config(
         &[
-            (SETTING_WEB_HTTP_ADDR, "0.0.0.0:5556"),
-            (SETTING_GRPC_ADDR, "   "),
+            (SETTING_PUBLIC_HTTP_ADDR, "0.0.0.0:5556"),
+            (SETTING_ADMIN_ADDR, "   "),
         ],
         &[],
         &[],
     );
 
     let error = config.validate().expect_err("a blank address is invalid");
-    assert!(format!("{error}").contains("gRPC"));
+    assert!(format!("{error}").contains("admin"));
 }
 
 #[test]
@@ -297,7 +297,7 @@ fn test_without_an_issuer_a_public_url_is_the_path_itself() {
         config.public_url("/.well-known/jwks.json"),
         "/.well-known/jwks.json"
     );
-    assert_eq!(config.web_path_prefix(), "");
+    assert_eq!(config.public_path_prefix(), "");
 }
 
 #[test]
@@ -328,7 +328,7 @@ fn test_a_trailing_slash_on_the_issuer_never_doubles_up() {
 fn test_an_issuer_that_offers_no_protection_is_refused() {
     let public = config(
         &[
-            (SETTING_WEB_HTTP_ADDR, "0.0.0.0:5556"),
+            (SETTING_PUBLIC_HTTP_ADDR, "0.0.0.0:5556"),
             (SETTING_ISSUER, "http://login.example.com"),
         ],
         &[],
@@ -340,7 +340,7 @@ fn test_an_issuer_that_offers_no_protection_is_refused() {
     // Loopback is the exception: there is nothing in between to protect the client from.
     let local = config(
         &[
-            (SETTING_WEB_HTTP_ADDR, "0.0.0.0:5556"),
+            (SETTING_PUBLIC_HTTP_ADDR, "0.0.0.0:5556"),
             (SETTING_ISSUER, "http://localhost:7556"),
         ],
         &[],
@@ -353,8 +353,8 @@ fn test_an_issuer_that_offers_no_protection_is_refused() {
 fn test_a_path_prefix_has_to_look_like_a_path() {
     let config = config(
         &[
-            (SETTING_WEB_HTTP_ADDR, "0.0.0.0:5556"),
-            (SETTING_WEB_PATH_PREFIX, "pic-x"),
+            (SETTING_PUBLIC_HTTP_ADDR, "0.0.0.0:5556"),
+            (SETTING_PUBLIC_PATH_PREFIX, "pic-x"),
         ],
         &[],
         &[],
@@ -370,14 +370,14 @@ fn test_an_empty_value_means_the_setting_was_never_supplied() {
     let config = config(
         &[],
         &[
-            (SETTING_WEB_TLS_CERT, ""),
-            (SETTING_WEB_TLS_KEY, ""),
+            (SETTING_PUBLIC_TLS_CERT, ""),
+            (SETTING_PUBLIC_TLS_KEY, ""),
             (SETTING_LOG_LEVEL, ""),
         ],
         &[],
     );
 
-    assert!(config.web_tls().is_none());
+    assert!(config.public_tls().is_none());
     assert_eq!(config.log_level(), LogLevel::Info, "the default survives");
 }
 
@@ -385,8 +385,8 @@ fn test_an_empty_value_means_the_setting_was_never_supplied() {
 fn test_whitespace_is_not_empty_because_it_is_a_typo() {
     let config = config(
         &[
-            (SETTING_WEB_HTTP_ADDR, "0.0.0.0:5556"),
-            (SETTING_GRPC_ADDR, "   "),
+            (SETTING_PUBLIC_HTTP_ADDR, "0.0.0.0:5556"),
+            (SETTING_ADMIN_ADDR, "   "),
         ],
         &[],
         &[],
@@ -402,8 +402,8 @@ fn test_whitespace_is_not_empty_because_it_is_a_typo() {
 fn test_a_surface_without_tls_settings_serves_in_the_clear() {
     let config = config(&[], &[], &[]);
 
-    assert!(config.web_tls().is_none());
-    assert!(config.grpc_tls().is_none());
+    assert!(config.public_tls().is_none());
+    assert!(config.admin_tls().is_none());
     assert!(config.telemetry_tls().is_none());
 }
 
@@ -411,23 +411,28 @@ fn test_a_surface_without_tls_settings_serves_in_the_clear() {
 fn test_tls_material_is_read_per_surface_and_defaults_to_the_modern_floor() {
     let config = config(
         &[
-            (SETTING_WEB_TLS_CERT, "/tls/web.pem"),
-            (SETTING_WEB_TLS_KEY, "/tls/web.key"),
-            (SETTING_GRPC_TLS_CERT, "/tls/grpc.pem"),
-            (SETTING_GRPC_TLS_KEY, "/tls/grpc.key"),
-            (SETTING_GRPC_TLS_CLIENT_CA, "/tls/clients.pem"),
+            (SETTING_PUBLIC_TLS_CERT, "/tls/public.pem"),
+            (SETTING_PUBLIC_TLS_KEY, "/tls/public.key"),
+            (SETTING_ADMIN_TLS_CERT, "/tls/admin.pem"),
+            (SETTING_ADMIN_TLS_KEY, "/tls/admin.key"),
+            (SETTING_ADMIN_TLS_CLIENT_CA, "/tls/clients.pem"),
         ],
         &[],
         &[],
     );
 
-    let web = config.web_tls().expect("the web surface has material");
-    assert_eq!(web.certificate(), std::path::Path::new("/tls/web.pem"));
-    assert_eq!(web.min_version(), TlsVersion::V1_3);
-    assert!(!web.is_mutual());
+    let public = config
+        .public_tls()
+        .expect("the public surface has material");
+    assert_eq!(
+        public.certificate(),
+        std::path::Path::new("/tls/public.pem")
+    );
+    assert_eq!(public.min_version(), TlsVersion::V1_3);
+    assert!(!public.is_mutual());
 
-    let grpc = config.grpc_tls().expect("the admin surface has material");
-    assert!(grpc.is_mutual(), "a client CA is what makes it mutual");
+    let admin = config.admin_tls().expect("the admin surface has material");
+    assert!(admin.is_mutual(), "a client CA is what makes it mutual");
 }
 
 #[test]
@@ -436,7 +441,7 @@ fn test_a_certificate_without_its_key_is_refused_rather_than_ignored() {
         build_settings(),
         NO_DECLARED,
         Layers::new()
-            .with_file(pairs(&[(SETTING_WEB_TLS_CERT, "/tls/web.pem")]))
+            .with_file(pairs(&[(SETTING_PUBLIC_TLS_CERT, "/tls/public.pem")]))
             .with_environment(pairs(&[]))
             .with_command_line(pairs(&[])),
     );
@@ -449,7 +454,7 @@ fn test_a_certificate_without_its_key_is_refused_rather_than_ignored() {
         build_settings(),
         NO_DECLARED,
         Layers::new()
-            .with_file(pairs(&[(SETTING_GRPC_TLS_KEY, "/tls/grpc.key")]))
+            .with_file(pairs(&[(SETTING_ADMIN_TLS_KEY, "/tls/admin.key")]))
             .with_environment(pairs(&[]))
             .with_command_line(pairs(&[])),
     );
@@ -460,9 +465,9 @@ fn test_a_certificate_without_its_key_is_refused_rather_than_ignored() {
 fn test_the_protocol_floor_can_be_lowered_by_naming_it() {
     let config = config(
         &[
-            (SETTING_WEB_TLS_CERT, "/tls/web.pem"),
-            (SETTING_WEB_TLS_KEY, "/tls/web.key"),
-            (SETTING_WEB_TLS_MIN_VERSION, "1.2"),
+            (SETTING_PUBLIC_TLS_CERT, "/tls/public.pem"),
+            (SETTING_PUBLIC_TLS_KEY, "/tls/public.key"),
+            (SETTING_PUBLIC_TLS_MIN_VERSION, "1.2"),
         ],
         &[],
         &[],
@@ -470,8 +475,8 @@ fn test_the_protocol_floor_can_be_lowered_by_naming_it() {
 
     assert_eq!(
         config
-            .web_tls()
-            .expect("the web surface has material")
+            .public_tls()
+            .expect("the public surface has material")
             .min_version(),
         TlsVersion::V1_2
     );
@@ -501,16 +506,16 @@ fn test_telemetry_is_offered_tls_but_never_a_client_authority() {
 fn test_material_that_names_missing_files_stops_validation() {
     let config = config(
         &[
-            (SETTING_WEB_HTTP_ADDR, "0.0.0.0:5556"),
-            (SETTING_WEB_TLS_CERT, "/nonexistent/web.pem"),
-            (SETTING_WEB_TLS_KEY, "/nonexistent/web.key"),
+            (SETTING_PUBLIC_HTTP_ADDR, "0.0.0.0:5556"),
+            (SETTING_PUBLIC_TLS_CERT, "/nonexistent/public.pem"),
+            (SETTING_PUBLIC_TLS_KEY, "/nonexistent/public.key"),
         ],
         &[],
         &[],
     );
 
     let error = config.validate().expect_err("the files are not there");
-    assert!(format!("{error:#}").contains("/nonexistent/web.pem"));
+    assert!(format!("{error:#}").contains("/nonexistent/public.pem"));
 }
 
 #[test]
@@ -611,10 +616,15 @@ fn test_a_deployment_with_no_realms_is_a_plain_server() {
     config.validate().expect("a server with no realms is valid");
 }
 
-/// A bare realm override that only names itself; everything else inherits the server.
+/// A minimal realm override: it names itself and states the token-signing lifecycle every realm must
+/// (signing policy is security, never inherited from the server nor defaulted). Everything else —
+/// operations keys, trail, secrets — still inherits the server.
 fn realm(name: &str) -> RealmInput {
     RealmInput {
         name: name.to_owned(),
+        token_keys_publish_ahead: Some("1h".to_owned()),
+        token_keys_rotate_every: Some("30d".to_owned()),
+        token_keys_retain: Some("400d".to_owned()),
         ..RealmInput::default()
     }
 }
@@ -625,7 +635,7 @@ fn test_a_realm_gets_its_own_resource_directories_under_the_volume() {
     // server's or with another realm's.
     let config = config(
         &[
-            (SETTING_WEB_HTTP_ADDR, "0.0.0.0:5556"),
+            (SETTING_PUBLIC_HTTP_ADDR, "0.0.0.0:5556"),
             (SETTING_WORKING_DIR, "/var/lib/pic-x"),
         ],
         &[],
@@ -659,7 +669,7 @@ fn test_a_realm_gets_its_own_resource_directories_under_the_volume() {
 fn test_a_realm_inherits_the_servers_policy_and_overrides_only_what_it_states() {
     let config = config(
         &[
-            (SETTING_WEB_HTTP_ADDR, "0.0.0.0:5556"),
+            (SETTING_PUBLIC_HTTP_ADDR, "0.0.0.0:5556"),
             (SETTING_KEYS_ROTATE_EVERY, "30d"),
             (SETTING_KEYS_RETAIN, "400d"),
         ],
@@ -671,6 +681,9 @@ fn test_a_realm_inherits_the_servers_policy_and_overrides_only_what_it_states() 
         RealmInput {
             name: "acme".to_owned(),
             operations_keys_rotate_every: Some("90d".to_owned()),
+            token_keys_publish_ahead: Some("1h".to_owned()),
+            token_keys_rotate_every: Some("30d".to_owned()),
+            token_keys_retain: Some("400d".to_owned()),
             ..RealmInput::default()
         },
         // globex states nothing about keys, so it inherits both.
@@ -707,6 +720,9 @@ fn test_a_realm_may_pseudonymise_from_the_environment_under_its_own_prefix() {
             audit_pseudonym_enabled: Some("true".to_owned()),
             audit_pseudonym_key_ref: Some("audit-pseudonym".to_owned()),
             secrets_provider: Some("environment".to_owned()),
+            token_keys_publish_ahead: Some("1h".to_owned()),
+            token_keys_rotate_every: Some("30d".to_owned()),
+            token_keys_retain: Some("400d".to_owned()),
             ..RealmInput::default()
         }])
         .expect("the realm resolves");
@@ -728,6 +744,9 @@ fn test_a_realm_that_pseudonymises_without_a_provider_is_refused() {
             audit_pseudonym_enabled: Some("true".to_owned()),
             audit_pseudonym_key_ref: Some("audit-pseudonym".to_owned()),
             secrets_provider: Some("none".to_owned()),
+            token_keys_publish_ahead: Some("1h".to_owned()),
+            token_keys_rotate_every: Some("30d".to_owned()),
+            token_keys_retain: Some("400d".to_owned()),
             ..RealmInput::default()
         }])
         .expect("the realm resolves");
@@ -745,6 +764,9 @@ fn test_a_realm_rotation_that_would_strand_its_signatures_is_refused() {
             operations_keys_enabled: Some("true".to_owned()),
             operations_keys_rotate_every: Some("30d".to_owned()),
             operations_keys_retain: Some("1d".to_owned()),
+            token_keys_publish_ahead: Some("1h".to_owned()),
+            token_keys_rotate_every: Some("30d".to_owned()),
+            token_keys_retain: Some("400d".to_owned()),
             ..RealmInput::default()
         }])
         .expect("the realm resolves");
@@ -753,6 +775,31 @@ fn test_a_realm_rotation_that_would_strand_its_signatures_is_refused() {
         .validate()
         .expect_err("a stranding lifecycle is refused");
     assert!(format!("{error}").contains("realm `acme`"), "{error}");
+}
+
+#[test]
+fn test_a_token_signing_realm_that_states_no_key_lifecycle_is_refused() {
+    // Signing policy is security: a realm that signs tokens (the default) must state its own token
+    // ring's lifecycle. It is never inherited from the server's operations keys, and this build
+    // defaults none, so a realm that names only itself is refused when it resolves.
+    let error = servable()
+        .with_realms([RealmInput {
+            name: "acme".to_owned(),
+            ..RealmInput::default()
+        }])
+        .expect_err("a token-signing realm with no key lifecycle is refused");
+    let error = format!("{error}");
+    assert!(error.contains("realm `acme`"), "{error}");
+    assert!(error.contains("signs tokens"), "{error}");
+
+    // A realm that turns its token ring off, on the other hand, needs no lifecycle.
+    servable()
+        .with_realms([RealmInput {
+            name: "quiet".to_owned(),
+            token_keys_enabled: Some("false".to_owned()),
+            ..RealmInput::default()
+        }])
+        .expect("a realm that signs no tokens needs no token-key lifecycle");
 }
 
 #[test]
@@ -791,6 +838,9 @@ fn test_listed_defaults_to_closed_and_is_opt_in() {
             RealmInput {
                 name: "shown".to_owned(),
                 listed: Some("true".to_owned()),
+                token_keys_publish_ahead: Some("1h".to_owned()),
+                token_keys_rotate_every: Some("30d".to_owned()),
+                token_keys_retain: Some("400d".to_owned()),
                 ..RealmInput::default()
             },
         ])

@@ -19,7 +19,7 @@ fn identity() -> ProductIdentity {
 fn config_at(addr: Option<&str>) -> Config {
     let file = match addr {
         Some(addr) => vec![(
-            pic_x_core::config::SETTING_GRPC_ADDR.to_owned(),
+            pic_x_core::config::SETTING_ADMIN_ADDR.to_owned(),
             addr.to_owned(),
         )],
         None => Vec::new(),

@@ -55,7 +55,7 @@ async fn main() -> ExitCode {
         PRODUCT_ABOUT,
         BANNER_ART,
     )
-    // The web logo the public landing renders, inline and self-contained: the transparent mini logo
+    // The logo the public landing renders, inline and self-contained: the transparent mini logo
     // as a `data:` URI, so the page reaches off the host for nothing. Branding lives here, in the
     // binary. `build.rs` encodes it from `assets/pic-x-logo-mini.png` on every build, so changing the
     // image is all it takes — there is no derived file to keep in sync.

@@ -8,7 +8,7 @@ use std::path::Path;
 
 use clap::{Parser, Subcommand};
 
-use pic_x_core::config::{SETTING_GRPC_ADDR, SETTING_TELEMETRY_ADDR, SETTING_WEB_HTTP_ADDR};
+use pic_x_core::config::{SETTING_ADMIN_ADDR, SETTING_PUBLIC_HTTP_ADDR, SETTING_TELEMETRY_ADDR};
 use pic_x_server::{Action, Cli, Command, ServeArgs};
 
 fn action(argv: &[&str]) -> Action {
@@ -39,7 +39,7 @@ fn test_serving_takes_exactly_one_configuration_file() {
 
 #[test]
 fn test_serving_without_a_configuration_file_fails_to_parse() {
-    assert!(Cli::try_parse_from(["pic-x", "--grpc-addr", "127.0.0.1:4"]).is_err());
+    assert!(Cli::try_parse_from(["pic-x", "--admin-addr", "127.0.0.1:4"]).is_err());
 }
 
 #[test]
@@ -62,28 +62,31 @@ fn test_address_flags_are_optional_overrides() {
     let overridden = serve_args(&[
         "pic-x",
         "config.yaml",
-        "--web-http-addr",
+        "--public-http-addr",
         "127.0.0.1:1",
         "--telemetry-addr",
         "127.0.0.1:3",
-        "--grpc-addr",
+        "--admin-addr",
         "127.0.0.1:4",
     ]);
 
     assert_eq!(
         overridden.setting_inputs(),
         vec![
-            (SETTING_WEB_HTTP_ADDR.to_owned(), "127.0.0.1:1".to_owned()),
+            (
+                SETTING_PUBLIC_HTTP_ADDR.to_owned(),
+                "127.0.0.1:1".to_owned()
+            ),
             (SETTING_TELEMETRY_ADDR.to_owned(), "127.0.0.1:3".to_owned()),
-            (SETTING_GRPC_ADDR.to_owned(), "127.0.0.1:4".to_owned()),
+            (SETTING_ADMIN_ADDR.to_owned(), "127.0.0.1:4".to_owned()),
         ]
     );
 }
 
 #[test]
 fn test_address_flags_come_before_or_after_the_configuration_file() {
-    let before = serve_args(&["pic-x", "--grpc-addr", "127.0.0.1:4", "config.yaml"]);
-    let after = serve_args(&["pic-x", "config.yaml", "--grpc-addr", "127.0.0.1:4"]);
+    let before = serve_args(&["pic-x", "--admin-addr", "127.0.0.1:4", "config.yaml"]);
+    let after = serve_args(&["pic-x", "config.yaml", "--admin-addr", "127.0.0.1:4"]);
 
     assert_eq!(before, after);
 }
@@ -99,16 +102,16 @@ fn test_version_is_a_named_command_that_needs_no_configuration_file() {
 #[test]
 fn test_a_named_command_refuses_the_arguments_of_the_default_action() {
     assert!(Cli::try_parse_from(["pic-x", "version", "config.yaml"]).is_err());
-    assert!(Cli::try_parse_from(["pic-x", "version", "--grpc-addr", "127.0.0.1:4"]).is_err());
+    assert!(Cli::try_parse_from(["pic-x", "version", "--admin-addr", "127.0.0.1:4"]).is_err());
 }
 
 #[test]
 fn test_serving_contributes_its_flags_as_the_command_line_layer() {
-    let resolved = action(&["pic-x", "config.yaml", "--grpc-addr", "127.0.0.1:4"]);
+    let resolved = action(&["pic-x", "config.yaml", "--admin-addr", "127.0.0.1:4"]);
 
     assert_eq!(
         resolved.setting_inputs(),
-        vec![(SETTING_GRPC_ADDR.to_owned(), "127.0.0.1:4".to_owned())]
+        vec![(SETTING_ADMIN_ADDR.to_owned(), "127.0.0.1:4".to_owned())]
     );
 }
 
@@ -175,7 +178,7 @@ fn test_a_downstream_build_can_flatten_the_shared_commands() {
 #[test]
 fn test_a_downstream_build_keeps_the_default_action() {
     let parsed =
-        DownstreamCli::try_parse_from(["other-x", "config.yaml", "--grpc-addr", "127.0.0.1:4"])
+        DownstreamCli::try_parse_from(["other-x", "config.yaml", "--admin-addr", "127.0.0.1:4"])
             .expect("the default action parses");
 
     assert_eq!(parsed.command, None);
@@ -184,6 +187,6 @@ fn test_a_downstream_build_keeps_the_default_action() {
             .serve
             .expect("the default action carries its arguments")
             .setting_inputs(),
-        vec![(SETTING_GRPC_ADDR.to_owned(), "127.0.0.1:4".to_owned())]
+        vec![(SETTING_ADMIN_ADDR.to_owned(), "127.0.0.1:4".to_owned())]
     );
 }

@@ -358,7 +358,7 @@ async fn test_the_catalogue_lists_opted_in_realms_and_hides_the_rest() {
 
 #[tokio::test]
 async fn test_a_path_prefix_moves_where_everything_is_mounted() {
-    let config = config_with(&[(pic_x_core::config::SETTING_WEB_PATH_PREFIX, "/pic-x")]);
+    let config = config_with(&[(pic_x_core::config::SETTING_PUBLIC_PATH_PREFIX, "/pic-x")]);
     let service = WellKnownService::new();
 
     // Mounted under the prefix...

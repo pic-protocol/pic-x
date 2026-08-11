@@ -39,17 +39,17 @@ tasks:
         task run
         task run CONFIG=./my-config.yaml
         task run LOG_LEVEL=trace
-        task run GRPC_ADDR=127.0.0.1:6000
+        task run ADMIN_ADDR=127.0.0.1:6000
 
       Parameters:
-        CONFIG          Configuration file. Default: config.local.yaml.
-        LOG_LEVEL       error, warn, info, debug, or trace. Default: whatever CONFIG says.
-        LOG_FORMAT      json or terminal. Default: whatever CONFIG says.
-        RELEASE         Run the release build when set to any value. Default: unset.
-        WEB_HTTP_ADDR   Override the web listen address. Default: from CONFIG.
-        TELEMETRY_ADDR  Override the telemetry listen address. Default: from CONFIG.
-        GRPC_ADDR       Override the gRPC listen address. Default: from CONFIG.
-        ARGS            Extra flags appended verbatim to the invocation. Default: empty.
+        CONFIG            Configuration file. Default: config.local.yaml.
+        LOG_LEVEL         error, warn, info, debug, or trace. Default: whatever CONFIG says.
+        LOG_FORMAT        json or terminal. Default: whatever CONFIG says.
+        RELEASE           Run the release build when set to any value. Default: unset.
+        PUBLIC_HTTP_ADDR  Override the public listen address. Default: from CONFIG.
+        TELEMETRY_ADDR    Override the telemetry listen address. Default: from CONFIG.
+        ADMIN_ADDR        Override the admin listen address. Default: from CONFIG.
+        ARGS              Extra flags appended verbatim to the invocation. Default: empty.
     cmds:
       - task: serve
         vars:
@@ -57,9 +57,9 @@ tasks:
           LOG_LEVEL: '{{.LOG_LEVEL}}'
           LOG_FORMAT: '{{.LOG_FORMAT}}'
           RELEASE: '{{.RELEASE}}'
-          WEB_HTTP_ADDR: '{{.WEB_HTTP_ADDR}}'
+          PUBLIC_HTTP_ADDR: '{{.PUBLIC_HTTP_ADDR}}'
           TELEMETRY_ADDR: '{{.TELEMETRY_ADDR}}'
-          GRPC_ADDR: '{{.GRPC_ADDR}}'
+          ADMIN_ADDR: '{{.ADMIN_ADDR}}'
           ARGS: '{{.ARGS}}'
 
   run-as-local-tls:
@@ -90,9 +90,9 @@ tasks:
           LOG_LEVEL: '{{.LOG_LEVEL}}'
           LOG_FORMAT: '{{.LOG_FORMAT}}'
           RELEASE: '{{.RELEASE}}'
-          WEB_HTTP_ADDR: '{{.WEB_HTTP_ADDR}}'
+          PUBLIC_HTTP_ADDR: '{{.PUBLIC_HTTP_ADDR}}'
           TELEMETRY_ADDR: '{{.TELEMETRY_ADDR}}'
-          GRPC_ADDR: '{{.GRPC_ADDR}}'
+          ADMIN_ADDR: '{{.ADMIN_ADDR}}'
           ARGS: '{{.ARGS}}'
 
   run-as-prod:
@@ -123,9 +123,9 @@ tasks:
           LOG_LEVEL: '{{.LOG_LEVEL}}'
           LOG_FORMAT: '{{.LOG_FORMAT}}'
           RELEASE: '{{.RELEASE}}'
-          WEB_HTTP_ADDR: '{{.WEB_HTTP_ADDR}}'
+          PUBLIC_HTTP_ADDR: '{{.PUBLIC_HTTP_ADDR}}'
           TELEMETRY_ADDR: '{{.TELEMETRY_ADDR}}'
-          GRPC_ADDR: '{{.GRPC_ADDR}}'
+          ADMIN_ADDR: '{{.ADMIN_ADDR}}'
           ARGS: '{{.ARGS}}'
 
   serve:
@@ -136,18 +136,18 @@ tasks:
       LOG_LEVEL: '{{.LOG_LEVEL | default ""}}'
       LOG_FORMAT: '{{.LOG_FORMAT | default ""}}'
       RELEASE: '{{.RELEASE | default ""}}'
-      WEB_HTTP_ADDR: '{{.WEB_HTTP_ADDR | default ""}}'
+      PUBLIC_HTTP_ADDR: '{{.PUBLIC_HTTP_ADDR | default ""}}'
       TELEMETRY_ADDR: '{{.TELEMETRY_ADDR | default ""}}'
-      GRPC_ADDR: '{{.GRPC_ADDR | default ""}}'
+      ADMIN_ADDR: '{{.ADMIN_ADDR | default ""}}'
       ARGS: '{{.ARGS | default ""}}'
     cmds:
       - >-
         cargo run {{if .RELEASE}}--release{{end}} --bin pic-x -- {{.CONFIG}}
         {{if .LOG_LEVEL}}--log-level {{.LOG_LEVEL}}{{end}}
         {{if .LOG_FORMAT}}--log-format {{.LOG_FORMAT}}{{end}}
-        {{if .WEB_HTTP_ADDR}}--web-http-addr {{.WEB_HTTP_ADDR}}{{end}}
+        {{if .PUBLIC_HTTP_ADDR}}--public-http-addr {{.PUBLIC_HTTP_ADDR}}{{end}}
         {{if .TELEMETRY_ADDR}}--telemetry-addr {{.TELEMETRY_ADDR}}{{end}}
-        {{if .GRPC_ADDR}}--grpc-addr {{.GRPC_ADDR}}{{end}}
+        {{if .ADMIN_ADDR}}--admin-addr {{.ADMIN_ADDR}}{{end}}
         {{.ARGS}}
 
   version:
@@ -180,7 +180,7 @@ tasks:
         task cli -- --help
         task cli ARGS=--help
         task cli ARGS=version
-        task cli -- ./my-config.yaml --grpc-addr 0.0.0.0:6000
+        task cli -- ./my-config.yaml --admin-addr 0.0.0.0:6000
         task cli RELEASE=1 ARGS=--version
 
       Parameters:
@@ -273,6 +273,92 @@ tasks:
         cargo clippy {{if .PKG}}-p {{.PKG}}{{else}}--workspace{{end}}
         --all-targets --all-features {{.ARGS}} -- -D warnings
 
+  lab-up:
+    desc: Start the local Keycloak Docker Compose lab.
+    silent: true
+    summary: |
+      Start the local Keycloak compose stack. It imports the `acme-idp` example IdP realm from
+      dev/keycloak/acme-idp-realm.json and exposes Keycloak on localhost:18080.
+
+      Examples:
+        task lab-up
+
+      See docs/keycloak.md for credentials and token-generation commands.
+    cmds:
+      - docker compose -f docker-compose.lab.yml up -d
+
+  lab-down:
+    desc: Stop the local Keycloak Docker Compose lab.
+    silent: true
+    summary: |
+      Stop and remove the local Keycloak compose stack.
+
+      Examples:
+        task lab-down
+    cmds:
+      - docker compose -f docker-compose.lab.yml down
+
+  lab-get-idp-config:
+    desc: Print the local Keycloak IdP well-known configuration.
+    silent: true
+    summary: |
+      Request the OpenID Connect well-known configuration from the local Keycloak lab and print the
+      raw JSON response.
+
+      Start the lab first with `task lab-up`.
+
+      Examples:
+        task lab-get-idp-config
+
+      Parameters:
+        KEYCLOAK_URL    Base URL. Default: http://localhost:18080.
+        KEYCLOAK_REALM  Realm name. Default: acme-idp.
+    vars:
+      KEYCLOAK_URL: '{{.KEYCLOAK_URL | default "http://localhost:18080"}}'
+      KEYCLOAK_REALM: '{{.KEYCLOAK_REALM | default "acme-idp"}}'
+    cmds:
+      - >-
+        curl -fsS
+        "{{.KEYCLOAK_URL}}/realms/{{.KEYCLOAK_REALM}}/.well-known/openid-configuration"
+
+  lab-get-idp-jwt:
+    desc: Print a JWT from the local Keycloak lab.
+    silent: true
+    summary: |
+      Request an access token from the local Keycloak lab and print only the JWT.
+
+      Start the lab first with `task lab-up`.
+
+      Examples:
+        task lab-get-idp-jwt
+        task lab-get-idp-jwt KEYCLOAK_USERNAME=alice KEYCLOAK_PASSWORD=alice-password
+
+      Parameters:
+        KEYCLOAK_URL            Base URL. Default: http://localhost:18080.
+        KEYCLOAK_REALM          Realm name. Default: acme-idp.
+        KEYCLOAK_CLIENT_ID      Client ID. Default: acme-idp-client.
+        KEYCLOAK_CLIENT_SECRET  Client secret. Default: acme-idp-client-secret.
+        KEYCLOAK_USERNAME       Username. Default: alice.
+        KEYCLOAK_PASSWORD       Password. Default: alice-password.
+    vars:
+      KEYCLOAK_URL: '{{.KEYCLOAK_URL | default "http://localhost:18080"}}'
+      KEYCLOAK_REALM: '{{.KEYCLOAK_REALM | default "acme-idp"}}'
+      KEYCLOAK_CLIENT_ID: '{{.KEYCLOAK_CLIENT_ID | default "acme-idp-client"}}'
+      KEYCLOAK_CLIENT_SECRET: '{{.KEYCLOAK_CLIENT_SECRET | default "acme-idp-client-secret"}}'
+      KEYCLOAK_USERNAME: '{{.KEYCLOAK_USERNAME | default "alice"}}'
+      KEYCLOAK_PASSWORD: '{{.KEYCLOAK_PASSWORD | default "alice-password"}}'
+    cmds:
+      - >-
+        curl -fsS -X POST
+        "{{.KEYCLOAK_URL}}/realms/{{.KEYCLOAK_REALM}}/protocol/openid-connect/token"
+        -H "Content-Type: application/x-www-form-urlencoded"
+        --data-urlencode "grant_type=password"
+        --data-urlencode "client_id={{.KEYCLOAK_CLIENT_ID}}"
+        --data-urlencode "client_secret={{.KEYCLOAK_CLIENT_SECRET}}"
+        --data-urlencode "username={{.KEYCLOAK_USERNAME}}"
+        --data-urlencode "password={{.KEYCLOAK_PASSWORD}}"
+        | sed -n 's/.*"access_token"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p'
+
   run-as-docker:
     desc: Build the image and run what it ships — production, which refuses to start unprepared.
     summary: |
@@ -282,7 +368,7 @@ tasks:
       With an empty volume this should fail. Production config requires TLS material, an admin client
       CA and a pseudonymisation secret supplied from outside the process:
 
-        pic-x: validating the configuration loaded from /etc/pic-x/config.yaml: validating the web
+        pic-x: validating the configuration loaded from /etc/pic-x/config.yaml: validating the public
         TLS material: the TLS certificate /var/lib/pic-x/tls/server.pem is not a readable file
 
       For a container that starts with nothing prepared, use `task run-as-docker-dev`. It is the same

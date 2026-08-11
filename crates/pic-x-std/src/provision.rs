@@ -245,7 +245,11 @@ fn generate_secret(path: &Path, reference: &str) -> Result<()> {
 /// Either every piece is generated together or none is: a server certificate signed by an authority
 /// that has since been regenerated verifies against nothing, and half a set is worse than none.
 fn prepare_certificates(config: &Config, volume: &Volume) -> Result<()> {
-    let wanted = [config.web_tls(), config.grpc_tls(), config.telemetry_tls()];
+    let wanted = [
+        config.public_tls(),
+        config.admin_tls(),
+        config.telemetry_tls(),
+    ];
 
     if wanted.iter().all(Option::is_none) {
         return Ok(());

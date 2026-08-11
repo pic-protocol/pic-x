@@ -28,10 +28,10 @@ fn scratch(name: &str) -> PathBuf {
     path
 }
 
-/// A running server, and the web address it bound.
+/// A running server, and the public address it bound.
 struct Running {
     child: Child,
-    web: String,
+    public: String,
     lines: mpsc::Receiver<String>,
 }
 
@@ -50,9 +50,9 @@ impl Running {
 fn serve(config: &std::path::Path) -> Running {
     let mut child = Command::new(env!("CARGO_BIN_EXE_pic-x"))
         .arg(config)
-        .args(["--web-http-addr", "127.0.0.1:0"])
+        .args(["--public-http-addr", "127.0.0.1:0"])
         .args(["--telemetry-addr", "127.0.0.1:0"])
-        .args(["--grpc-addr", "127.0.0.1:0"])
+        .args(["--admin-addr", "127.0.0.1:0"])
         .args(["--log-format", "json"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -76,12 +76,12 @@ fn serve(config: &std::path::Path) -> Running {
         }
     });
 
-    let mut web = String::new();
+    let mut public = String::new();
     loop {
         match lines.recv_timeout(READY) {
             Ok(line) => {
                 if line.contains("wellknown.listening") {
-                    web = address_in(&line);
+                    public = address_in(&line);
                 }
                 if line.contains("server.started") {
                     break;
@@ -90,9 +90,13 @@ fn serve(config: &std::path::Path) -> Running {
             Err(_) => panic!("the server never reported itself started"),
         }
     }
-    assert!(!web.is_empty(), "the public surface reported no address");
+    assert!(!public.is_empty(), "the public surface reported no address");
 
-    Running { child, web, lines }
+    Running {
+        child,
+        public,
+        lines,
+    }
 }
 
 /// Reads the `address` field out of a JSON log line.
@@ -164,15 +168,17 @@ fn config_in(volume: &std::path::Path) -> PathBuf {
              autogenerate: true\n\
              working_dir: {}/vol\n\
              log:\n  level: info\n  format: json\n\
-             web:\n  http: 127.0.0.1:0\n\
+             public:\n  http: 127.0.0.1:0\n\
              operations:\n  \
              secrets:\n    provider: directory\n  \
              audit:\n    sink: file\n    retention: 7d\n    \
              pseudonym:\n      enabled: true\n      key_ref: audit-pseudonym\n      key_version: \"v1\"\n  \
              keys:\n    enabled: true\n    publish_ahead: 1m\n    rotate_every: 10m\n    retain: 1h\n\
              realms:\n  \
-             - name: acme\n    issuer: https://acme.example.com\n    listed: true\n  \
-             - name: beta\n    listed: false\n",
+             - name: acme\n    issuer: https://acme.example.com\n    listed: true\n    \
+             keys:\n      publish_ahead: 1m\n      rotate_every: 10m\n      retain: 1h\n  \
+             - name: beta\n    listed: false\n    \
+             keys:\n      publish_ahead: 1m\n      rotate_every: 10m\n      retain: 1h\n",
             volume.display()
         ),
     )
@@ -209,7 +215,7 @@ fn test_two_realms_each_get_their_own_issuer_surface_and_key() {
     let server = serve(&config);
 
     // The server catalogue lists the realm that opted in, and not the one that did not.
-    let (status, catalogue) = get(&server.web, "/.well-known/server-configuration");
+    let (status, catalogue) = get(&server.public, "/.well-known/server-configuration");
     assert!(status.contains("200"), "{status}");
     assert!(
         catalogue.contains("acme"),
@@ -226,11 +232,17 @@ fn test_two_realms_each_get_their_own_issuer_surface_and_key() {
 
     // Each realm serves its own issuer discovery at its own path — including the unlisted one, which
     // a client that knows its name must still be able to verify tokens against.
-    let (acme_status, acme) = get(&server.web, "/realms/acme/.well-known/pic-x-configuration");
+    let (acme_status, acme) = get(
+        &server.public,
+        "/realms/acme/.well-known/pic-x-configuration",
+    );
     assert!(acme_status.contains("200"), "{acme_status}");
     assert!(acme.contains("https://acme.example.com"), "{acme}");
 
-    let (beta_status, _) = get(&server.web, "/realms/beta/.well-known/pic-x-configuration");
+    let (beta_status, _) = get(
+        &server.public,
+        "/realms/beta/.well-known/pic-x-configuration",
+    );
     assert!(
         beta_status.contains("200"),
         "the unlisted realm is unreachable: {beta_status}"
@@ -239,19 +251,19 @@ fn test_two_realms_each_get_their_own_issuer_surface_and_key() {
     // Over HTTP, a realm's key set is its *token* ring, published at `/keys` now that token keys are
     // enabled — so it is populated. The server publishes none of its own. The sealing keys are checked
     // on disk below.
-    let (server_keys_status, _) = get(&server.web, "/.well-known/jwks.json");
+    let (server_keys_status, _) = get(&server.public, "/.well-known/jwks.json");
     assert!(
         server_keys_status.contains("404"),
         "the server should publish no key set of its own: {server_keys_status}"
     );
-    let (acme_keys_status, acme_token_keys) = get(&server.web, "/realms/acme/keys");
+    let (acme_keys_status, acme_token_keys) = get(&server.public, "/realms/acme/keys");
     assert!(acme_keys_status.contains("200"), "{acme_keys_status}");
     assert!(
         !kids(&acme_token_keys).is_empty(),
         "the realm publishes no token keys: {acme_token_keys}"
     );
     // The token endpoint answers a POST — with 501, since issuance is not built — rather than 404.
-    let (token_status, token_body) = post(&server.web, "/realms/acme/token");
+    let (token_status, token_body) = post(&server.public, "/realms/acme/token");
     assert!(
         token_status.contains("501"),
         "the token endpoint should answer a POST: {token_status}"
@@ -261,7 +273,7 @@ fn test_two_realms_each_get_their_own_issuer_surface_and_key() {
         "the 501 should say why: {token_body}"
     );
     // The old realm key path is gone; the key set moved to `{issuer}/keys`.
-    let (old_path_status, _) = get(&server.web, "/realms/acme/.well-known/jwks.json");
+    let (old_path_status, _) = get(&server.public, "/realms/acme/.well-known/jwks.json");
     assert!(
         old_path_status.contains("404"),
         "the realm key set should have moved off the well-known path: {old_path_status}"

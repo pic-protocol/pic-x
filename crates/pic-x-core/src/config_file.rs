@@ -17,29 +17,30 @@ use serde::Deserialize;
 use serde_norway::Value;
 
 use crate::config::{
+    SETTING_ADMIN_ADDR, SETTING_ADMIN_ALLOW, SETTING_ADMIN_TLS_CERT, SETTING_ADMIN_TLS_CLIENT_CA,
+    SETTING_ADMIN_TLS_CRL, SETTING_ADMIN_TLS_KEY, SETTING_ADMIN_TLS_MIN_VERSION,
     SETTING_AUDIT_DIRECTORY, SETTING_AUDIT_PSEUDONYM_ENABLED, SETTING_AUDIT_PSEUDONYM_KEY_REF,
     SETTING_AUDIT_PSEUDONYM_KEY_VERSION, SETTING_AUDIT_RETENTION, SETTING_AUDIT_SINK,
-    SETTING_AUTOGENERATE, SETTING_DEVELOPMENT_MODE, SETTING_GRPC_ADDR, SETTING_GRPC_ALLOW,
-    SETTING_GRPC_TLS_CERT, SETTING_GRPC_TLS_CLIENT_CA, SETTING_GRPC_TLS_CRL, SETTING_GRPC_TLS_KEY,
-    SETTING_GRPC_TLS_MIN_VERSION, SETTING_ISSUER, SETTING_KEYS_DIRECTORY, SETTING_KEYS_ENABLED,
-    SETTING_KEYS_MAINTENANCE_INTERVAL, SETTING_KEYS_PUBLISH_AHEAD, SETTING_KEYS_RETAIN,
-    SETTING_KEYS_ROTATE_EVERY, SETTING_LIMITS_BODY_BYTES, SETTING_LIMITS_CONCURRENT_REQUESTS,
-    SETTING_LIMITS_CONNECTIONS, SETTING_LIMITS_HANDSHAKE_TIMEOUT, SETTING_LIMITS_HEADER_TIMEOUT,
+    SETTING_AUTOGENERATE, SETTING_DEVELOPMENT_MODE, SETTING_ISSUER, SETTING_KEYS_DIRECTORY,
+    SETTING_KEYS_ENABLED, SETTING_KEYS_MAINTENANCE_INTERVAL, SETTING_KEYS_PUBLISH_AHEAD,
+    SETTING_KEYS_RETAIN, SETTING_KEYS_ROTATE_EVERY, SETTING_LIMITS_BODY_BYTES,
+    SETTING_LIMITS_CONCURRENT_REQUESTS, SETTING_LIMITS_CONNECTIONS,
+    SETTING_LIMITS_HANDSHAKE_TIMEOUT, SETTING_LIMITS_HEADER_TIMEOUT,
     SETTING_LIMITS_REQUEST_TIMEOUT, SETTING_LOG_FORMAT, SETTING_LOG_LEVEL,
-    SETTING_SECRETS_DIRECTORY, SETTING_SECRETS_ENV_PREFIX, SETTING_SECRETS_PROVIDER,
-    SETTING_SHUTDOWN_TIMEOUT, SETTING_TELEMETRY_ADDR, SETTING_TELEMETRY_TLS_CERT,
-    SETTING_TELEMETRY_TLS_KEY, SETTING_TELEMETRY_TLS_MIN_VERSION, SETTING_TLS_RELOAD,
-    SETTING_TLS_RELOAD_INTERVAL, SETTING_WEB_HTTP_ADDR, SETTING_WEB_PATH_PREFIX,
-    SETTING_WEB_TLS_CERT, SETTING_WEB_TLS_CLIENT_CA, SETTING_WEB_TLS_CRL, SETTING_WEB_TLS_KEY,
-    SETTING_WEB_TLS_MIN_VERSION, SETTING_WORKING_DIR,
+    SETTING_PUBLIC_HTTP_ADDR, SETTING_PUBLIC_PATH_PREFIX, SETTING_PUBLIC_TLS_CERT,
+    SETTING_PUBLIC_TLS_CLIENT_CA, SETTING_PUBLIC_TLS_CRL, SETTING_PUBLIC_TLS_KEY,
+    SETTING_PUBLIC_TLS_MIN_VERSION, SETTING_SECRETS_DIRECTORY, SETTING_SECRETS_ENV_PREFIX,
+    SETTING_SECRETS_PROVIDER, SETTING_SHUTDOWN_TIMEOUT, SETTING_TELEMETRY_ADDR,
+    SETTING_TELEMETRY_TLS_CERT, SETTING_TELEMETRY_TLS_KEY, SETTING_TELEMETRY_TLS_MIN_VERSION,
+    SETTING_TLS_RELOAD, SETTING_TLS_RELOAD_INTERVAL, SETTING_WORKING_DIR,
 };
 use crate::realm::RealmInput;
 
 /// The section names this crate parses into typed settings.
 const KNOWN_SECTIONS: [&str; 8] = [
-    "web",
+    "public",
     "telemetry",
-    "grpc",
+    "admin",
     "tls",
     "limits",
     "log",
@@ -60,11 +61,11 @@ pub struct ConfigFile {
     #[serde(default)]
     development_mode: Option<String>,
     #[serde(default)]
-    web: WebSection,
+    public: PublicSection,
     #[serde(default)]
     telemetry: TelemetrySection,
     #[serde(default)]
-    grpc: GrpcSection,
+    admin: AdminSection,
     #[serde(default)]
     tls: TransportSection,
     #[serde(default)]
@@ -172,18 +173,18 @@ struct RealmSecretsSection {
     env_prefix: Option<String>,
 }
 
-/// Listener addresses for the user-facing web surface.
+/// Listener addresses for the user-facing public surface.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct WebSection {
+struct PublicSection {
     #[serde(default)]
     http: Option<String>,
     /// The public URL this deployment is reached at. Stated, never inferred from a proxy header. It
-    /// is the base a realm's `issuer` defaults to (`{public_url}/realms/<name>`) and, when it carries
+    /// is the base a realm's `issuer` defaults to (`{url}/realms/<name>`) and, when it carries
     /// a path, what the surface's mount prefix is derived from. The server issues nothing, so this is
     /// a public *address*, not a token issuer.
     #[serde(default)]
-    public_url: Option<String>,
+    url: Option<String>,
     /// Where the surface is mounted. Empty — the root — unless a proxy forwards a path unstripped.
     #[serde(default)]
     path_prefix: Option<String>,
@@ -302,10 +303,10 @@ struct TelemetrySection {
     tls: TelemetryTlsSection,
 }
 
-/// Listener address for the gRPC surface.
+/// Listener address for the administrative surface.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct GrpcSection {
+struct AdminSection {
     #[serde(default)]
     addr: Option<String>,
     #[serde(default)]
@@ -408,14 +409,14 @@ impl ConfigFile {
     pub fn settings(&self) -> Vec<(String, String)> {
         // A list is one setting whose value happens to have lines in it, so it travels through the
         // same precedence layers as everything else instead of needing a mechanism of its own.
-        let allow = (!self.grpc.allow.is_empty()).then(|| self.grpc.allow.join("\n"));
+        let allow = (!self.admin.allow.is_empty()).then(|| self.admin.allow.join("\n"));
 
         let candidates = [
             (SETTING_WORKING_DIR, self.working_dir.as_ref()),
             (SETTING_AUTOGENERATE, self.autogenerate.as_ref()),
             (SETTING_DEVELOPMENT_MODE, self.development_mode.as_ref()),
-            (SETTING_ISSUER, self.web.public_url.as_ref()),
-            (SETTING_GRPC_ALLOW, allow.as_ref()),
+            (SETTING_ISSUER, self.public.url.as_ref()),
+            (SETTING_ADMIN_ALLOW, allow.as_ref()),
             (SETTING_TLS_RELOAD, self.tls.reload.as_ref()),
             (
                 SETTING_TLS_RELOAD_INTERVAL,
@@ -439,8 +440,8 @@ impl ConfigFile {
                 self.limits.header_timeout.as_ref(),
             ),
             (SETTING_LIMITS_BODY_BYTES, self.limits.body_bytes.as_ref()),
-            (SETTING_WEB_TLS_CRL, self.web.tls.crl.as_ref()),
-            (SETTING_GRPC_TLS_CRL, self.grpc.tls.crl.as_ref()),
+            (SETTING_PUBLIC_TLS_CRL, self.public.tls.crl.as_ref()),
+            (SETTING_ADMIN_TLS_CRL, self.admin.tls.crl.as_ref()),
             (SETTING_AUDIT_SINK, self.operations.audit.sink.as_ref()),
             (
                 SETTING_AUDIT_DIRECTORY,
@@ -468,24 +469,30 @@ impl ConfigFile {
                 SETTING_KEYS_MAINTENANCE_INTERVAL,
                 self.operations.keys.maintenance_interval.as_ref(),
             ),
-            (SETTING_WEB_PATH_PREFIX, self.web.path_prefix.as_ref()),
-            (SETTING_WEB_HTTP_ADDR, self.web.http.as_ref()),
+            (SETTING_PUBLIC_PATH_PREFIX, self.public.path_prefix.as_ref()),
+            (SETTING_PUBLIC_HTTP_ADDR, self.public.http.as_ref()),
             (SETTING_TELEMETRY_ADDR, self.telemetry.addr.as_ref()),
-            (SETTING_GRPC_ADDR, self.grpc.addr.as_ref()),
+            (SETTING_ADMIN_ADDR, self.admin.addr.as_ref()),
             (SETTING_LOG_LEVEL, self.log.level.as_ref()),
-            (SETTING_WEB_TLS_CERT, self.web.tls.cert.as_ref()),
-            (SETTING_WEB_TLS_KEY, self.web.tls.key.as_ref()),
-            (SETTING_WEB_TLS_CLIENT_CA, self.web.tls.client_ca.as_ref()),
+            (SETTING_PUBLIC_TLS_CERT, self.public.tls.cert.as_ref()),
+            (SETTING_PUBLIC_TLS_KEY, self.public.tls.key.as_ref()),
             (
-                SETTING_WEB_TLS_MIN_VERSION,
-                self.web.tls.min_version.as_ref(),
+                SETTING_PUBLIC_TLS_CLIENT_CA,
+                self.public.tls.client_ca.as_ref(),
             ),
-            (SETTING_GRPC_TLS_CERT, self.grpc.tls.cert.as_ref()),
-            (SETTING_GRPC_TLS_KEY, self.grpc.tls.key.as_ref()),
-            (SETTING_GRPC_TLS_CLIENT_CA, self.grpc.tls.client_ca.as_ref()),
             (
-                SETTING_GRPC_TLS_MIN_VERSION,
-                self.grpc.tls.min_version.as_ref(),
+                SETTING_PUBLIC_TLS_MIN_VERSION,
+                self.public.tls.min_version.as_ref(),
+            ),
+            (SETTING_ADMIN_TLS_CERT, self.admin.tls.cert.as_ref()),
+            (SETTING_ADMIN_TLS_KEY, self.admin.tls.key.as_ref()),
+            (
+                SETTING_ADMIN_TLS_CLIENT_CA,
+                self.admin.tls.client_ca.as_ref(),
+            ),
+            (
+                SETTING_ADMIN_TLS_MIN_VERSION,
+                self.admin.tls.min_version.as_ref(),
             ),
             (SETTING_TELEMETRY_TLS_CERT, self.telemetry.tls.cert.as_ref()),
             (SETTING_TELEMETRY_TLS_KEY, self.telemetry.tls.key.as_ref()),
@@ -610,7 +617,7 @@ mod tests {
 
     use super::*;
 
-    const FULL: &str = "web:\n  http: 0.0.0.0:5556\ntelemetry:\n  addr: 0.0.0.0:5558\ngrpc:\n  addr: 127.0.0.1:5557\n";
+    const FULL: &str = "public:\n  http: 0.0.0.0:5556\ntelemetry:\n  addr: 0.0.0.0:5558\nadmin:\n  addr: 127.0.0.1:5557\n";
 
     fn settings_of(text: &str) -> Vec<(String, String)> {
         ConfigFile::parse(text).expect("the file parses").settings()
@@ -620,9 +627,9 @@ mod tests {
     fn test_parse_reads_every_documented_section() {
         let file = ConfigFile::parse(FULL).expect("the file parses");
 
-        assert_eq!(file.web.http.as_deref(), Some("0.0.0.0:5556"));
+        assert_eq!(file.public.http.as_deref(), Some("0.0.0.0:5556"));
         assert_eq!(file.telemetry.addr.as_deref(), Some("0.0.0.0:5558"));
-        assert_eq!(file.grpc.addr.as_deref(), Some("127.0.0.1:5557"));
+        assert_eq!(file.admin.addr.as_deref(), Some("127.0.0.1:5557"));
     }
 
     #[test]
@@ -630,9 +637,12 @@ mod tests {
         assert_eq!(
             settings_of(FULL),
             vec![
-                (SETTING_WEB_HTTP_ADDR.to_owned(), "0.0.0.0:5556".to_owned()),
+                (
+                    SETTING_PUBLIC_HTTP_ADDR.to_owned(),
+                    "0.0.0.0:5556".to_owned()
+                ),
                 (SETTING_TELEMETRY_ADDR.to_owned(), "0.0.0.0:5558".to_owned()),
-                (SETTING_GRPC_ADDR.to_owned(), "127.0.0.1:5557".to_owned()),
+                (SETTING_ADMIN_ADDR.to_owned(), "127.0.0.1:5557".to_owned()),
             ]
         );
     }
@@ -640,32 +650,35 @@ mod tests {
     #[test]
     fn test_absent_sections_yield_no_settings() {
         assert!(
-            settings_of("web:\n  http: 0.0.0.0:5556\n")
+            settings_of("public:\n  http: 0.0.0.0:5556\n")
                 .iter()
-                .all(|(key, _)| key == SETTING_WEB_HTTP_ADDR)
+                .all(|(key, _)| key == SETTING_PUBLIC_HTTP_ADDR)
         );
         assert!(settings_of("{}").is_empty());
     }
 
     #[test]
     fn test_unknown_key_is_rejected() {
-        let unknown_section = ConfigFile::parse("web:\n  http: 0.0.0.0:5556\nnope: 1\n")
+        let unknown_section = ConfigFile::parse("public:\n  http: 0.0.0.0:5556\nnope: 1\n")
             .expect("an unclaimed section still parses");
         assert!(unknown_section.reject_unknown_sections([]).is_err());
 
-        assert!(ConfigFile::parse("web:\n  htpp: 0.0.0.0:5556\n").is_err());
+        assert!(ConfigFile::parse("public:\n  htpp: 0.0.0.0:5556\n").is_err());
     }
 
     #[test]
     fn test_tls_material_is_read_from_the_section_of_the_surface_it_belongs_to() {
         let settings = settings_of(
-            "web:\n  http: 0.0.0.0:5556\n  tls:\n    cert: /tls/web.pem\n    key: /tls/web.key\n\
-             grpc:\n  addr: 127.0.0.1:5557\n  tls:\n    cert: /tls/grpc.pem\n    key: /tls/grpc.key\n    client_ca: /tls/clients.pem\n",
+            "public:\n  http: 0.0.0.0:5556\n  tls:\n    cert: /tls/public.pem\n    key: /tls/public.key\n\
+             admin:\n  addr: 127.0.0.1:5557\n  tls:\n    cert: /tls/admin.pem\n    key: /tls/admin.key\n    client_ca: /tls/clients.pem\n",
         );
 
-        assert!(settings.contains(&(SETTING_WEB_TLS_CERT.to_owned(), "/tls/web.pem".to_owned())));
         assert!(settings.contains(&(
-            SETTING_GRPC_TLS_CLIENT_CA.to_owned(),
+            SETTING_PUBLIC_TLS_CERT.to_owned(),
+            "/tls/public.pem".to_owned()
+        )));
+        assert!(settings.contains(&(
+            SETTING_ADMIN_TLS_CLIENT_CA.to_owned(),
             "/tls/clients.pem".to_owned()
         )));
     }
@@ -685,13 +698,14 @@ mod tests {
 
     #[test]
     fn test_malformed_yaml_is_rejected() {
-        assert!(ConfigFile::parse("web: [unclosed\n").is_err());
+        assert!(ConfigFile::parse("public: [unclosed\n").is_err());
     }
 
     #[test]
     fn test_a_claimed_section_is_kept_and_readable() {
-        let file = ConfigFile::parse("web:\n  http: 0.0.0.0:5556\nsso:\n  issuer: https://idp\n")
-            .expect("the file parses");
+        let file =
+            ConfigFile::parse("public:\n  http: 0.0.0.0:5556\nsso:\n  issuer: https://idp\n")
+                .expect("the file parses");
 
         assert!(file.reject_unknown_sections(["sso"]).is_ok());
         assert!(file.section("sso").is_some());
@@ -704,7 +718,10 @@ mod tests {
         // Claiming a section does not change the typed settings the file contributes.
         assert_eq!(
             file.settings(),
-            vec![(SETTING_WEB_HTTP_ADDR.to_owned(), "0.0.0.0:5556".to_owned())]
+            vec![(
+                SETTING_PUBLIC_HTTP_ADDR.to_owned(),
+                "0.0.0.0:5556".to_owned()
+            )]
         );
     }
 

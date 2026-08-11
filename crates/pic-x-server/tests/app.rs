@@ -20,7 +20,7 @@ use pic_x_server::{Action, App, Cli, Command, DefaultServerHost};
 use pic_x_std::audit::{RecordingAuditSink, TracingAuditSink};
 use pic_x_std::storage::MemoryStorage;
 
-const SERVABLE: &str = "web:\n  http: 0.0.0.0:5556\n";
+const SERVABLE: &str = "public:\n  http: 0.0.0.0:5556\n";
 
 /// A secret store of the kind a build outside this workspace would compose.
 struct StubSecrets;
@@ -276,21 +276,21 @@ fn test_a_build_without_a_secret_store_composes_a_context_without_one() {
 
 #[tokio::test]
 async fn test_serve_rejects_a_config_that_declares_no_web_address() {
-    let path = config_file("no-web", "grpc:\n  addr: 127.0.0.1:5557\n");
+    let path = config_file("no-public", "admin:\n  addr: 127.0.0.1:5557\n");
 
     let error = app()
         .dispatch_to(&serve_action(&path), &mut Vec::new())
         .await
-        .expect_err("a config with no web address is invalid");
+        .expect_err("a config with no public address is invalid");
 
-    assert!(format!("{error:#}").contains("web listen address"));
+    assert!(format!("{error:#}").contains("public listen address"));
 }
 
 #[tokio::test]
 async fn test_an_unclaimed_configuration_section_is_rejected_with_the_file_path() {
     let path = config_file(
         "unclaimed",
-        "web:\n  http: 0.0.0.0:5556\nsso:\n  issuer: x\n",
+        "public:\n  http: 0.0.0.0:5556\nsso:\n  issuer: x\n",
     );
 
     let error = app()
@@ -305,7 +305,10 @@ async fn test_an_unclaimed_configuration_section_is_rejected_with_the_file_path(
 
 #[tokio::test]
 async fn test_a_claimed_configuration_section_is_accepted() {
-    let path = config_file("claimed", "web:\n  http: 0.0.0.0:5556\nsso:\n  issuer: x\n");
+    let path = config_file(
+        "claimed",
+        "public:\n  http: 0.0.0.0:5556\nsso:\n  issuer: x\n",
+    );
     let app = app().with_claimed_sections(["sso"]);
 
     app.dispatch_to(&serve_action(&path), &mut Vec::new())
@@ -323,7 +326,7 @@ fn sso_settings(section: &Value) -> Result<Vec<(String, String)>> {
     Ok(vec![("PERMGUARD_SSO_ISSUER".to_owned(), issuer.to_owned())])
 }
 
-const WITH_SSO: &str = "web:\n  http: 0.0.0.0:5556\nsso:\n  issuer: https://idp\n";
+const WITH_SSO: &str = "public:\n  http: 0.0.0.0:5556\nsso:\n  issuer: https://idp\n";
 
 #[test]
 fn test_a_claimed_section_feeds_a_declared_setting_through_the_file_layer() {
@@ -355,7 +358,7 @@ fn test_a_section_setting_the_build_never_declared_is_discarded() {
 fn test_a_failing_section_reader_names_the_section_and_the_file() {
     let path = config_file(
         "sso-broken",
-        "web:\n  http: 0.0.0.0:5556\nsso:\n  wrong: x\n",
+        "public:\n  http: 0.0.0.0:5556\nsso:\n  wrong: x\n",
     );
     let app = app()
         .with_declared_settings(["PERMGUARD_SSO_ISSUER"])
@@ -383,7 +386,7 @@ impl Pseudonymizer for StubPolicy {
     }
 }
 
-const PSEUDONYM_ON: &str = "web:\n  http: 0.0.0.0:5556\noperations:\n  secrets:\n    provider: environment\n    env_prefix: PIC_X_APP_TEST\n  audit:\n    pseudonym:\n      enabled: true\n      key_ref: audit-pseudonym\n      key_version: \"v7\"\n";
+const PSEUDONYM_ON: &str = "public:\n  http: 0.0.0.0:5556\noperations:\n  secrets:\n    provider: environment\n    env_prefix: PIC_X_APP_TEST\n  audit:\n    pseudonym:\n      enabled: true\n      key_ref: audit-pseudonym\n      key_version: \"v7\"\n";
 
 /// A store holding the one secret these tests name.
 fn secrets() -> Box<dyn SecretStore> {
@@ -523,7 +526,7 @@ impl ConfigSection for RateLimit {
 }
 
 const WITH_RATE_LIMIT: &str =
-    "web:\n  http: 0.0.0.0:5556\nrate_limit:\n  requests_per_minute: 600\n  burst: 50\n";
+    "public:\n  http: 0.0.0.0:5556\nrate_limit:\n  requests_per_minute: 600\n  burst: 50\n";
 
 #[test]
 fn test_a_registered_section_arrives_typed_and_nested() {
@@ -573,7 +576,7 @@ fn test_a_registered_section_a_file_leaves_out_reads_back_as_absent() {
 fn test_a_section_that_does_not_parse_names_itself_and_the_file() {
     let path = config_file(
         "section-malformed",
-        "web:\n  http: 0.0.0.0:5556\nrate_limit:\n  requests_per_minute: plenty\n",
+        "public:\n  http: 0.0.0.0:5556\nrate_limit:\n  requests_per_minute: plenty\n",
     );
 
     let error = app()
@@ -590,7 +593,7 @@ fn test_a_section_that_does_not_parse_names_itself_and_the_file() {
 fn test_a_section_that_does_not_validate_stops_the_start() {
     let path = config_file(
         "section-invalid",
-        "web:\n  http: 0.0.0.0:5556\nrate_limit:\n  requests_per_minute: 0\n",
+        "public:\n  http: 0.0.0.0:5556\nrate_limit:\n  requests_per_minute: 0\n",
     );
 
     let error = app()

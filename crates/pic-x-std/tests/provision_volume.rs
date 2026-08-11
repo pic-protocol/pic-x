@@ -123,8 +123,8 @@ fn test_certificates_are_generated_only_when_the_configuration_wants_tls() {
     prepare(&generating(
         &with,
         &[
-            ("PIC_X_WEB_TLS_CERT", "tls/server.pem"),
-            ("PIC_X_WEB_TLS_KEY", "tls/server.key"),
+            ("PIC_X_PUBLIC_TLS_CERT", "tls/server.pem"),
+            ("PIC_X_PUBLIC_TLS_KEY", "tls/server.key"),
         ],
     ))
     .expect("the volume is prepared");
@@ -149,8 +149,8 @@ fn test_half_a_set_of_certificates_is_refused_rather_than_completed() {
     let error = prepare(&generating(
         &root,
         &[
-            ("PIC_X_WEB_TLS_CERT", "tls/server.pem"),
-            ("PIC_X_WEB_TLS_KEY", "tls/server.key"),
+            ("PIC_X_PUBLIC_TLS_CERT", "tls/server.pem"),
+            ("PIC_X_PUBLIC_TLS_KEY", "tls/server.key"),
         ],
     ))
     .expect_err("the set is incomplete");
@@ -195,8 +195,8 @@ fn test_generated_material_is_readable_by_nobody_else() {
     prepare(&generating(
         &root,
         &[
-            ("PIC_X_WEB_TLS_CERT", "tls/server.pem"),
-            ("PIC_X_WEB_TLS_KEY", "tls/server.key"),
+            ("PIC_X_PUBLIC_TLS_CERT", "tls/server.pem"),
+            ("PIC_X_PUBLIC_TLS_KEY", "tls/server.key"),
         ],
     ))
     .expect("the volume is prepared");

@@ -25,8 +25,8 @@ use std::path::{Path, PathBuf};
 use clap::{Args, Parser, Subcommand};
 
 use pic_x_core::config::{
-    SETTING_GRPC_ADDR, SETTING_LOG_FORMAT, SETTING_LOG_LEVEL, SETTING_TELEMETRY_ADDR,
-    SETTING_WEB_HTTP_ADDR,
+    SETTING_ADMIN_ADDR, SETTING_LOG_FORMAT, SETTING_LOG_LEVEL, SETTING_PUBLIC_HTTP_ADDR,
+    SETTING_TELEMETRY_ADDR,
 };
 use pic_x_core::{LogFormat, LogLevel};
 
@@ -150,17 +150,17 @@ pub struct ServeArgs {
     #[arg(value_name = "CONFIG_FILE")]
     config_file: PathBuf,
 
-    /// Override the web HTTP listen address from the configuration file.
+    /// Override the public HTTP listen address from the configuration file.
     #[arg(long, value_name = "ADDR")]
-    web_http_addr: Option<String>,
+    public_http_addr: Option<String>,
 
     /// Override the telemetry listen address from the configuration file.
     #[arg(long, value_name = "ADDR")]
     telemetry_addr: Option<String>,
 
-    /// Override the gRPC listen address from the configuration file.
+    /// Override the admin listen address from the configuration file.
     #[arg(long, value_name = "ADDR")]
-    grpc_addr: Option<String>,
+    admin_addr: Option<String>,
 
     /// Override how much the server says: error, warn, info, debug, or trace.
     #[arg(long, value_name = "LEVEL", value_parser = parse_log_level)]
@@ -208,9 +208,9 @@ impl ServeArgs {
     /// value the configuration file supplied.
     pub fn setting_inputs(&self) -> Vec<(String, String)> {
         let addresses = [
-            (SETTING_WEB_HTTP_ADDR, self.web_http_addr.as_ref()),
+            (SETTING_PUBLIC_HTTP_ADDR, self.public_http_addr.as_ref()),
             (SETTING_TELEMETRY_ADDR, self.telemetry_addr.as_ref()),
-            (SETTING_GRPC_ADDR, self.grpc_addr.as_ref()),
+            (SETTING_ADMIN_ADDR, self.admin_addr.as_ref()),
         ];
 
         let logging = [

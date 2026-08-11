@@ -42,7 +42,7 @@ impl ProductIdentity {
         }
     }
 
-    /// Supplies the web logo the public landing renders, inline and self-contained.
+    /// Supplies the logo the public landing renders, inline and self-contained.
     ///
     /// A `data:` URI or an inline SVG — never a URL, because the landing must not reach off the host
     /// for anything. Empty by default: a build that sets none simply renders its name as text. Kept
@@ -79,7 +79,7 @@ impl ProductIdentity {
         self.art
     }
 
-    /// Returns the web logo the public landing renders, or an empty string when none was supplied.
+    /// Returns the logo the public landing renders, or an empty string when none was supplied.
     pub fn logo(&self) -> &'static str {
         self.logo
     }

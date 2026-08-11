@@ -72,11 +72,12 @@
 ##
 ## A realm inherits every server setting it does not state, and overrides only what it does:
 ##
-##   - `keys`         its token-signing ring (what it signs the tokens it issues with). On by default;
-##                    cadence inherited from `operations.keys` unless stated here.
+##   - `keys`         its own token-signing ring — what it signs the tokens it issues with. Mandatory:
+##                    signing policy is security, never inherited from `operations.keys` nor defaulted,
+##                    so every realm states its full lifecycle (publish_ahead, rotate_every, retain).
 ##   - `operations`   its override of the shared `operations` block below — the keys that seal its
 ##                    trail, the trail itself, and its pseudonymisation. Same shape as the top level.
-##   - `issuer`       defaults to `{web.public_url}/realms/<name>`; set it only when the realm lives on
+##   - `issuer`       defaults to `{public.url}/realms/<name>`; set it only when the realm lives on
 ##                    its own host, as `acme` does here. `globex` states only its name.
 ##
 ## Whatever the policy, a realm's keys, trail and pseudonymisation key stay in its own directory,
@@ -87,6 +88,7 @@
 #     issuer: https://acme.example.com
 #     listed: true
 #     keys:
+#       publish_ahead: 1h
 #       rotate_every: 90d
 #       retain: 400d
 #     operations:
@@ -94,6 +96,10 @@
 #         retention: 365d
 #   - name: globex
 #     listed: true
+#     keys:
+#       publish_ahead: 1h
+#       rotate_every: 30d
+#       retain: 365d
 
 ## A realm may also resolve its pseudonymisation key from the environment instead of its directory:
 ##
@@ -122,19 +128,19 @@
 ## One address. Whether it is plain HTTP or HTTPS is decided by the `tls` block below, not by a second
 ## address — the ports are deliberately not Dex's 5556/5557/5558, so both can run on one host.
 
-# web:
+# public:
 #   http: 0.0.0.0:7556
 
 ##   The public URL clients are told to reach this deployment at — what clients are told, not what the
 ##   process binds: behind a proxy the deployment is reached at a name the process never sees, and no
 ##   proxy header is trustworthy enough to derive it from. Realm issuers default to
-##   `{public_url}/realms/<name>`. Only a loopback address may be plain http; left unset, discovery
+##   `{url}/realms/<name>`. Only a loopback address may be plain http; left unset, discovery
 ##   advertises relative paths, which is never wrong.
 
-#   public_url: https://pic-x.example.com
+#   url: https://pic-x.example.com
 
 ##   Where the surface is mounted. Empty — the root — unless a proxy forwards a path unstripped, which
-##   most do not: they strip it, and the advertised URL comes from `web.public_url` instead.
+##   most do not: they strip it, and the advertised URL comes from `public.url` instead.
 
 #   path_prefix: ""
 
@@ -186,7 +192,7 @@
 ## client certificate is demanded. The shipped production file takes the first way: it binds this
 ## off-host behind mutual TLS and an `allow` list, which is how a real deployment is administered.
 
-# grpc:
+# admin:
 #   addr: 127.0.0.1:7557
 #   tls:
 #     cert: tls/server.pem

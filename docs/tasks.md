@@ -21,7 +21,7 @@ configuration system; the config files remain the source of truth.
 
 ```sh
 task run LOG_LEVEL=trace
-task run GRPC_ADDR=127.0.0.1:6000
+task run ADMIN_ADDR=127.0.0.1:6000
 task test PKG=pic-x-core
 task test FILTER=config
 task run-as-docker-dev VOLUME=/tmp/pic-x-dev

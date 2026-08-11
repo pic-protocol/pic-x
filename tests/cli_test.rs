@@ -72,7 +72,7 @@ impl Drop for ConfigFixture {
 /// parallel without the tests fighting each other for a port — which is exactly what happened the
 /// first time the surfaces started binding for real.
 const SERVABLE_CONFIG: &str =
-    "web:\n  http: 127.0.0.1:0\ntelemetry:\n  addr: 127.0.0.1:0\ngrpc:\n  addr: 127.0.0.1:0\n";
+    "public:\n  http: 127.0.0.1:0\ntelemetry:\n  addr: 127.0.0.1:0\nadmin:\n  addr: 127.0.0.1:0\n";
 
 /// Runs the built binary with the given arguments.
 fn run(args: &[&str]) -> Output {
@@ -315,7 +315,7 @@ fn test_the_terminal_format_writes_readable_lines_instead_of_json() {
 fn test_logging_can_be_set_from_the_configuration_file_and_the_environment() {
     let from_file = ConfigFixture::new(
         "log-section",
-        "web:\n  http: 127.0.0.1:0\nlog:\n  level: debug\n  format: terminal\n",
+        "public:\n  http: 127.0.0.1:0\nlog:\n  level: debug\n  format: terminal\n",
     );
     let stdout = serve(&[from_file.as_arg()], &[]).stdout;
     assert!(stdout.contains("server.starting"));
@@ -360,7 +360,7 @@ fn test_an_unreadable_log_setting_is_refused_with_what_was_expected() {
 fn test_pseudonymisation_without_a_key_refuses_to_start() {
     let config = ConfigFixture::new(
         "pseudonym-nokey",
-        "web:\n  http: 127.0.0.1:0\noperations:\n  secrets:\n    provider: environment\n  audit:\n    pseudonym:\n      enabled: true\n",
+        "public:\n  http: 127.0.0.1:0\noperations:\n  secrets:\n    provider: environment\n  audit:\n    pseudonym:\n      enabled: true\n",
     );
     let output = run(&[config.as_arg()]);
 
@@ -372,7 +372,7 @@ fn test_pseudonymisation_without_a_key_refuses_to_start() {
 fn test_pseudonymisation_without_anywhere_to_resolve_the_key_refuses_to_start() {
     let config = ConfigFixture::new(
         "pseudonym-no-store",
-        "web:\n  http: 127.0.0.1:0\noperations:\n  audit:\n    pseudonym:\n      enabled: true\n      key_ref: audit-pseudonym\n",
+        "public:\n  http: 127.0.0.1:0\noperations:\n  audit:\n    pseudonym:\n      enabled: true\n      key_ref: audit-pseudonym\n",
     );
     let output = run(&[config.as_arg()]);
 
@@ -384,7 +384,7 @@ fn test_pseudonymisation_without_anywhere_to_resolve_the_key_refuses_to_start() 
 fn test_a_secret_the_store_does_not_have_refuses_to_start_naming_the_reference() {
     let config = ConfigFixture::new(
         "pseudonym-absent",
-        "web:\n  http: 127.0.0.1:0\noperations:\n  secrets:\n    provider: environment\n    env_prefix: PIC_X_NOTHING\n  audit:\n    pseudonym:\n      enabled: true\n      key_ref: audit-pseudonym\n",
+        "public:\n  http: 127.0.0.1:0\noperations:\n  secrets:\n    provider: environment\n    env_prefix: PIC_X_NOTHING\n  audit:\n    pseudonym:\n      enabled: true\n      key_ref: audit-pseudonym\n",
     );
     let output = run(&[config.as_arg()]);
 
@@ -399,7 +399,7 @@ fn test_a_secret_the_store_does_not_have_refuses_to_start_naming_the_reference()
 fn test_a_key_resolved_from_the_environment_starts_and_pseudonymises() {
     let config = ConfigFixture::new(
         "pseudonym-resolved",
-        "web:\n  http: 127.0.0.1:0\noperations:\n  secrets:\n    provider: environment\n    env_prefix: PIC_X_TEST_SECRET\n  audit:\n    pseudonym:\n      enabled: true\n      key_ref: audit-pseudonym\n",
+        "public:\n  http: 127.0.0.1:0\noperations:\n  secrets:\n    provider: environment\n    env_prefix: PIC_X_TEST_SECRET\n  audit:\n    pseudonym:\n      enabled: true\n      key_ref: audit-pseudonym\n",
     );
 
     let served = serve(
@@ -482,7 +482,7 @@ fn test_serve_is_not_a_command_name() {
 
 #[test]
 fn test_flags_without_a_configuration_file_fail_with_usage() {
-    let output = run(&["--grpc-addr", "127.0.0.1:5557"]);
+    let output = run(&["--admin-addr", "127.0.0.1:5557"]);
 
     assert!(!output.status.success());
     assert!(stdout_of(&output).is_empty());
@@ -492,7 +492,7 @@ fn test_flags_without_a_configuration_file_fail_with_usage() {
 #[test]
 fn test_the_named_file_is_the_one_that_is_read() {
     let named = ConfigFixture::new("named", SERVABLE_CONFIG);
-    let decoy = ConfigFixture::new("decoy", "web:\n  http: 127.0.0.1:0\n");
+    let decoy = ConfigFixture::new("decoy", "public:\n  http: 127.0.0.1:0\n");
 
     // The decoy exists but is never named, so its contents cannot reach the run.
     let served = serve(&[named.as_arg()], &[]);
@@ -515,22 +515,22 @@ fn test_no_config_flag_exists() {
 
 #[test]
 fn test_command_line_flags_override_the_parsed_configuration_file() {
-    let config = ConfigFixture::new("override-rejected", "grpc:\n  addr: 127.0.0.1:0\n");
+    let config = ConfigFixture::new("override-rejected", "admin:\n  addr: 127.0.0.1:0\n");
 
-    // The file alone declares no web address, so validation fails.
+    // The file alone declares no public address, so validation fails.
     let without = run(&[config.as_arg()]);
     assert!(!without.status.success());
-    assert!(stderr_of(&without).contains("web listen address"));
+    assert!(stderr_of(&without).contains("public listen address"));
 
     // The flag is applied after the file is parsed, which satisfies the same validation.
-    let with = serve(&[config.as_arg(), "--web-http-addr", "127.0.0.1:0"], &[]);
+    let with = serve(&[config.as_arg(), "--public-http-addr", "127.0.0.1:0"], &[]);
     assert!(with.succeeded, "{}", with.stderr);
     assert!(with.stdout.contains(r#""event.name":"server.started""#));
 }
 
 #[test]
 fn test_invalid_configuration_file_is_reported() {
-    let unknown_key = ConfigFixture::new("unknown-key", "web:\n  http: 127.0.0.1:0\nnope: 1\n");
+    let unknown_key = ConfigFixture::new("unknown-key", "public:\n  http: 127.0.0.1:0\nnope: 1\n");
     let output = run(&[unknown_key.as_arg()]);
 
     assert!(!output.status.success());
@@ -611,18 +611,18 @@ fn test_help_documents_the_default_action_its_flags_and_the_named_commands() {
     assert!(stdout.contains("CONFIG_FILE"));
     assert!(stdout.contains("version"));
     for flag in [
-        "--web-http-addr",
+        "--public-http-addr",
         "--telemetry-addr",
-        "--grpc-addr",
+        "--admin-addr",
         "--log-level",
         "--log-format",
     ] {
         assert!(stdout.contains(flag), "help omits {flag}");
     }
     assert!(!stdout.contains("--config "));
-    // One address for the public surface. Whether it is HTTP or HTTPS is `web.tls`, not a second
+    // One address for the public surface. Whether it is HTTP or HTTPS is `public.tls`, not a second
     // flag that used to be accepted and never bound anything.
-    assert!(!stdout.contains("--web-https-addr"));
+    assert!(!stdout.contains("--public-https-addr"));
 }
 
 #[test]
@@ -638,7 +638,7 @@ fn test_unknown_command_fails_with_a_diagnostic_on_standard_error() {
 fn test_generating_material_needs_the_deployment_to_say_it_is_a_development_one() {
     // Two switches rather than one, so a production configuration cannot become a self-signing one
     // by a single variable being set somewhere nobody is looking.
-    let config = ConfigFixture::new("autogenerate-alone", "web:\n  http: 127.0.0.1:0\n");
+    let config = ConfigFixture::new("autogenerate-alone", "public:\n  http: 127.0.0.1:0\n");
     let output = run_with_env(
         &[config.as_arg()],
         &[config.volume(), ("PIC_X_AUTOGENERATE", "true")],
@@ -657,7 +657,7 @@ fn test_an_administrative_surface_the_world_can_reach_needs_a_client_certificate
     // would notice.
     let config = ConfigFixture::new(
         "admin-exposed",
-        "web:\n  http: 127.0.0.1:0\ngrpc:\n  addr: 0.0.0.0:7557\n",
+        "public:\n  http: 127.0.0.1:0\nadmin:\n  addr: 0.0.0.0:7557\n",
     );
     let output = run_with_env(&[config.as_arg()], &[config.volume()]);
 
@@ -667,14 +667,14 @@ fn test_an_administrative_surface_the_world_can_reach_needs_a_client_certificate
         stderr.contains("reachable from outside this host"),
         "{stderr}"
     );
-    assert!(stderr.contains("grpc.tls.client_ca"), "{stderr}");
+    assert!(stderr.contains("admin.tls.client_ca"), "{stderr}");
 }
 
 #[test]
 fn test_the_same_surface_on_loopback_starts() {
     let config = ConfigFixture::new(
         "admin-loopback",
-        "web:\n  http: 127.0.0.1:0\ngrpc:\n  addr: 127.0.0.1:0\n",
+        "public:\n  http: 127.0.0.1:0\nadmin:\n  addr: 127.0.0.1:0\n",
     );
 
     let served = serve(&[config.as_arg()], &[config.volume()]);
@@ -686,7 +686,7 @@ fn test_the_same_surface_on_loopback_starts() {
 fn test_a_trail_this_build_wrote_is_a_trail_this_build_can_check() {
     let config = ConfigFixture::new(
         "audit-verify",
-        "web:\n  http: 127.0.0.1:0\ntelemetry:\n  addr: 127.0.0.1:0\noperations:\n  audit:\n    sink: file\n",
+        "public:\n  http: 127.0.0.1:0\ntelemetry:\n  addr: 127.0.0.1:0\noperations:\n  audit:\n    sink: file\n",
     );
 
     let served = serve(&[config.as_arg()], &[config.volume()]);
@@ -708,7 +708,7 @@ fn test_a_trail_this_build_wrote_is_a_trail_this_build_can_check() {
 fn test_a_trail_somebody_edited_does_not_verify() {
     let config = ConfigFixture::new(
         "audit-tampered",
-        "web:\n  http: 127.0.0.1:0\noperations:\n  audit:\n    sink: file\n",
+        "public:\n  http: 127.0.0.1:0\noperations:\n  audit:\n    sink: file\n",
     );
 
     let served = serve(&[config.as_arg()], &[config.volume()]);

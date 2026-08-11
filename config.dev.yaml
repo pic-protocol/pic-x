@@ -32,17 +32,17 @@ log:
   level: debug
   format: json
 
-web:
+public:
   # Every address is 0.0.0.0 rather than loopback: loopback inside a container means the container,
   # which is not where you are.
   http: 0.0.0.0:7556
-  # The public base; realm issuers derive from it as `{public_url}/realms/<name>`.
-  public_url: http://localhost:7556
+  # The public base; realm issuers derive from it as `{url}/realms/<name>`.
+  url: http://localhost:7556
 
 telemetry:
   addr: 0.0.0.0:7558
 
-grpc:
+admin:
   # Reachable, and authorising nobody. On any other configuration this is refused before anything
   # binds — an administrative surface off loopback without `tls.client_ca` is exactly the mistake the
   # validation exists to stop. `development_mode` is what makes it an allowed choice here, and the
@@ -74,14 +74,16 @@ operations:
 
 # Two example realms — two issuers hosted by one server — so a container run demonstrates the
 # multi-tenant shape. Both listed, so both appear in /.well-known/server-configuration; each derives
-# its issuer from `web.public_url`. Each gets its own token keys, operations keys, trail and
+# its issuer from `public.url`. Each gets its own token keys, operations keys, trail and
 # pseudonymisation key under realms/<name>/, generated on first start. A single-issuer deployment
 # leaves this out. See docs/realms.md.
 realms:
   - name: acme
     listed: true
-    # A realm may override any block; what it omits, it inherits.
+    # Every realm states its own token-signing `keys` (signing policy is not inherited); operations
+    # blocks it omits are inherited.
     keys:
+      publish_ahead: 5m
       rotate_every: 30m
       retain: 12h
     operations:
@@ -89,3 +91,7 @@ realms:
         retention: 30d
   - name: globex
     listed: true
+    keys:
+      publish_ahead: 5m
+      rotate_every: 1h
+      retain: 1d

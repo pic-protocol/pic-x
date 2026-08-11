@@ -170,7 +170,7 @@ impl WellKnownService {
 
         // Mounting under a prefix is for the proxies that forward the path unstripped. The advertised
         // URLs are unaffected: they come from the issuer, which already contains the public path.
-        match config.web_path_prefix() {
+        match config.public_path_prefix() {
             "" => router,
             prefix => Router::new().nest(prefix, router),
         }
@@ -189,17 +189,17 @@ impl Service for WellKnownService {
 
     fn start<'a>(&'a self, context: &'a ServerContext<'a>) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
-            let Some(configured) = context.config().web_http_addr() else {
+            let Some(configured) = context.config().public_http_addr() else {
                 info!(
                     event.name = "wellknown.disabled",
                     component = COMPONENT,
-                    "no web address is configured"
+                    "no public address is configured"
                 );
 
                 return Ok(());
             };
 
-            let secured = context.config().web_tls();
+            let secured = context.config().public_tls();
             let surface = Surface::listener(
                 COMPONENT,
                 configured,

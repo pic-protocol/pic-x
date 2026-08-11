@@ -52,16 +52,16 @@ pub const SETTING_DEVELOPMENT_MODE: &str = "PIC_X_DEVELOPMENT_MODE";
 pub const SETTING_ISSUER: &str = "PIC_X_ISSUER";
 
 /// Runtime setting key for the path the public surface is mounted under.
-pub const SETTING_WEB_PATH_PREFIX: &str = "PIC_X_WEB_PATH_PREFIX";
+pub const SETTING_PUBLIC_PATH_PREFIX: &str = "PIC_X_PUBLIC_PATH_PREFIX";
 
-/// Runtime setting key for the web HTTP listen address.
-pub const SETTING_WEB_HTTP_ADDR: &str = "PIC_X_WEB_HTTP_ADDR";
+/// Runtime setting key for the public HTTP listen address.
+pub const SETTING_PUBLIC_HTTP_ADDR: &str = "PIC_X_PUBLIC_HTTP_ADDR";
 
 /// Runtime setting key for the telemetry listen address.
 pub const SETTING_TELEMETRY_ADDR: &str = "PIC_X_TELEMETRY_ADDR";
 
-/// Runtime setting key for the gRPC listen address.
-pub const SETTING_GRPC_ADDR: &str = "PIC_X_GRPC_ADDR";
+/// Runtime setting key for the admin listen address.
+pub const SETTING_ADMIN_ADDR: &str = "PIC_X_ADMIN_ADDR";
 
 /// Runtime setting keys for the TLS material of each surface.
 ///
@@ -69,33 +69,33 @@ pub const SETTING_GRPC_ADDR: &str = "PIC_X_GRPC_ADDR";
 /// administrative one can demand a client certificate; telemetry cannot, and that is deliberate — it
 /// is scraped by a collector and probed by a kubelet, neither of which should need a client identity
 /// to ask whether the process is alive.
-pub const SETTING_WEB_TLS_CERT: &str = "PIC_X_WEB_TLS_CERT";
-/// Private key of [`SETTING_WEB_TLS_CERT`].
-pub const SETTING_WEB_TLS_KEY: &str = "PIC_X_WEB_TLS_KEY";
+pub const SETTING_PUBLIC_TLS_CERT: &str = "PIC_X_PUBLIC_TLS_CERT";
+/// Private key of [`SETTING_PUBLIC_TLS_CERT`].
+pub const SETTING_PUBLIC_TLS_KEY: &str = "PIC_X_PUBLIC_TLS_KEY";
 /// Authority client certificates on the public surface must be signed by.
-pub const SETTING_WEB_TLS_CLIENT_CA: &str = "PIC_X_WEB_TLS_CLIENT_CA";
+pub const SETTING_PUBLIC_TLS_CLIENT_CA: &str = "PIC_X_PUBLIC_TLS_CLIENT_CA";
 /// Revocation list client certificates on the public surface are checked against.
-pub const SETTING_WEB_TLS_CRL: &str = "PIC_X_WEB_TLS_CRL";
+pub const SETTING_PUBLIC_TLS_CRL: &str = "PIC_X_PUBLIC_TLS_CRL";
 /// Lowest protocol version the public surface accepts.
-pub const SETTING_WEB_TLS_MIN_VERSION: &str = "PIC_X_WEB_TLS_MIN_VERSION";
+pub const SETTING_PUBLIC_TLS_MIN_VERSION: &str = "PIC_X_PUBLIC_TLS_MIN_VERSION";
 
 /// Certificate chain the administrative surface presents.
-pub const SETTING_GRPC_TLS_CERT: &str = "PIC_X_GRPC_TLS_CERT";
-/// Private key of [`SETTING_GRPC_TLS_CERT`].
-pub const SETTING_GRPC_TLS_KEY: &str = "PIC_X_GRPC_TLS_KEY";
+pub const SETTING_ADMIN_TLS_CERT: &str = "PIC_X_ADMIN_TLS_CERT";
+/// Private key of [`SETTING_ADMIN_TLS_CERT`].
+pub const SETTING_ADMIN_TLS_KEY: &str = "PIC_X_ADMIN_TLS_KEY";
 /// Authority client certificates on the administrative surface must be signed by.
-pub const SETTING_GRPC_TLS_CLIENT_CA: &str = "PIC_X_GRPC_TLS_CLIENT_CA";
+pub const SETTING_ADMIN_TLS_CLIENT_CA: &str = "PIC_X_ADMIN_TLS_CLIENT_CA";
 /// Revocation list client certificates on the administrative surface are checked against.
-pub const SETTING_GRPC_TLS_CRL: &str = "PIC_X_GRPC_TLS_CRL";
+pub const SETTING_ADMIN_TLS_CRL: &str = "PIC_X_ADMIN_TLS_CRL";
 /// Lowest protocol version the administrative surface accepts.
-pub const SETTING_GRPC_TLS_MIN_VERSION: &str = "PIC_X_GRPC_TLS_MIN_VERSION";
+pub const SETTING_ADMIN_TLS_MIN_VERSION: &str = "PIC_X_ADMIN_TLS_MIN_VERSION";
 
 /// Runtime setting key for the peers the administrative surface answers.
 ///
 /// One entry per line — see [`AllowedPeer`] for the forms. A newline
 /// rather than a comma because a distinguished name contains commas, and a separator that appears
 /// inside the values it separates is a parser waiting to split somebody's identity in half.
-pub const SETTING_GRPC_ALLOW: &str = "PIC_X_GRPC_ALLOW";
+pub const SETTING_ADMIN_ALLOW: &str = "PIC_X_ADMIN_ALLOW";
 
 /// Certificate chain the telemetry surface presents.
 pub const SETTING_TELEMETRY_TLS_CERT: &str = "PIC_X_TELEMETRY_TLS_CERT";
@@ -377,15 +377,15 @@ pub struct Config {
     autogenerate: bool,
     development_mode: bool,
     issuer: Option<String>,
-    web_path_prefix: String,
-    web_http_addr: Option<String>,
+    public_path_prefix: String,
+    public_http_addr: Option<String>,
     telemetry_addr: Option<String>,
-    grpc_addr: Option<String>,
-    grpc_allow: Vec<AllowedPeer>,
+    admin_addr: Option<String>,
+    admin_allow: Vec<AllowedPeer>,
     log_level: LogLevel,
     log_format: LogFormat,
-    web_tls: Option<TlsSettings>,
-    grpc_tls: Option<TlsSettings>,
+    public_tls: Option<TlsSettings>,
+    admin_tls: Option<TlsSettings>,
     telemetry_tls: Option<TlsSettings>,
     tls_reload: bool,
     tls_reload_interval: Duration,
@@ -406,6 +406,10 @@ pub struct Config {
     keys_rotate_every: Duration,
     keys_retain: Duration,
     keys_maintenance_interval: Duration,
+    // The operations-keys lifecycle settings some layer explicitly declared, as opposed to defaulted.
+    // Signing policy is security: `validate` refuses an enabled ring whose lifecycle was only defaulted,
+    // and the typed `keys_*` fields alone cannot tell a stated value apart from the default it matches.
+    keys_lifecycle_declared: BTreeSet<&'static str>,
     realms: Vec<RealmConfig>,
     declared: BTreeSet<String>,
     declared_values: BTreeMap<String, String>,
@@ -422,15 +426,15 @@ impl Default for Config {
             autogenerate: false,
             development_mode: false,
             issuer: None,
-            web_path_prefix: String::new(),
-            web_http_addr: None,
+            public_path_prefix: String::new(),
+            public_http_addr: None,
             telemetry_addr: None,
-            grpc_addr: None,
-            grpc_allow: Vec::new(),
+            admin_addr: None,
+            admin_allow: Vec::new(),
             log_level: LogLevel::default(),
             log_format: LogFormat::default(),
-            web_tls: None,
-            grpc_tls: None,
+            public_tls: None,
+            admin_tls: None,
             telemetry_tls: None,
             tls_reload: true,
             tls_reload_interval: DEFAULT_TLS_RELOAD_INTERVAL,
@@ -451,6 +455,7 @@ impl Default for Config {
             keys_rotate_every: DEFAULT_KEYS_ROTATE_EVERY,
             keys_retain: DEFAULT_KEYS_RETAIN,
             keys_maintenance_interval: DEFAULT_KEYS_MAINTENANCE_INTERVAL,
+            keys_lifecycle_declared: BTreeSet::new(),
             realms: Vec::new(),
             declared: BTreeSet::new(),
             declared_values: BTreeMap::new(),
@@ -575,28 +580,41 @@ impl Config {
                 .map(|base| format!("{}/realms/{name}", base.trim_end_matches('/')))
         });
 
+        // The token ring is on by default — a realm is an issuer — but its lifecycle is **not**
+        // inherited from anything: signing-key policy is security, so a realm that signs tokens must
+        // state its own `keys` block explicitly. It does not borrow the operations cadence, which
+        // rotates a *different* key for a *different* purpose.
+        let token_keys_enabled = match input.token_keys_enabled {
+            Some(value) => parse_bool(&value)
+                .with_context(|| format!("reading `keys.enabled` for the realm `{name}`"))?,
+            None => true,
+        };
+        let require_token = |value: Option<String>, field: &str| -> Result<Duration> {
+            match value {
+                Some(value) => parse_duration(&value)
+                    .with_context(|| format!("reading `keys.{field}` for the realm `{name}`")),
+                None if !token_keys_enabled => Ok(Duration::ZERO),
+                None => bail!(
+                    "the realm `{name}` signs tokens but declares no `keys.{field}`: a signing-key \
+                     lifecycle has to be stated, this build does not default one. Set the realm's \
+                     `keys.publish_ahead`, `keys.rotate_every` and `keys.retain`, or `keys.enabled: \
+                     false` if it issues nothing"
+                ),
+            }
+        };
+        let token_keys_publish_ahead =
+            require_token(input.token_keys_publish_ahead, "publish_ahead")?;
+        let token_keys_rotate_every = require_token(input.token_keys_rotate_every, "rotate_every")?;
+        let token_keys_retain = require_token(input.token_keys_retain, "retain")?;
+
         Ok(RealmConfig {
             mount_path,
             issuer,
             listed,
-            // The token ring is on by default — a realm is an issuer — and its cadence inherits the
-            // shared operations cadence unless the realm's own `keys` block overrides it.
-            token_keys_enabled: inherit_bool(input.token_keys_enabled, true, "keys.enabled")?,
-            token_keys_publish_ahead: inherit_duration(
-                input.token_keys_publish_ahead,
-                self.keys_publish_ahead,
-                "keys.publish_ahead",
-            )?,
-            token_keys_rotate_every: inherit_duration(
-                input.token_keys_rotate_every,
-                self.keys_rotate_every,
-                "keys.rotate_every",
-            )?,
-            token_keys_retain: inherit_duration(
-                input.token_keys_retain,
-                self.keys_retain,
-                "keys.retain",
-            )?,
+            token_keys_enabled,
+            token_keys_publish_ahead,
+            token_keys_rotate_every,
+            token_keys_retain,
             // The operations ring inherits the shared `operations` block unless the realm overrides it.
             operations_keys_enabled: inherit_bool(
                 input.operations_keys_enabled,
@@ -655,10 +673,10 @@ impl Config {
     /// Validation runs after every layer has been applied, so a command-line override can satisfy a
     /// requirement the configuration file left out.
     pub fn validate(&self) -> Result<()> {
-        if self.web_http_addr.is_none() {
+        if self.public_http_addr.is_none() {
             bail!(
-                "the configuration defines no web listen address: set `web.http`, or pass \
-                 --web-http-addr"
+                "the configuration defines no public listen address: set `public.http`, or pass \
+                 --public-http-addr"
             );
         }
 
@@ -684,16 +702,16 @@ impl Config {
             }
         }
 
-        if !self.web_path_prefix.is_empty() && !self.web_path_prefix.starts_with('/') {
+        if !self.public_path_prefix.is_empty() && !self.public_path_prefix.starts_with('/') {
             bail!(
-                "the web path prefix {} does not start with a slash",
-                self.web_path_prefix
+                "the public path prefix {} does not start with a slash",
+                self.public_path_prefix
             );
         }
 
         for (surface, tls) in [
-            ("web", self.web_tls.as_ref()),
-            ("gRPC", self.grpc_tls.as_ref()),
+            ("public", self.public_tls.as_ref()),
+            ("admin", self.admin_tls.as_ref()),
             ("telemetry", self.telemetry_tls.as_ref()),
         ] {
             if let Some(tls) = tls {
@@ -757,11 +775,11 @@ impl Config {
     /// administration to every client that authority ever signed — which, for the authority that
     /// also issues ordinary service certificates, is usually all of them.
     fn validate_admin_access(&self) -> Result<()> {
-        let Some(address) = self.grpc_addr() else {
+        let Some(address) = self.admin_addr() else {
             return Ok(());
         };
 
-        let mutual = self.grpc_tls.as_ref().is_some_and(TlsSettings::is_mutual);
+        let mutual = self.admin_tls.as_ref().is_some_and(TlsSettings::is_mutual);
 
         if !mutual {
             if is_loopback(address) || self.development_mode {
@@ -770,15 +788,15 @@ impl Config {
 
             bail!(
                 "the administrative surface is bound to {address}, which is reachable from outside \
-                 this host, and demands no client certificate: set `grpc.tls.client_ca`, bind it to \
+                 this host, and demands no client certificate: set `admin.tls.client_ca`, bind it to \
                  a loopback address, or say `development_mode: true`"
             );
         }
 
-        if self.grpc_allow.is_empty() && !self.development_mode {
+        if self.admin_allow.is_empty() && !self.development_mode {
             bail!(
                 "the administrative surface demands a client certificate but names nobody: list the \
-                 peers that may administer it under `grpc.allow`, because a certificate authority \
+                 peers that may administer it under `admin.allow`, because a certificate authority \
                  signs every client it was built for and mutual TLS alone would admit all of them"
             );
         }
@@ -793,6 +811,21 @@ impl Config {
     fn validate_key_lifecycle(&self) -> Result<()> {
         if !self.keys_enabled {
             return Ok(());
+        }
+
+        // Signing-key policy is security, so it must be stated, not defaulted: with the operations
+        // ring enabled, its lifecycle has to have been declared by some layer.
+        for (setting, field) in [
+            (SETTING_KEYS_PUBLISH_AHEAD, "publish_ahead"),
+            (SETTING_KEYS_ROTATE_EVERY, "rotate_every"),
+            (SETTING_KEYS_RETAIN, "retain"),
+        ] {
+            if !self.keys_lifecycle_declared.contains(setting) {
+                bail!(
+                    "the operations keys are enabled but `operations.keys.{field}` is not set: a \
+                     signing-key lifecycle has to be stated, this build does not default one"
+                );
+            }
         }
 
         self.check_key_lifecycle(
@@ -981,8 +1014,8 @@ impl Config {
     /// Empty is a real answer and not a missing one: it means nobody is on the list, which
     /// [`Config::validate`] refuses outside development because mutual TLS on its own authorises
     /// every client the authority ever signed.
-    pub fn grpc_allow(&self) -> &[AllowedPeer] {
-        &self.grpc_allow
+    pub fn admin_allow(&self) -> &[AllowedPeer] {
+        &self.admin_allow
     }
 
     /// Reports whether transport material is re-read while the server runs.
@@ -1014,8 +1047,8 @@ impl Config {
     /// Almost always empty. A proxy that serves this deployment under a path strips that path before
     /// forwarding, which is one line of proxy configuration and leaves the process serving the root.
     /// This exists for the proxies that do not strip, and setting it is a deliberate act.
-    pub fn web_path_prefix(&self) -> &str {
-        &self.web_path_prefix
+    pub fn public_path_prefix(&self) -> &str {
+        &self.public_path_prefix
     }
 
     /// Returns the absolute URL a client should use for `path`, when an issuer says what that is.
@@ -1029,9 +1062,9 @@ impl Config {
         }
     }
 
-    /// Returns the effective web HTTP listen address, when one is configured.
-    pub fn web_http_addr(&self) -> Option<&str> {
-        self.web_http_addr.as_deref()
+    /// Returns the effective public HTTP listen address, when one is configured.
+    pub fn public_http_addr(&self) -> Option<&str> {
+        self.public_http_addr.as_deref()
     }
 
     /// Returns the effective telemetry listen address, when one is configured.
@@ -1039,9 +1072,9 @@ impl Config {
         self.telemetry_addr.as_deref()
     }
 
-    /// Returns the effective gRPC listen address, when one is configured.
-    pub fn grpc_addr(&self) -> Option<&str> {
-        self.grpc_addr.as_deref()
+    /// Returns the effective admin listen address, when one is configured.
+    pub fn admin_addr(&self) -> Option<&str> {
+        self.admin_addr.as_deref()
     }
 
     /// Returns how much this build says.
@@ -1055,13 +1088,13 @@ impl Config {
     }
 
     /// Returns the TLS material of the public surface, with its paths already resolved.
-    pub fn web_tls(&self) -> Option<TlsSettings> {
-        self.resolved_tls(self.web_tls.as_ref())
+    pub fn public_tls(&self) -> Option<TlsSettings> {
+        self.resolved_tls(self.public_tls.as_ref())
     }
 
     /// Returns the TLS material of the administrative surface, with its paths already resolved.
-    pub fn grpc_tls(&self) -> Option<TlsSettings> {
-        self.resolved_tls(self.grpc_tls.as_ref())
+    pub fn admin_tls(&self) -> Option<TlsSettings> {
+        self.resolved_tls(self.admin_tls.as_ref())
     }
 
     /// Returns the TLS material of the telemetry surface, with its paths already resolved.
@@ -1269,9 +1302,9 @@ impl Config {
     /// The listen addresses the assembled config actually declares, labelled for diagnostics.
     fn declared_addresses(&self) -> Vec<(&'static str, &str)> {
         [
-            ("web", self.web_http_addr()),
+            ("public", self.public_http_addr()),
             ("telemetry", self.telemetry_addr()),
-            ("gRPC", self.grpc_addr()),
+            ("admin", self.admin_addr()),
         ]
         .into_iter()
         .filter_map(|(label, addr)| addr.map(|addr| (label, addr)))
@@ -1330,25 +1363,25 @@ impl Config {
             self.issuer = Some(value.trim_end_matches('/').to_owned());
         }
 
-        if let Some(value) = settings.get(SETTING_WEB_PATH_PREFIX) {
-            self.web_path_prefix = value.trim_end_matches('/').to_owned();
+        if let Some(value) = settings.get(SETTING_PUBLIC_PATH_PREFIX) {
+            self.public_path_prefix = value.trim_end_matches('/').to_owned();
         }
 
-        if let Some(value) = settings.get(SETTING_WEB_HTTP_ADDR) {
-            self.web_http_addr = Some(value.clone());
+        if let Some(value) = settings.get(SETTING_PUBLIC_HTTP_ADDR) {
+            self.public_http_addr = Some(value.clone());
         }
 
         if let Some(value) = settings.get(SETTING_TELEMETRY_ADDR) {
             self.telemetry_addr = Some(value.clone());
         }
 
-        if let Some(value) = settings.get(SETTING_GRPC_ADDR) {
-            self.grpc_addr = Some(value.clone());
+        if let Some(value) = settings.get(SETTING_ADMIN_ADDR) {
+            self.admin_addr = Some(value.clone());
         }
 
-        if let Some(value) = settings.get(SETTING_GRPC_ALLOW) {
-            self.grpc_allow =
-                parse_allowed(value).with_context(|| format!("reading {SETTING_GRPC_ALLOW}"))?;
+        if let Some(value) = settings.get(SETTING_ADMIN_ALLOW) {
+            self.admin_allow =
+                parse_allowed(value).with_context(|| format!("reading {SETTING_ADMIN_ALLOW}"))?;
         }
 
         if let Some(value) = settings.get(SETTING_LOG_LEVEL) {
@@ -1363,24 +1396,24 @@ impl Config {
                 .with_context(|| format!("reading {SETTING_LOG_FORMAT}"))?;
         }
 
-        self.web_tls = tls_of(
+        self.public_tls = tls_of(
             &settings,
-            SETTING_WEB_TLS_CERT,
-            SETTING_WEB_TLS_KEY,
-            Some(SETTING_WEB_TLS_CLIENT_CA),
-            Some(SETTING_WEB_TLS_CRL),
-            SETTING_WEB_TLS_MIN_VERSION,
-            self.web_tls.take(),
+            SETTING_PUBLIC_TLS_CERT,
+            SETTING_PUBLIC_TLS_KEY,
+            Some(SETTING_PUBLIC_TLS_CLIENT_CA),
+            Some(SETTING_PUBLIC_TLS_CRL),
+            SETTING_PUBLIC_TLS_MIN_VERSION,
+            self.public_tls.take(),
         )?;
 
-        self.grpc_tls = tls_of(
+        self.admin_tls = tls_of(
             &settings,
-            SETTING_GRPC_TLS_CERT,
-            SETTING_GRPC_TLS_KEY,
-            Some(SETTING_GRPC_TLS_CLIENT_CA),
-            Some(SETTING_GRPC_TLS_CRL),
-            SETTING_GRPC_TLS_MIN_VERSION,
-            self.grpc_tls.take(),
+            SETTING_ADMIN_TLS_CERT,
+            SETTING_ADMIN_TLS_KEY,
+            Some(SETTING_ADMIN_TLS_CLIENT_CA),
+            Some(SETTING_ADMIN_TLS_CRL),
+            SETTING_ADMIN_TLS_MIN_VERSION,
+            self.admin_tls.take(),
         )?;
 
         self.telemetry_tls = tls_of(
@@ -1506,16 +1539,21 @@ impl Config {
         if let Some(value) = settings.get(SETTING_KEYS_PUBLISH_AHEAD) {
             self.keys_publish_ahead = parse_duration(value)
                 .with_context(|| format!("reading {SETTING_KEYS_PUBLISH_AHEAD}"))?;
+            self.keys_lifecycle_declared
+                .insert(SETTING_KEYS_PUBLISH_AHEAD);
         }
 
         if let Some(value) = settings.get(SETTING_KEYS_ROTATE_EVERY) {
             self.keys_rotate_every = parse_duration(value)
                 .with_context(|| format!("reading {SETTING_KEYS_ROTATE_EVERY}"))?;
+            self.keys_lifecycle_declared
+                .insert(SETTING_KEYS_ROTATE_EVERY);
         }
 
         if let Some(value) = settings.get(SETTING_KEYS_RETAIN) {
             self.keys_retain =
                 parse_duration(value).with_context(|| format!("reading {SETTING_KEYS_RETAIN}"))?;
+            self.keys_lifecycle_declared.insert(SETTING_KEYS_RETAIN);
         }
 
         if let Some(value) = settings.get(SETTING_KEYS_MAINTENANCE_INTERVAL) {
