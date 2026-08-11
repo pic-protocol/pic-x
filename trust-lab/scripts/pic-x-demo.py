@@ -50,6 +50,8 @@ def main() -> int:
     print_dim("A short local run through IdP, PIC-X and the public trust API.")
     print_dim("No cloud account. No TLS ceremony. Just the path we will extend into exchange.")
     print()
+    print_flow_map()
+    print()
 
     try:
         print_step("1", f"Checking lab services (up to {WAIT_SECONDS:g}s)")
@@ -81,9 +83,10 @@ def main() -> int:
 
         print_step("4", "What this proves")
         print_bullet("Keycloak is issuing a real local OIDC token.")
-        print_bullet("Trust Lab is a plain public API with no authorization yet.")
+        print_bullet("The trust dependencies are reachable from the local lab.")
         print_bullet("PIC-X is running from the local source image with config.lab.yaml.")
-        print_bullet("The next demo step can exchange this token through PIC-X.")
+        print_bullet("The next demo step can exchange this token with PCA.")
+        print_bullet("Then we can propagate across nodes and emit relationship/continuity proofs.")
         print()
         print_success("Demo complete.")
         return 0
@@ -205,6 +208,47 @@ def print_banner(title: str) -> None:
     print(paint(label, "bold_cyan"))
     print(paint("-" * len(label), "cyan"))
     print_dim("local | docker compose | example IdP | public API")
+
+
+def print_flow_map() -> None:
+    print(paint("Flow map", "bold"))
+    print(paint("--------", "cyan"))
+    print(f"  {paint('current demo', 'cyan')}")
+    print("  +----------------+   password grant    +------------------------+")
+    print(
+        f"  | {flow_cell('lab-demo', 14, 'bold')} | -------------------> "
+        f"| {flow_cell('Keycloak example IdP', 22, 'bold')} |"
+    )
+    print(
+        f"  | {flow_cell('local script', 14)} | <------------------- "
+        f"| {flow_cell('localhost:18080', 22)} |"
+    )
+    print("  +----------------+    access token      +------------------------+")
+    print("          |")
+    print("          +---- discovery check --------> +------------------------+")
+    print(
+        f"          |                               | "
+        f"{flow_cell('PIC-X localhost:17556', 22, 'bold')} |"
+    )
+    print("          |                               +------------------------+")
+    print("          |")
+    print("          +---- verify trust deps -------> +------------------------+")
+    print(
+        f"                                          | "
+        f"{flow_cell('Trust Lab public API', 22, 'bold')} |"
+    )
+    print(f"                                          | {flow_cell('localhost:17080', 22)} |")
+    print(f"                                          | {flow_cell('no auth yet', 22)} |")
+    print("                                          +------------------------+")
+    print()
+    print(f"  {paint('target flow', 'yellow')}")
+    print("  Keycloak token -> PCA exchange -> node A -> node B -> node C")
+    print("     each node emits Proof of Relationship + Proof of Continuity")
+
+
+def flow_cell(text: str, width: int, color: str = "") -> str:
+    value = paint(text, color) if color else text
+    return value + (" " * max(width - len(text), 0))
 
 
 def print_step(number: str, title: str) -> None:

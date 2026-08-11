@@ -88,8 +88,9 @@ task lab-demo
 task lab-down
 ```
 
-The demo checks that the three services are reachable, gets a token from the example IdP and prints
-the next step the exchange flow will grow into. It uses terminal colors automatically; set
+The demo starts with an ASCII flow map, checks that the three services are reachable, gets a token
+from the example IdP and prints the next step the exchange flow will grow into. It uses terminal
+colors automatically; set
 `LAB_DEMO_COLOR=never` if you need plain output. A healthy run starts like this:
 
 ```text
@@ -97,10 +98,35 @@ the next step the exchange flow will grow into. It uses terminal colors automati
 -----------------------------
 local | docker compose | example IdP | public API
 
+A short local run through IdP, PIC-X and the public trust API.
+No cloud account. No TLS ceremony. Just the path we will extend into exchange.
+
+Flow map
+--------
+  current demo
+  +----------------+   password grant    +------------------------+
+  | lab-demo       | -------------------> | Keycloak example IdP   |
+  | local script   | <------------------- | localhost:18080        |
+  +----------------+    access token      +------------------------+
+          |
+          +---- discovery check --------> +------------------------+
+          |                               | PIC-X localhost:17556  |
+          |                               +------------------------+
+          |
+          +---- verify trust deps -------> +------------------------+
+                                          | Trust Lab public API   |
+                                          | localhost:17080        |
+                                          | no auth yet            |
+                                          +------------------------+
+
+  target flow
+  Keycloak token -> PCA exchange -> node A -> node B -> node C
+     each node emits Proof of Relationship + Proof of Continuity
+
 [1] Checking lab services (up to 30s)
-    ok  Keycloak IdP: http://localhost:18080/realms/acme-idp
-    ok  Trust Lab API: public trust lab API
-    ok  PIC-X public API: PIC-X 0.1.0
+    OK  Keycloak IdP: http://localhost:18080/realms/acme-idp
+    OK  Trust Lab API: public trust lab API
+    OK  PIC-X public API: PIC-X 0.1.0
 
 [2] Requesting a token from the example IdP
     realm: acme-idp
