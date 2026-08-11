@@ -63,7 +63,7 @@ The ports are separate so administration is not accidentally exposed through the
 | --- | --- |
 | Start locally, with TLS, or with production validation | [docs/start-server.md](docs/start-server.md) |
 | Run the image and understand the volume | [docs/docker.md](docs/docker.md) |
-| Generate local OIDC tokens with Keycloak | [docs/keycloak.md](docs/keycloak.md) |
+| Run the local Keycloak and public REST lab | [docs/keycloak.md](docs/keycloak.md) |
 | Verify and operate the audit trail | [docs/audit.md](docs/audit.md) |
 | Back up and restore the volume | [docs/backup-and-restore.md](docs/backup-and-restore.md) |
 | Use the Taskfile shortcuts | [docs/tasks.md](docs/tasks.md) |

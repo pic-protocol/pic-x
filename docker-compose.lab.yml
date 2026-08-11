@@ -16,3 +16,13 @@ services:
       - "127.0.0.1:${KEYCLOAK_MANAGEMENT_PORT:-19000}:9000"
     volumes:
       - ./dev/keycloak/acme-idp-realm.json:/opt/keycloak/data/import/acme-idp-realm.json:ro
+
+  trust-lab:
+    build:
+      context: ./trust-lab
+    environment:
+      TRUST_LAB_BIND_ADDR: 0.0.0.0:7080
+    ports:
+      - "127.0.0.1:${TRUST_LAB_HTTP_PORT:-17080}:7080"
+    depends_on:
+      - keycloak

@@ -274,24 +274,25 @@ tasks:
         --all-targets --all-features {{.ARGS}} -- -D warnings
 
   lab-up:
-    desc: Start the local Keycloak Docker Compose lab.
+    desc: Start the local Docker Compose lab.
     silent: true
     summary: |
-      Start the local Keycloak compose stack. It imports the `acme-idp` example IdP realm from
-      dev/keycloak/acme-idp-realm.json and exposes Keycloak on localhost:18080.
+      Start the local compose stack. It imports the `acme-idp` example IdP realm into Keycloak,
+      exposes Keycloak on localhost:18080 and builds the local trust-lab REST service on
+      localhost:17080.
 
       Examples:
         task lab-up
 
-      See docs/keycloak.md for credentials and token-generation commands.
+      See docs/keycloak.md for credentials and lab commands.
     cmds:
       - docker compose -f docker-compose.lab.yml up -d
 
   lab-down:
-    desc: Stop the local Keycloak Docker Compose lab.
+    desc: Stop the local Docker Compose lab.
     silent: true
     summary: |
-      Stop and remove the local Keycloak compose stack.
+      Stop and remove the local compose stack.
 
       Examples:
         task lab-down
