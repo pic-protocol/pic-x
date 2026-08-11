@@ -85,7 +85,7 @@ def main() -> int:
         print_bullet("Keycloak is issuing a real local OIDC token.")
         print_bullet("The trust dependencies are reachable from the local lab.")
         print_bullet("PIC-X is running from the local source image with config.lab.yaml.")
-        print_bullet("The next demo step can exchange this token with PCA.")
+        print_bullet("The next demo step can exchange this token with pic_context_of_authority.")
         print_bullet("Then we can propagate across nodes and emit relationship/continuity proofs.")
         print()
         print_success("Demo complete.")
@@ -242,7 +242,8 @@ def print_flow_map() -> None:
     print("                                          +------------------------+")
     print()
     print(f"  {paint('target flow', 'yellow')}")
-    print("  Keycloak token -> PCA exchange -> node A -> node B -> node C")
+    print("  Keycloak token -> pic_context_of_authority exchange")
+    print("     -> node A -> node B -> node C")
     print("     each node emits Proof of Relationship + Proof of Continuity")
 
 

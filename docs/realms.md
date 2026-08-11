@@ -57,6 +57,9 @@ discovery document roots its endpoints (`token_endpoint`, `jwks_uri`) at the rea
 the token surface is advertised — this deployment hosts no revocation, attestation or trust-anchor
 endpoints.
 
+The realm discovery document exposes PIC-specific capability blocks under
+`pic_context_of_authority`, `pic_continuity_proposals`, and `pic_continuity`.
+
 The server document is a generic envelope over a `profiles` array — today one entry, the PIC profile
 `https://pic-protocol.org/profiles/0.2`, carrying the realms. A future profile is another entry, not
 a new shape.

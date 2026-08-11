@@ -120,7 +120,8 @@ Flow map
                                           +------------------------+
 
   target flow
-  Keycloak token -> PCA exchange -> node A -> node B -> node C
+  Keycloak token -> pic_context_of_authority exchange
+     -> node A -> node B -> node C
      each node emits Proof of Relationship + Proof of Continuity
 
 [1] Checking lab services (up to 30s)
@@ -200,7 +201,6 @@ checks and the test suite.
 Articles:
 
 - [PIC-X: From Specification to Architecture](https://www.ngallo.it/blog/2026-08-01/pic-x-from-spec-to-arch/)
-- [PIC-X: Exchanging Tokens to PCA](https://www.ngallo.it/blog/2026-08-01/pic-x-exchanging-token-to-pca/)
 - [PIC-X: Well-Known Configuration](https://www.ngallo.it/blog/2026-08-01/pic-x-well-known-config/)
 
 ## License

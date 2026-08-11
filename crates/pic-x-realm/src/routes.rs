@@ -132,29 +132,29 @@ struct Discovery {
     issued_token_types_supported: &'static [&'static str],
     token_endpoint_auth_methods_supported: &'static [&'static str],
     token_exchange_parameters_supported: &'static [&'static str],
-    pca: Pca,
-    continuity_proposals: ContinuityProposals,
-    continuity: Continuity,
+    pic_context_of_authority: PicContextOfAuthority,
+    pic_continuity_proposals: PicContinuityProposals,
+    pic_continuity: PicContinuity,
 }
 
-/// The PCA capabilities block of the discovery document.
+/// The PIC context-of-authority capabilities block of the discovery document.
 #[derive(Serialize)]
-struct Pca {
+struct PicContextOfAuthority {
     format: &'static str,
     execution_contract_binding_methods_supported: &'static [&'static str],
 }
 
-/// The continuity-proposal parameters block of the discovery document.
+/// The PIC continuity-proposal parameters block of the discovery document.
 #[derive(Serialize)]
-struct ContinuityProposals {
+struct PicContinuityProposals {
     parameter: &'static str,
     type_parameter: &'static str,
     types_supported: &'static [&'static str],
 }
 
-/// The continuity-token capabilities block of the discovery document.
+/// The PIC continuity-token capabilities block of the discovery document.
 #[derive(Serialize)]
-struct Continuity {
+struct PicContinuity {
     token_type: &'static str,
     transition_signing_alg_values_supported: &'static [&'static str],
     formats_supported: &'static [&'static str],
@@ -338,12 +338,12 @@ pub(crate) async fn realm_configuration(State(realm): State<RealmMeta>) -> impl 
 
         token_exchange_parameters_supported: &["continuity_proposal", "continuity_proposal_type"],
 
-        pca: Pca {
+        pic_context_of_authority: PicContextOfAuthority {
             format: "json",
             execution_contract_binding_methods_supported: &["embedded"],
         },
 
-        continuity_proposals: ContinuityProposals {
+        pic_continuity_proposals: PicContinuityProposals {
             parameter: "continuity_proposal",
             type_parameter: "continuity_proposal_type",
             types_supported: &[
@@ -352,7 +352,7 @@ pub(crate) async fn realm_configuration(State(realm): State<RealmMeta>) -> impl 
             ],
         },
 
-        continuity: Continuity {
+        pic_continuity: PicContinuity {
             token_type: "https://pic-protocol.org/definitions/token-types/continuity",
             // EdDSA to match the token ring this build signs with. A profile that mandates ES256 gets
             // it when real issuance lands and the ring gains an EC algorithm.

@@ -237,6 +237,8 @@ async fn test_a_realm_serves_its_own_discovery_and_keys_at_its_path() {
     .await;
 
     assert_eq!(status, StatusCode::OK);
+    let discovery: serde_json::Value =
+        serde_json::from_str(&document).expect("the discovery document is JSON");
     assert!(
         document.contains(r#""issuer":"https://acme.example.com""#),
         "{document}"
@@ -271,6 +273,22 @@ async fn test_a_realm_serves_its_own_discovery_and_keys_at_its_path() {
         document.contains("urn:ietf:params:oauth:grant-type:token-exchange"),
         "{document}"
     );
+    for required in [
+        "pic_context_of_authority",
+        "pic_continuity_proposals",
+        "pic_continuity",
+    ] {
+        assert!(
+            discovery.get(required).is_some(),
+            "{required} should be advertised: {document}"
+        );
+    }
+    for old_name in ["pca", "continuity_proposals", "continuity"] {
+        assert!(
+            discovery.get(old_name).is_none(),
+            "{old_name} should not be advertised anymore: {document}"
+        );
+    }
 
     // Its key set is reachable at `{issuer}/keys`. This test realm has no token ring, so it is empty;
     // a realm with token keys enabled publishes them here.
