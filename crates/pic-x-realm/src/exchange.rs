@@ -23,7 +23,7 @@ use pic::continuity::authority::{
 };
 use pic::continuity::cose::{CoseError, SigningAlgorithm};
 use pic::continuity::proposal::InitialContinuityProposal;
-use pic::continuity::trust::ArtifactSigner;
+use pic::continuity::trust::{ArtifactSigner, ArtifactVerifier};
 use pic::continuity::verifier::{SettlementAuthority, SettlementContext, issue_settled};
 use regex::{Captures, Regex};
 use ring::rand::{SecureRandom, SystemRandom};
@@ -31,6 +31,7 @@ use serde::Serialize;
 use serde_json::Value;
 use tracing::{info, warn};
 
+use pic_x_core::audit::{AuditEvent, Subject};
 use pic_x_core::{
     ClaimMapping, EXCHANGE_ON_UNMATCHED_SCOPE_REJECT, EXCHANGE_SOURCE_OAUTH_ACCESS_TOKEN,
     ExchangeProfileConfig, KeyManager, OAUTH_ACCESS_TOKEN_TYPE, Realm,
@@ -40,7 +41,9 @@ use crate::COMPONENT;
 use crate::attester_keys::AttesterKeyCache;
 use crate::checkpoints::{NoRevocationConfigured, RealmSignedCheckpoints};
 use crate::conformance::ContractConformance;
+use crate::idp_keys::IdpKeyCache;
 use crate::por::SdJwtPorValidator;
+use crate::por::public_key_from_jwk;
 
 const GRANT_TOKEN_EXCHANGE: &str = "urn:ietf:params:oauth:grant-type:token-exchange";
 const TOKEN_TYPE_N_A: &str = "N_A";
@@ -53,9 +56,10 @@ const DEFAULT_TOKEN_LIFETIME: i64 = 3_600;
 #[derive(Clone)]
 pub(crate) struct TokenEndpoint {
     pub(crate) realm: Realm,
-    pub(crate) development_mode: bool,
     /// The attester key sets backing Proof-of-Relationship validation.
     pub(crate) attester_keys: Arc<AttesterKeyCache>,
+    /// The identity-provider key sets backing access-token verification.
+    pub(crate) idp_keys: Arc<IdpKeyCache>,
 }
 
 /// RFC 8693 token-exchange response carrying a PIC Token JWT.
@@ -143,14 +147,14 @@ impl ExchangeError {
 
 /// The realm's token endpoint.
 pub(crate) async fn token(State(endpoint): State<TokenEndpoint>, body: Bytes) -> Response {
-    match endpoint.exchange(body) {
+    match endpoint.exchange(body).await {
         Ok(response) => response,
         Err(error) => error.response(),
     }
 }
 
 impl TokenEndpoint {
-    fn exchange(&self, body: Bytes) -> Result<Response, ExchangeError> {
+    async fn exchange(&self, body: Bytes) -> Result<Response, ExchangeError> {
         let form = parse_form(&body)?;
 
         require(&form, "grant_type").and_then(|grant| {
@@ -175,7 +179,7 @@ impl TokenEndpoint {
         let subject_token = require(&form, "subject_token")?;
 
         match subject_token_type {
-            OAUTH_ACCESS_TOKEN_TYPE => self.exchange_initial(subject_token, &form),
+            OAUTH_ACCESS_TOKEN_TYPE => self.exchange_initial(subject_token, &form).await,
             value if value == pic::continuity::TOKEN_TYPE_PIC => {
                 if form.contains_key("continuity_proposal")
                     || form.contains_key("continuity_proposal_type")
@@ -184,7 +188,7 @@ impl TokenEndpoint {
                         "Profile 0.2 PIC-to-PIC advancement omits continuity_proposal",
                     ));
                 }
-                self.advance(subject_token)
+                self.advance(subject_token).await
             }
             value => Err(ExchangeError::unsupported_token_type(format!(
                 "unsupported subject_token_type `{value}`"
@@ -192,7 +196,7 @@ impl TokenEndpoint {
         }
     }
 
-    fn exchange_initial(
+    async fn exchange_initial(
         &self,
         access_token: &str,
         form: &BTreeMap<String, String>,
@@ -256,6 +260,19 @@ impl TokenEndpoint {
             ExchangeError::server_error(format!("could not issue PIC Token JWT: {error}"))
         })?;
 
+        // Recorded before the token leaves: authority that reached a caller with no durable trace
+        // of who obtained it is exactly what a continuity system must not produce.
+        self.record(
+            AuditEvent::new(
+                "pic.exchange.initialized",
+                jwt.claim_string("sub")
+                    .as_deref()
+                    .map_or(Subject::Anonymous, Subject::Principal),
+            )
+            .on(&profile.id),
+        )
+        .await?;
+
         Ok(Json(TokenExchangeResponse {
             access_token: issued.token,
             issued_token_type: pic::continuity::TOKEN_TYPE_PIC,
@@ -270,7 +287,7 @@ impl TokenEndpoint {
     /// Every check belongs to the protocol crate's settlement procedure; what this realm supplies is
     /// the deployment boundary — which attesters it trusts, which checkpoints it accepts, its
     /// revocation and policy, and its signing key.
-    fn advance(&self, candidate_token: &str) -> Result<Response, ExchangeError> {
+    async fn advance(&self, candidate_token: &str) -> Result<Response, ExchangeError> {
         let now = unix_now()?;
         let keys = self.realm.token_keys().map(Arc::clone).ok_or_else(|| {
             ExchangeError::temporarily_unavailable(
@@ -431,32 +448,104 @@ impl TokenEndpoint {
             }
         }
 
-        if !self.development_mode {
+        // Everything above read the token; this is where it becomes trustworthy. There is no
+        // development shortcut: a token whose signature was never checked is indistinguishable from
+        // one an attacker wrote, and deriving PIC authority from it would make every check that
+        // follows meaningless.
+        self.verify_source_signature(jwt, profile)
+    }
+
+    /// Verifies the access token against the key set its identity provider publishes.
+    fn verify_source_signature(
+        &self,
+        jwt: &DecodedJwt,
+        profile: &ExchangeProfileConfig,
+    ) -> Result<(), ExchangeError> {
+        let published = self.idp_keys.keys_for(&profile.id).map_err(|error| {
+            // Not "invalid token": this realm cannot decide, and says so with a status a client
+            // can retry against.
+            ExchangeError::temporarily_unavailable(format!(
+                "the key set of the identity provider for exchange profile `{}` is unavailable:                  {error}",
+                profile.id
+            ))
+        })?;
+
+        let algorithm = jwt.header_string("alg").ok_or_else(|| {
+            ExchangeError::invalid_grant("source access token header has no `alg`")
+        })?;
+        let key_id = jwt.header_string("kid");
+
+        // A `kid` narrows the candidates; without one, every published key is tried, which is what
+        // keeps provider key rotation transparent.
+        let candidates: Vec<&Value> = published
+            .iter()
+            .filter(|jwk| match &key_id {
+                Some(wanted) => jwk.get("kid").and_then(Value::as_str) == Some(wanted.as_str()),
+                None => true,
+            })
+            .collect();
+        if candidates.is_empty() {
             return Err(ExchangeError::invalid_grant(
-                "source JWT signature verification is not configured yet for this build",
+                "no published identity-provider key matches the token `kid`",
             ));
         }
-        warn!(
-            event.name = "token_exchange.source_signature_skipped",
-            component = COMPONENT,
-            realm = self.realm.name(),
-            exchange_profile = profile.id,
-            "development mode accepted a source JWT after structural validation only"
-        );
 
-        Ok(())
+        for jwk in candidates {
+            // The key must be published for the algorithm the token claims, so a token cannot ask
+            // for a weaker one than the provider stands behind.
+            if jwk
+                .get("alg")
+                .and_then(Value::as_str)
+                .is_some_and(|published| published != algorithm)
+            {
+                continue;
+            }
+            let Ok(key) = public_key_from_jwk(jwk) else {
+                continue;
+            };
+            if ArtifactVerifier::verify(&key, jwt.signing_input.as_bytes(), &jwt.signature) {
+                return Ok(());
+            }
+        }
+
+        Err(ExchangeError::invalid_grant(
+            "the source access token signature does not verify against the identity provider key set",
+        ))
+    }
+
+    /// Writes one record, and refuses the exchange if it cannot be written.
+    ///
+    /// Synchronous on purpose. Handing the record to a background task and answering immediately
+    /// would lose precisely the record of a crash, which is the one worth having; and authority
+    /// that reached a caller with no durable trace of who obtained it is what a continuity system
+    /// must not produce. The cost is one local append on the issuing path.
+    async fn record(&self, event: AuditEvent<'_>) -> Result<(), ExchangeError> {
+        let pseudonymizer = self.realm.pseudonymizer().map(Arc::as_ref);
+
+        self.realm
+            .audit()
+            .record(&event, pseudonymizer)
+            .await
+            .map_err(|error| {
+                ExchangeError::server_error(format!(
+                    "the exchange was not recorded, so no token was issued: {error}"
+                ))
+            })
     }
 }
 
 struct DecodedJwt {
     header: Value,
     payload: Value,
+    /// `b64(header) . b64(payload)`, the bytes the provider signed.
+    signing_input: String,
+    signature: Vec<u8>,
 }
 
 impl DecodedJwt {
     fn decode(token: &str) -> Result<Self, ExchangeError> {
         let mut parts = token.split('.');
-        let (Some(header), Some(payload), Some(_signature), None) =
+        let (Some(header), Some(payload), Some(signature), None) =
             (parts.next(), parts.next(), parts.next(), parts.next())
         else {
             return Err(ExchangeError::invalid_grant(
@@ -467,6 +556,12 @@ impl DecodedJwt {
         Ok(Self {
             header: decode_json_segment(header, "source access token header")?,
             payload: decode_json_segment(payload, "source access token payload")?,
+            signing_input: format!("{header}.{payload}"),
+            signature: URL_SAFE_NO_PAD.decode(signature).map_err(|error| {
+                ExchangeError::invalid_grant(format!(
+                    "source access token signature is not base64url: {error}"
+                ))
+            })?,
         })
     }
 

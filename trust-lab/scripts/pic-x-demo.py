@@ -31,7 +31,9 @@ PIC_X_REALM = os.environ.get("PIC_X_REALM", "acme")
 TRUST_LAB_URL = os.environ.get("TRUST_LAB_URL", "http://localhost:17080").rstrip("/")
 TRUST_LAB_ATTESTER_ID = os.environ.get("TRUST_LAB_ATTESTER_ID", "acme-por-attester")
 TRUST_LAB_ARTIFACT_DIR = Path(
-    os.environ.get("TRUST_LAB_ARTIFACT_DIR", ".volume/trust-lab/artifacts")
+    os.environ.get(
+        "TRUST_LAB_ARTIFACT_DIR", ".volume-docker-compose/trust-lab/artifacts"
+    )
 )
 WAIT_SECONDS = float(os.environ.get("LAB_DEMO_WAIT_SECONDS", "60"))
 RETRY_SECONDS = float(os.environ.get("LAB_DEMO_RETRY_SECONDS", "3"))

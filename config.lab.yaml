@@ -49,7 +49,10 @@ realms:
         source:
           token_type: oauth-access-token
           format: jwt
+          # `issuer` is the identity Keycloak puts in `iss`, as seen from the host; PIC-X runs
+          # inside the compose network, so it reaches discovery by service name.
           issuer: http://localhost:18080/realms/acme-idp
+          discovery_url: http://keycloak:8080/realms/acme-idp
           audience: pic-x
           validation:
             allowed_algorithms:

@@ -37,8 +37,19 @@ use pic_x_realm::WellKnownService;
 
 const ATTESTER_ISSUER: &str = "https://attestation.example.com";
 
-#[derive(Debug)]
-struct SilentSink;
+/// A sink that can be made to fail, so the "no record, no token" rule can be observed.
+#[derive(Debug, Default)]
+struct SilentSink {
+    broken: std::sync::atomic::AtomicBool,
+}
+
+impl SilentSink {
+    fn breaks() -> Self {
+        Self {
+            broken: std::sync::atomic::AtomicBool::new(true),
+        }
+    }
+}
 
 impl pic_x_core::AuditSink for SilentSink {
     fn name(&self) -> &'static str {
@@ -50,7 +61,12 @@ impl pic_x_core::AuditSink for SilentSink {
         _event: &'a AuditEvent<'a>,
         _policy: Option<&'a dyn Pseudonymizer>,
     ) -> BoxFuture<'a, AuditResult<()>> {
-        Box::pin(async { Ok(()) })
+        Box::pin(async move {
+            if self.broken.load(std::sync::atomic::Ordering::Relaxed) {
+                return Err(pic_x_core::AuditError::backend("the trail is full"));
+            }
+            Ok(())
+        })
     }
 }
 
@@ -108,15 +124,6 @@ impl KeyManager for RealmRing {
 
 fn b64(bytes: &[u8]) -> String {
     URL_SAFE_NO_PAD.encode(bytes)
-}
-
-fn compact_jwt(header: serde_json::Value, payload: serde_json::Value) -> String {
-    format!(
-        "{}.{}.{}",
-        b64(&serde_json::to_vec(&header).expect("header")),
-        b64(&serde_json::to_vec(&payload).expect("payload")),
-        b64(b"signature")
-    )
 }
 
 /// The lab attester: an Ed25519 issuing key, the key set it publishes, and the credentials it signs.
@@ -225,6 +232,96 @@ impl Attester {
     }
 }
 
+/// A test identity provider: it signs access tokens and publishes the key that verifies them.
+///
+/// The realm now verifies that signature, so the demo token can no longer be hand-assembled.
+struct IdentityProvider {
+    key: ed25519_dalek::SigningKey,
+    issuer: String,
+}
+
+impl IdentityProvider {
+    fn key_set(&self) -> String {
+        serde_json::json!({
+            "keys": [{
+                "kid": "idp-key-1",
+                "kty": "OKP",
+                "crv": "Ed25519",
+                "alg": "EdDSA",
+                "use": "sig",
+                "x": b64(self.key.verifying_key().as_bytes()),
+            }]
+        })
+        .to_string()
+    }
+
+    /// A signed access token carrying the scopes the Exchange Profile maps.
+    fn access_token(&self) -> String {
+        use ed25519_dalek::Signer;
+
+        let header = serde_json::json!({"alg": "EdDSA", "typ": "JWT", "kid": "idp-key-1"});
+        let payload = serde_json::json!({
+            "iss": self.issuer,
+            "sub": "user-123",
+            "aud": "pic-x",
+            "iat": 1_786_700_400_i64,
+            "exp": 4_000_000_000_i64,
+            "scope": "documents:read:document-42 storage:save",
+        });
+        let signing_input = format!(
+            "{}.{}",
+            b64(&serde_json::to_vec(&header).expect("header")),
+            b64(&serde_json::to_vec(&payload).expect("payload"))
+        );
+
+        format!(
+            "{signing_input}.{}",
+            b64(&self.key.sign(signing_input.as_bytes()).to_bytes())
+        )
+    }
+}
+
+/// Serves an identity provider's discovery document and key set.
+async fn serve_identity_provider() -> IdentityProvider {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("the identity-provider listener binds");
+    let address = listener.local_addr().expect("the listener has an address");
+    let issuer = format!("http://{address}");
+
+    let provider = IdentityProvider {
+        key: ed25519_dalek::SigningKey::from_bytes(&[0x99; 32]),
+        issuer: issuer.clone(),
+    };
+    let key_set = provider.key_set();
+    let discovery = serde_json::json!({
+        "issuer": issuer,
+        "jwks_uri": format!("{issuer}/keys"),
+    })
+    .to_string();
+
+    let router = axum::Router::new()
+        .route(
+            "/.well-known/openid-configuration",
+            axum::routing::get(move || {
+                let discovery = discovery.clone();
+                async move { discovery }
+            }),
+        )
+        .route(
+            "/keys",
+            axum::routing::get(move || {
+                let key_set = key_set.clone();
+                async move { key_set }
+            }),
+        );
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, router).await;
+    });
+
+    provider
+}
+
 /// Serves the attester key set, so the realm fetches it the way it would in a deployment.
 async fn serve_key_set(key_set: String) -> String {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -246,16 +343,17 @@ async fn serve_key_set(key_set: String) -> String {
     format!("http://{address}/jwks.json")
 }
 
-fn exchange_profile() -> ExchangeProfileConfig {
+fn exchange_profile(issuer: &str) -> ExchangeProfileConfig {
     ExchangeProfileConfig {
         id: "test-oauth-to-pic".to_owned(),
         source: ExchangeProfileSource {
             token_type: EXCHANGE_SOURCE_OAUTH_ACCESS_TOKEN.to_owned(),
             format: EXCHANGE_SOURCE_FORMAT_JWT.to_owned(),
-            issuer: "https://idp.example.com".to_owned(),
+            issuer: issuer.to_owned(),
+            discovery_url: None,
             audience: "pic-x".to_owned(),
             validation: ExchangeTokenValidation {
-                allowed_algorithms: vec!["RS256".to_owned()],
+                allowed_algorithms: vec!["EdDSA".to_owned()],
                 require_expiration: true,
                 require_token_type: Some("JWT".to_owned()),
             },
@@ -300,7 +398,7 @@ fn exchange_profile() -> ExchangeProfileConfig {
     }
 }
 
-fn realm_trusting(jwks_uri: &str) -> Realm {
+fn realm_with_broken_trail(jwks_uri: &str, idp_issuer: &str) -> Realm {
     Realm::new(
         "acme",
         "/realms/acme".to_owned(),
@@ -308,10 +406,31 @@ fn realm_trusting(jwks_uri: &str) -> Realm {
         true,
         None,
         Some(Arc::new(RealmRing::new())),
-        Arc::new(SilentSink),
+        Arc::new(SilentSink::breaks()),
         None,
     )
-    .with_exchange_profiles([exchange_profile()])
+    .with_exchange_profiles([exchange_profile(idp_issuer)])
+    .with_trusted_attesters([TrustedAttesterConfig {
+        id: "test-por-attester".to_owned(),
+        issuer: ATTESTER_ISSUER.to_owned(),
+        jwks_uri: jwks_uri.to_owned(),
+        proof_types: vec!["sd-jwt".to_owned()],
+        formats: vec!["sd-jwt".to_owned()],
+    }])
+}
+
+fn realm_trusting(jwks_uri: &str, idp_issuer: &str) -> Realm {
+    Realm::new(
+        "acme",
+        "/realms/acme".to_owned(),
+        Some("https://pic-x.example.com/realms/acme".to_owned()),
+        true,
+        None,
+        Some(Arc::new(RealmRing::new())),
+        Arc::new(SilentSink::default()),
+        None,
+    )
+    .with_exchange_profiles([exchange_profile(idp_issuer)])
     .with_trusted_attesters([TrustedAttesterConfig {
         id: "test-por-attester".to_owned(),
         issuer: ATTESTER_ISSUER.to_owned(),
@@ -358,18 +477,7 @@ async fn post_token(router: &axum::Router, body: String) -> (StatusCode, serde_j
     )
 }
 
-fn initialization_body() -> String {
-    let access_token = compact_jwt(
-        serde_json::json!({"alg": "RS256", "typ": "JWT", "kid": "idp-key-1"}),
-        serde_json::json!({
-            "iss": "https://idp.example.com",
-            "sub": "user-123",
-            "aud": "pic-x",
-            "iat": 1_786_700_400_i64,
-            "exp": 4_000_000_000_i64,
-            "scope": "documents:read:document-42 storage:save"
-        }),
-    );
+fn initialization_body(access_token: &str) -> String {
     let proposal = pic::continuity::proposal::InitialContinuityProposal::new(
         [(
             "corporation".to_owned(),
@@ -425,12 +533,14 @@ fn checkpoint_of(token: &str) -> (Vec<u8>, PicPcaPayload) {
 struct Lab {
     router: axum::Router,
     attester: Attester,
+    provider: IdentityProvider,
 }
 
 async fn lab() -> Lab {
     let attester = Attester::new();
+    let provider = serve_identity_provider().await;
     let jwks_uri = serve_key_set(attester.key_set()).await;
-    let realms = Realms::new([realm_trusting(&jwks_uri)]);
+    let realms = Realms::new([realm_trusting(&jwks_uri, &provider.issuer)]);
     let config = development_config();
 
     let service = WellKnownService::new();
@@ -439,10 +549,14 @@ async fn lab() -> Lab {
         &config,
         &realms,
     );
-    // The realm fetches the attester key set the way the background task would.
+    // The realm fetches both key sets the way the background task would.
     service.refresh_attester_keys().await;
 
-    Lab { router, attester }
+    Lab {
+        router,
+        attester,
+        provider,
+    }
 }
 
 #[tokio::test]
@@ -450,7 +564,11 @@ async fn a_workload_advances_the_lineage_and_the_removed_authority_is_gone() {
     let lab = lab().await;
 
     // OAuth authority becomes checkpoint 0, carrying both invariants.
-    let (status, body) = post_token(&lab.router, initialization_body()).await;
+    let (status, body) = post_token(
+        &lab.router,
+        initialization_body(&lab.provider.access_token()),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "initialization failed: {body}");
     let token0 = body["access_token"].as_str().expect("token 0").to_owned();
     let (pca0_bytes, pca0) = checkpoint_of(&token0);
@@ -506,7 +624,11 @@ async fn a_workload_advances_the_lineage_and_the_removed_authority_is_gone() {
 #[tokio::test]
 async fn a_candidate_whose_por_names_an_unconfigured_issuer_is_rejected() {
     let lab = lab().await;
-    let (_, body) = post_token(&lab.router, initialization_body()).await;
+    let (_, body) = post_token(
+        &lab.router,
+        initialization_body(&lab.provider.access_token()),
+    )
+    .await;
     let token0 = body["access_token"].as_str().expect("token 0").to_owned();
     let (pca0_bytes, _) = checkpoint_of(&token0);
 
@@ -545,7 +667,11 @@ async fn a_candidate_whose_por_names_an_unconfigured_issuer_is_rejected() {
 #[tokio::test]
 async fn a_candidate_signed_by_a_key_the_por_does_not_bind_is_rejected() {
     let lab = lab().await;
-    let (_, body) = post_token(&lab.router, initialization_body()).await;
+    let (_, body) = post_token(
+        &lab.router,
+        initialization_body(&lab.provider.access_token()),
+    )
+    .await;
     let token0 = body["access_token"].as_str().expect("token 0").to_owned();
     let (pca0_bytes, _) = checkpoint_of(&token0);
 
@@ -640,7 +766,11 @@ async fn a_candidate_rooted_at_a_checkpoint_this_realm_never_issued_is_rejected(
 #[tokio::test]
 async fn advancement_still_refuses_a_continuity_proposal() {
     let lab = lab().await;
-    let (_, body) = post_token(&lab.router, initialization_body()).await;
+    let (_, body) = post_token(
+        &lab.router,
+        initialization_body(&lab.provider.access_token()),
+    )
+    .await;
     let token0 = body["access_token"].as_str().expect("token 0").to_owned();
 
     // Profile 0.2 PIC-to-PIC advancement omits it; sending one is a request error.
@@ -655,7 +785,11 @@ async fn advancement_still_refuses_a_continuity_proposal() {
 #[tokio::test]
 async fn a_workload_that_contradicts_the_execution_contract_is_rejected() {
     let lab = lab().await;
-    let (_, body) = post_token(&lab.router, initialization_body()).await;
+    let (_, body) = post_token(
+        &lab.router,
+        initialization_body(&lab.provider.access_token()),
+    )
+    .await;
     let token0 = body["access_token"].as_str().expect("token 0").to_owned();
     let (pca0_bytes, _) = checkpoint_of(&token0);
 
@@ -693,7 +827,11 @@ async fn a_workload_that_contradicts_the_execution_contract_is_rejected() {
 #[tokio::test]
 async fn a_presentation_that_discloses_nothing_the_contract_constrains_is_rejected() {
     let lab = lab().await;
-    let (_, body) = post_token(&lab.router, initialization_body()).await;
+    let (_, body) = post_token(
+        &lab.router,
+        initialization_body(&lab.provider.access_token()),
+    )
+    .await;
     let token0 = body["access_token"].as_str().expect("token 0").to_owned();
     let (pca0_bytes, _) = checkpoint_of(&token0);
 
@@ -724,4 +862,33 @@ async fn a_presentation_that_discloses_nothing_the_contract_constrains_is_reject
             .contains("conformance"),
         "unexpected rejection: {body}"
     );
+}
+
+#[tokio::test]
+async fn no_token_is_issued_when_the_audit_trail_cannot_be_written() {
+    // The whole point of a synchronous record: authority does not reach a caller unless the trail
+    // that says who obtained it was written first.
+    let attester = Attester::new();
+    let provider = serve_identity_provider().await;
+    let jwks_uri = serve_key_set(attester.key_set()).await;
+    let realms = Realms::new([realm_with_broken_trail(&jwks_uri, &provider.issuer)]);
+
+    let service = WellKnownService::new();
+    let router = service.router(
+        &ProductIdentity::new("demo-x", "Demo X", "A tagline", "Demo X CLI", "<art>"),
+        &development_config(),
+        &realms,
+    );
+    service.refresh_attester_keys().await;
+
+    let (status, body) = post_token(&router, initialization_body(&provider.access_token())).await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert!(
+        body["error_description"]
+            .as_str()
+            .expect("a description")
+            .contains("not recorded"),
+        "{body}"
+    );
+    assert!(body["access_token"].is_null(), "a token escaped: {body}");
 }

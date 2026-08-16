@@ -286,8 +286,9 @@ tasks:
 
       See docs/keycloak.md for credentials and lab commands.
     cmds:
-      - mkdir -p .volume/trust-lab
-      - chmod a+rwX .volume .volume/trust-lab
+      # One directory per service, so the lab's state can be read from the host while it runs.
+      - mkdir -p .volume-docker-compose/pic-x .volume-docker-compose/trust-lab .volume-docker-compose/keycloak
+      - chmod -R a+rwX .volume-docker-compose
       - docker compose -f docker-compose.lab.yml up --build -d
 
   lab-down:

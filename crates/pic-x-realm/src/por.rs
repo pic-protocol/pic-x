@@ -517,7 +517,10 @@ fn der_rsa_public_key(modulus: &[u8], exponent: &[u8]) -> Vec<u8> {
 fn der_integer(value: &[u8]) -> Vec<u8> {
     // Strip the leading zeroes a JWK may carry, then add one back when the high bit is set, so the
     // value stays positive in DER's two's-complement reading.
-    let trimmed = value.iter().position(|byte| *byte != 0).unwrap_or(value.len());
+    let trimmed = value
+        .iter()
+        .position(|byte| *byte != 0)
+        .unwrap_or(value.len());
     let value = &value[trimmed..];
 
     let mut content = Vec::with_capacity(value.len() + 1);
@@ -593,7 +596,6 @@ mod tests {
     const KEYCLOAK_PAYLOAD: &str = "eyJleHAiOjE3ODY4ODg1OTIsImlhdCI6MTc4Njg4ODI5MiwianRpIjoib25ydHJvOjFkY2I5NjE0LWQzODgtZjk1OS1kMDcxLTMyMzBjZGJiY2VmYiIsImlzcyI6Imh0dHA6Ly9sb2NhbGhvc3Q6MTgwODAvcmVhbG1zL2FjbWUtaWRwIiwiYXVkIjoicGljLXgiLCJzdWIiOiJhZGNlZTBhNi1hZWVkLTQ2ZjItYTIxYi1mMTQwNDI5Mjc2ZmYiLCJ0eXAiOiJCZWFyZXIiLCJhenAiOiJhY21lLWlkcC1jbGllbnQiLCJzaWQiOiJjVTBtZEtqNFpNMFFuVklFa3ZtSEM2M2oiLCJhY3IiOiIxIiwicmVhbG1fYWNjZXNzIjp7InJvbGVzIjpbInN0b3JhZ2U6c2F2ZSIsImRvY3VtZW50czpyZWFkOmRvY3VtZW50LTQyIiwiZXhhbXBsZS11c2VyIl19LCJzY29wZSI6ImVtYWlsIHByb2ZpbGUiLCJlbWFpbF92ZXJpZmllZCI6dHJ1ZSwibmFtZSI6IkFsaWNlIEV4YW1wbGUiLCJwcmVmZXJyZWRfdXNlcm5hbWUiOiJhbGljZSIsImdpdmVuX25hbWUiOiJBbGljZSIsImZhbWlseV9uYW1lIjoiRXhhbXBsZSIsImVtYWlsIjoiYWxpY2VAZXhhbXBsZS5sb2NhbCIsInBpY19zY29wZXMiOlsiZG9jdW1lbnRzOnJlYWQ6ZG9jdW1lbnQtNDIiLCJzdG9yYWdlOnNhdmUiXX0";
     const KEYCLOAK_SIGNATURE: &str = "QSm_ENG0wrHjt32QH7iI731Ut2uB-hHJqtc0wCnTDOeeRWWX-2BeZI0UNpoDp-f0IB3Ie57Hr9H3GzFTedCtMnm62nkkrKL3LEn0m35vLABHtqsHwgx6MrJQ-lusdfHV7p4VILL5JovnDziWSJzbgRpXER1QDzYeS5_Y7Tqr6iJIzr9rzo7XYaiESGQ4dkm_7cuEzu_xJdllUzypW8IqnIHU_JjuwbGhMfQ1HW4sLOLGJabz4Yi9sYEoczdTvCIOw7mS2I9iPoslgvpQHdJtRVvMM6lDQXZYm04KiQr_9lEYggVXCYmC5vTeXYQh7Y_PhhQ_CQg78UuJuFJv8GoV2g";
     const KEYCLOAK_MODULUS: &str = "p_IK08O9i822gXL1EpnwOdyBInMJvbjPebtXBGpSat0TKwXCjDVi-mWNupuoW0FC5Ama_Z-fjEjWCKCydISeXDYnVWJEgWVaJ8Rma1kEmIIdN8UHu_CUAW1NvJeyISjf4XMQsBnkx2fqVHu32HFvKLlBZ6rhL2cPjD7N8xiS_tKcQ-wDdRz6r4czW43gEPzXfSQDMphie70Bu99la5vjnm1pHnUPw7anrPoI36K2dJYY0vrYD7HCqJFcG9in5Wi2Fl1RlhpUguHyjMPnWxdGu7D6IsN5hd9SOCyaaA0C37tzNQ9U_ekTRGWAv5iXB06kEJMqSi_3iKC5JIb1zpAWow";
-
 
     /// A lab attester: an Ed25519 issuing key and the key set it publishes.
     struct Attester {

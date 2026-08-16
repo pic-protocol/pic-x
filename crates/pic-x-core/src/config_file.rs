@@ -141,6 +141,10 @@ struct ExchangeProfileSourceSection {
     token_type: String,
     format: String,
     issuer: String,
+    /// Optional: where to reach the provider's discovery document when that address differs from
+    /// the issuer identity.
+    #[serde(default, alias = "discoveryUrl")]
+    discovery_url: Option<String>,
     audience: String,
     #[serde(default)]
     validation: ExchangeTokenValidationSection,
@@ -239,6 +243,7 @@ impl ExchangeProfileSection {
                 token_type: self.source.token_type.clone(),
                 format: self.source.format.clone(),
                 issuer: self.source.issuer.clone(),
+                discovery_url: self.source.discovery_url.clone(),
                 audience: self.source.audience.clone(),
                 validation: ExchangeTokenValidation {
                     allowed_algorithms: self.source.validation.allowed_algorithms.clone(),

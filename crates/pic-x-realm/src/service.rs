@@ -14,8 +14,9 @@ use pic_x_core::{
 use pic_x_transport::Surface;
 
 use crate::COMPONENT;
-use crate::attester_keys::{AttesterKeyCache, REFRESH_EVERY};
+use crate::attester_keys::{AttesterKeyCache, REFRESH_EVERY, RETRY_UNTIL_READY};
 use crate::exchange::{TokenEndpoint, token};
+use crate::idp_keys::IdpKeyCache;
 use crate::key_fetch::HttpKeySetFetcher;
 use crate::routes::{
     AttestationIssuer, Attestations, CatalogRealm, KeyRing, ProfileEntry, RealmLanding, RealmMeta,
@@ -42,6 +43,8 @@ pub struct WellKnownService {
     /// One attester key cache per realm, shared between the token endpoint that reads it and the
     /// background task that refreshes it.
     attester_keys: Mutex<BTreeMap<String, Arc<AttesterKeyCache>>>,
+    /// One identity-provider key cache per realm, shared the same way.
+    idp_keys: Mutex<BTreeMap<String, Arc<IdpKeyCache>>>,
     /// The refresh task, stopped with the surface.
     refreshing: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
@@ -60,6 +63,7 @@ impl WellKnownService {
             layers: Vec::new(),
             running: Mutex::new(None),
             attester_keys: Mutex::new(BTreeMap::new()),
+            idp_keys: Mutex::new(BTreeMap::new()),
             refreshing: Mutex::new(None),
         }
     }
@@ -179,8 +183,8 @@ impl WellKnownService {
                         .route("/token", post(token))
                         .with_state(TokenEndpoint {
                             realm: realm.clone(),
-                            development_mode: config.development_mode(),
                             attester_keys: self.attester_keys(realm),
+                            idp_keys: self.idp_keys(realm),
                         }),
                 );
 
@@ -228,19 +232,39 @@ impl WellKnownService {
         }
     }
 
+    /// The identity-provider key cache for one realm, created on first use.
+    fn idp_keys(&self, realm: &Realm) -> Arc<IdpKeyCache> {
+        let fresh = || Arc::new(IdpKeyCache::new(realm.exchange_profiles().to_vec()));
+
+        match self.idp_keys.lock() {
+            Ok(mut caches) => caches
+                .entry(realm.name().to_owned())
+                .or_insert_with(fresh)
+                .clone(),
+            Err(_) => fresh(),
+        }
+    }
+
     /// Fetches every realm's attester key sets once, now.
     ///
     /// The background task does this on a timer; this is the same sweep on demand, for a caller
     /// that needs the keys present before the first request — a test, or an operator who just
     /// changed which attesters a realm trusts.
     pub async fn refresh_attester_keys(&self) {
-        let caches: Vec<Arc<AttesterKeyCache>> = match self.attester_keys.lock() {
+        let attesters: Vec<Arc<AttesterKeyCache>> = match self.attester_keys.lock() {
+            Ok(caches) => caches.values().cloned().collect(),
+            Err(_) => Vec::new(),
+        };
+        let providers: Vec<Arc<IdpKeyCache>> = match self.idp_keys.lock() {
             Ok(caches) => caches.values().cloned().collect(),
             Err(_) => Vec::new(),
         };
 
         let fetcher = HttpKeySetFetcher::new();
-        for cache in caches {
+        for cache in attesters {
+            cache.refresh(&fetcher).await;
+        }
+        for cache in providers {
             cache.refresh(&fetcher).await;
         }
     }
@@ -249,21 +273,41 @@ impl WellKnownService {
     /// without a restart. The first sweep runs immediately, because a realm that has fetched
     /// nothing yet cannot validate any Proof of Relationship.
     fn start_key_refresh(&self) {
-        let caches: Vec<Arc<AttesterKeyCache>> = match self.attester_keys.lock() {
+        let attesters: Vec<Arc<AttesterKeyCache>> = match self.attester_keys.lock() {
             Ok(caches) => caches.values().cloned().collect(),
             Err(_) => Vec::new(),
         };
-        if caches.iter().all(|cache| cache.attesters().is_empty()) {
+        let providers: Vec<Arc<IdpKeyCache>> = match self.idp_keys.lock() {
+            Ok(caches) => caches.values().cloned().collect(),
+            Err(_) => Vec::new(),
+        };
+        let nothing_to_fetch = attesters.iter().all(|cache| cache.attesters().is_empty())
+            && providers.iter().all(|cache| cache.is_empty());
+        if nothing_to_fetch {
             return;
         }
 
         let handle = tokio::spawn(async move {
             let fetcher = HttpKeySetFetcher::new();
             loop {
-                for cache in &caches {
+                for cache in &attesters {
                     cache.refresh(&fetcher).await;
                 }
-                tokio::time::sleep(REFRESH_EVERY).await;
+                for cache in &providers {
+                    cache.refresh(&fetcher).await;
+                }
+
+                // Until every configured source has answered once, retry soon rather than waiting
+                // out the interval: a provider that starts after this one would otherwise leave the
+                // realm refusing exchanges for minutes with the fix already available.
+                let ready = attesters.iter().all(|cache| cache.is_ready())
+                    && providers.iter().all(|cache| cache.is_ready());
+                tokio::time::sleep(if ready {
+                    REFRESH_EVERY
+                } else {
+                    RETRY_UNTIL_READY
+                })
+                .await;
             }
         });
 

@@ -32,6 +32,8 @@ use pic_x_core::{BoxFuture, TrustedAttesterConfig};
 
 /// How often the background task refreshes a key set.
 pub(crate) const REFRESH_EVERY: Duration = Duration::from_secs(300);
+/// How soon it retries while some configured source has never answered.
+pub(crate) const RETRY_UNTIL_READY: Duration = Duration::from_secs(3);
 /// How long a key set that cannot be refreshed keeps being served.
 const SERVE_STALE_FOR: Duration = Duration::from_secs(3_600);
 
@@ -68,6 +70,14 @@ impl AttesterKeyCache {
 
     pub(crate) fn attesters(&self) -> &[TrustedAttesterConfig] {
         &self.attesters
+    }
+
+    /// `true` when every configured attester has a key set to serve.
+    pub(crate) fn is_ready(&self) -> bool {
+        match self.entries.lock() {
+            Ok(entries) => self.attesters.iter().all(|a| entries.contains_key(&a.id)),
+            Err(_) => false,
+        }
     }
 
     /// Fetches every configured attester's key set, replacing what is held for the ones that
@@ -137,7 +147,7 @@ impl AttesterKeySource for AttesterKeyCache {
 }
 
 /// Reads a JWKS document, keeping only the keys usable for signature verification.
-fn parse_key_set(body: &[u8]) -> Result<Vec<Value>> {
+pub(crate) fn parse_key_set(body: &[u8]) -> Result<Vec<Value>> {
     let document: Value =
         serde_json::from_slice(body).context("the attester key set is not JSON")?;
     let keys = document

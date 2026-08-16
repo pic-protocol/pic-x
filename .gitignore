@@ -532,3 +532,4 @@ $RECYCLE.BIN/
 .tokensave/
 .volume/
 .volume-docker/
+.volume-docker-compose/

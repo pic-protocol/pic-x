@@ -123,6 +123,7 @@ fn exchange_profile() -> ExchangeProfileConfig {
             token_type: EXCHANGE_SOURCE_OAUTH_ACCESS_TOKEN.to_owned(),
             format: EXCHANGE_SOURCE_FORMAT_JWT.to_owned(),
             issuer: "https://idp.example.com".to_owned(),
+            discovery_url: None,
             audience: "pic-x".to_owned(),
             validation: ExchangeTokenValidation {
                 allowed_algorithms: vec!["RS256".to_owned()],
@@ -510,7 +511,13 @@ async fn test_realm_attestations_list_the_configured_por_issuers() {
 }
 
 #[tokio::test]
-async fn test_the_token_endpoint_issues_initial_pic_token_from_an_exchange_profile() {
+async fn test_the_token_endpoint_refuses_to_mint_authority_without_identity_provider_keys() {
+    // This realm has never reached its identity provider, so it holds no key to verify an access
+    // token against. Minting PIC authority from a token whose signature was never checked would
+    // make every check that follows meaningless, so the exchange is refused — and refused with a
+    // status that says "ask again later", not "your token is bad".
+    //
+    // The issuing path with a provider that does answer is covered end to end in `advancement.rs`.
     let realms = Realms::new([issuing_realm(
         "acme",
         "https://pic-x.example.com/realms/acme",
@@ -533,16 +540,10 @@ async fn test_the_token_endpoint_issues_initial_pic_token_from_an_exchange_profi
         }),
     );
     let proposal = pic::continuity::proposal::InitialContinuityProposal::new(
-        [
-            (
-                "corporation".to_owned(),
-                pic::continuity::authority::AuthorityValue::One("ACME".to_owned()),
-            ),
-            (
-                "department".to_owned(),
-                pic::continuity::authority::AuthorityValue::One("sensitive-documents".to_owned()),
-            ),
-        ]
+        [(
+            "corporation".to_owned(),
+            pic::continuity::authority::AuthorityValue::One("ACME".to_owned()),
+        )]
         .into_iter()
         .collect(),
     )
@@ -569,30 +570,20 @@ async fn test_the_token_endpoint_issues_initial_pic_token_from_an_exchange_profi
         .await
         .expect("the route answers");
 
-    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     let body = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .expect("the body is readable");
     let payload: serde_json::Value =
         serde_json::from_slice(&body).expect("the exchange response is JSON");
-    assert_eq!(
-        payload["issued_token_type"],
-        "https://pic-protocol.org/definitions/token-types/pic"
+    assert_eq!(payload["error"], "temporarily_unavailable");
+    assert!(
+        payload["error_description"]
+            .as_str()
+            .expect("a description")
+            .contains("identity provider"),
+        "{payload}"
     );
-    assert_eq!(payload["token_type"], "N_A");
-
-    let pic_token = payload["access_token"]
-        .as_str()
-        .expect("the response carries a token");
-    let decoded =
-        pic::continuity::artifacts::token::decode_token(pic_token).expect("the PIC token decodes");
-    assert_eq!(decoded.typ, "pic+jwt");
-    assert_eq!(
-        decoded.claims.iss.as_deref(),
-        Some("https://pic-x.example.com/realms/acme")
-    );
-    assert_eq!(decoded.claims.sub.as_deref(), Some("user-123"));
-    assert!(decoded.claims.root_bytes().expect("pic.root decodes").len() > 100);
 }
 
 #[tokio::test]

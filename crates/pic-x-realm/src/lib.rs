@@ -26,6 +26,7 @@ mod attester_keys;
 mod checkpoints;
 mod conformance;
 mod exchange;
+mod idp_keys;
 mod key_fetch;
 mod por;
 pub mod routes;

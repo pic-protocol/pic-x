@@ -1,5 +1,9 @@
 name: pic-x-compose-lab
 
+# Every service keeps its state under `.volume-docker-compose/<service>/`, so the lab can be
+# inspected from the host while it runs — keys, artifacts, the audit trail — instead of hiding
+# inside named volumes only `docker` can reach. Removing that directory resets the lab.
+
 services:
   pic-x:
     build:
@@ -12,11 +16,14 @@ services:
       - "127.0.0.1:${PIC_X_TELEMETRY_PORT:-17558}:7558"
     volumes:
       - ./config.lab.yaml:/etc/pic-x/config.lab.yaml:ro
-      - pic-x-lab-data:/var/lib/pic-x
-    # The realm fetches its attester key set at startup; starting after the trust lab means the
-    # first sweep succeeds rather than waiting for the refresh interval.
+      - ./.volume-docker-compose/pic-x:/var/lib/pic-x
+    # The realm fetches its attester and identity-provider key sets at startup; starting after both
+    # means the first sweep succeeds rather than waiting out the refresh interval.
     depends_on:
-      - trust-lab
+      trust-lab:
+        condition: service_started
+      keycloak:
+        condition: service_healthy
 
   keycloak:
     image: ${KEYCLOAK_IMAGE:-quay.io/keycloak/keycloak:26.7.0}
@@ -28,11 +35,27 @@ services:
       KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin}
       KC_HEALTH_ENABLED: "true"
       KC_METRICS_ENABLED: "true"
+      # One issuer identity, whichever address reaches it. Without this, Keycloak names itself after
+      # the host it was called on: `localhost:18080` for the demo script, `keycloak:8080` for PIC-X
+      # inside the network — and a realm that fetches discovery internally would find a document
+      # claiming an issuer its tokens never carry.
+      KC_HOSTNAME: http://localhost:${KEYCLOAK_HTTP_PORT:-18080}
+      # Backchannel URLs follow the address the request arrived on, while the issuer identity stays
+      # fixed above. That is what lets PIC-X fetch `jwks_uri` at `keycloak:8080` from inside the
+      # network while the tokens it verifies still say `localhost:18080`.
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/9000 && echo -e 'GET /health/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3 && cat <&3 | grep -q '\"status\": \"UP\"'"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
     ports:
       - "127.0.0.1:${KEYCLOAK_HTTP_PORT:-18080}:8080"
       - "127.0.0.1:${KEYCLOAK_MANAGEMENT_PORT:-19000}:9000"
     volumes:
       - ./dev/keycloak/acme-idp-realm.json:/opt/keycloak/data/import/acme-idp-realm.json:ro
+      - ./.volume-docker-compose/keycloak:/opt/keycloak/data/h2
 
   trust-lab:
     build:
@@ -46,9 +69,4 @@ services:
       - "127.0.0.1:${TRUST_LAB_HTTP_PORT:-17080}:7080"
     volumes:
       - ./trust-lab/config.lab.json:/etc/trust-lab/config.lab.json:ro
-      - ./.volume/trust-lab:/var/lib/trust-lab
-    depends_on:
-      - keycloak
-
-volumes:
-  pic-x-lab-data:
+      - ./.volume-docker-compose/trust-lab:/var/lib/trust-lab

@@ -673,6 +673,7 @@ fn exchange_profile() -> ExchangeProfileConfig {
             token_type: EXCHANGE_SOURCE_OAUTH_ACCESS_TOKEN.to_owned(),
             format: EXCHANGE_SOURCE_FORMAT_JWT.to_owned(),
             issuer: "https://idp.example.com".to_owned(),
+            discovery_url: None,
             audience: "pic-x".to_owned(),
             validation: ExchangeTokenValidation {
                 allowed_algorithms: vec!["ES256".to_owned()],

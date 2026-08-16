@@ -62,9 +62,24 @@ pub struct ExchangeProfileConfig {
 pub struct ExchangeProfileSource {
     pub token_type: String,
     pub format: String,
+    /// The identity the provider puts in `iss`, and what an access token is matched against.
     pub issuer: String,
+    /// Where this deployment reaches that provider's OpenID Connect discovery, when it is not the
+    /// issuer URL itself.
+    ///
+    /// The two differ whenever the provider is addressed differently from inside: a service mesh, a
+    /// container network, a NAT. Keeping them apart is the same separation the trusted-attester
+    /// configuration already makes between `issuer` and `jwks_uri` — identity is not an address.
+    pub discovery_url: Option<String>,
     pub audience: String,
     pub validation: ExchangeTokenValidation,
+}
+
+impl ExchangeProfileSource {
+    /// Where OpenID Connect discovery is fetched from for this provider.
+    pub fn discovery_base(&self) -> &str {
+        self.discovery_url.as_deref().unwrap_or(&self.issuer)
+    }
 }
 
 /// Header and claim checks applied before any upstream claim is mapped.
