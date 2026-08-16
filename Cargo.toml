@@ -76,7 +76,10 @@ pic-x-transport = { path = "crates/pic-x-transport", version = "0.1.0" }
 pic-x-realm = { path = "crates/pic-x-realm", version = "0.1.0" }
 # The library name is `pic`, so code says `use pic::...` while Cargo resolves the package as
 # `pic-protocol`.
-pic-protocol = "0.2.1"
+# The curve features are explicit: the default set is Ed25519 alone, and a realm that signs or
+# accepts ES256 needs P-256 compiled in. P-384 follows so an attester publishing one is read
+# rather than refused for a reason no operator could guess.
+pic-protocol = { version = "0.2.2", features = ["p256", "p384"] }
 
 anyhow = "1"
 async-stream = "0.3"

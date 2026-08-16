@@ -33,7 +33,7 @@ use pic::continuity::trust::{ArtifactVerifier, RevocationCheck, TrustedCheckpoin
 
 use pic_x_core::{Jwk, KeyManager};
 
-use crate::por::public_key_from_jwk;
+use pic::continuity::jwk::public_key_from_jwk;
 
 /// Accepts a checkpoint when this realm's own signature verifies over it.
 pub(crate) struct RealmSignedCheckpoints {

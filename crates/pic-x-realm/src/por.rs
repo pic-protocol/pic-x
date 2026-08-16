@@ -29,15 +29,12 @@ use std::collections::BTreeSet;
 use std::sync::Mutex;
 
 use pic::continuity::artifacts::ProofOfRelationship;
-use pic::continuity::cose::SigningAlgorithm;
 use pic::continuity::error::RejectReason;
+use pic::continuity::jwk::{expected_algorithms_for_jwk, public_key_from_jwk};
 use pic::continuity::por::PorValidator;
 use pic::continuity::trust::ArtifactVerifier;
 use ring::digest::{SHA256, digest};
-use ring::signature::{
-    ECDSA_P256_SHA256_FIXED, ED25519, RSA_PKCS1_2048_8192_SHA256, UnparsedPublicKey,
-    VerificationAlgorithm,
-};
+use ring::signature::{RSA_PKCS1_2048_8192_SHA256, UnparsedPublicKey};
 use serde_json::Value;
 
 use pic_x_core::TrustedAttesterConfig;
@@ -102,48 +99,6 @@ pub(crate) struct ProcessedPor {
     pub(crate) issuer: String,
     /// The claims the Holder chose to disclose, plus the always-disclosed ones.
     pub(crate) claims: serde_json::Map<String, Value>,
-}
-
-/// The signature algorithms a JWK shape can legitimately stand behind.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct ExpectedAlgorithms {
-    pub(crate) jose: &'static str,
-    pub(crate) cose: Option<SigningAlgorithm>,
-}
-
-/// Reads the allowed JOSE/COSE algorithms from a public JWK's key type and curve.
-pub(crate) fn expected_algorithms_for_jwk(jwk: &Value) -> Result<ExpectedAlgorithms, String> {
-    let expected = match jwk.get("kty").and_then(Value::as_str) {
-        Some("OKP") if jwk.get("crv").and_then(Value::as_str) == Some("Ed25519") => {
-            ExpectedAlgorithms {
-                jose: "EdDSA",
-                cose: Some(SigningAlgorithm::EdDSA),
-            }
-        }
-        Some("EC") if jwk.get("crv").and_then(Value::as_str) == Some("P-256") => {
-            ExpectedAlgorithms {
-                jose: "ES256",
-                cose: Some(SigningAlgorithm::ES256),
-            }
-        }
-        Some("RSA") => ExpectedAlgorithms {
-            jose: "RS256",
-            cose: None,
-        },
-        Some(other) => return Err(format!("unsupported JWK `kty` `{other}`")),
-        None => return Err("the JWK has no `kty`".to_owned()),
-    };
-
-    if let Some(published) = jwk.get("alg").and_then(Value::as_str)
-        && published != expected.jose
-    {
-        return Err(format!(
-            "JWK `alg` `{published}` does not match key material algorithm `{}`",
-            expected.jose
-        ));
-    }
-
-    Ok(expected)
 }
 
 impl PorValidator for SdJwtPorValidator<'_> {
@@ -384,13 +339,13 @@ fn verify_issuer_signature(
     }
 
     for jwk in selected {
-        let Ok(key) = public_key_from_jwk(jwk) else {
-            continue;
-        };
         if !algorithm_matches(algorithm, jwk) {
             continue;
         }
-        if key.verify(&signing_input, &signature).is_ok() {
+        let Ok(key) = verification_key_from_jwk(jwk) else {
+            continue;
+        };
+        if key.verify(&signing_input, &signature) {
             return Ok(());
         }
     }
@@ -404,7 +359,7 @@ fn verify_issuer_signature(
 /// `true` when the JOSE `alg` is the one this key can produce, so a token cannot ask for a weaker
 /// algorithm than the key was published for.
 fn algorithm_matches(algorithm: &str, jwk: &Value) -> bool {
-    expected_algorithms_for_jwk(jwk).is_ok_and(|expected| expected.jose == algorithm)
+    expected_jose_algorithm(jwk).is_some_and(|expected| expected == algorithm)
 }
 
 fn jws_signature_parts(jws: &str) -> Result<(Vec<u8>, Vec<u8>), RejectReason> {
@@ -514,94 +469,57 @@ fn workload_key_from_cnf(payload: &Value) -> Result<Box<dyn ArtifactVerifier>, R
         .and_then(|cnf| cnf.get("jwk"))
         .ok_or_else(|| reject("the SD-JWT does not bind a workload key through `cnf.jwk`"))?;
 
-    expected_algorithms_for_jwk(jwk)
-        .map_err(|error| RejectReason::PorRejected(format!("`cnf.jwk` is unusable: {error}")))?;
-
-    let key = public_key_from_jwk(jwk)
-        .map_err(|error| RejectReason::PorRejected(format!("`cnf.jwk` is unusable: {error}")))?;
-
-    Ok(Box::new(key))
+    public_key_from_jwk(jwk)
+        .map(|key| Box::new(key) as Box<dyn ArtifactVerifier>)
+        .map_err(|error| RejectReason::PorRejected(format!("`cnf.jwk` is unusable: {error}")))
 }
 
 /// Rebuilds a workload verifier from a JWK that was already accepted.
 fn rebuild_workload_key(jwk: &Value) -> Result<Box<dyn ArtifactVerifier>, RejectReason> {
-    expected_algorithms_for_jwk(jwk)
-        .map_err(|error| RejectReason::PorRejected(format!("`cnf.jwk` is unusable: {error}")))?;
-    let key = public_key_from_jwk(jwk)
-        .map_err(|error| RejectReason::PorRejected(format!("`cnf.jwk` is unusable: {error}")))?;
-
-    Ok(Box::new(key))
+    public_key_from_jwk(jwk)
+        .map(|key| Box::new(key) as Box<dyn ArtifactVerifier>)
+        .map_err(|error| RejectReason::PorRejected(format!("`cnf.jwk` is unusable: {error}")))
 }
 
-/// A verifier over one published key.
-pub(crate) struct JwkVerifier {
-    algorithm: &'static dyn VerificationAlgorithm,
-    key: Vec<u8>,
-}
-
-impl JwkVerifier {
-    fn verify(&self, data: &[u8], signature: &[u8]) -> Result<(), ()> {
-        UnparsedPublicKey::new(self.algorithm, &self.key)
-            .verify(data, signature)
-            .map_err(|_| ())
-    }
-}
-
-impl ArtifactVerifier for JwkVerifier {
-    fn verify(&self, data: &[u8], signature: &[u8]) -> bool {
-        JwkVerifier::verify(self, data, signature).is_ok()
-    }
-}
-
-/// Builds a verifier from an RFC 7517 JWK. Only the two curve families Profile 0.2 uses here are
-/// accepted, and a JWK carrying a private component is refused outright.
-pub(crate) fn public_key_from_jwk(jwk: &Value) -> Result<JwkVerifier, String> {
+/// A verification key for a JWS this deployment reads but the PIC profile does not define: an
+/// OAuth access token, or the SD-JWT an attestation issuer signed.
+///
+/// The curves come from the protocol crate, which is what every PIC verifier uses; RSA is added
+/// here, because identity providers publish RSA keys and PIC artifacts never carry one.
+pub(crate) fn verification_key_from_jwk(jwk: &Value) -> Result<Box<dyn ArtifactVerifier>, String> {
     if jwk.get("d").is_some() {
         return Err("the JWK carries a private key component".to_owned());
     }
-    // RSA is the shape identity providers publish; it has no `crv` and no `x`, so it is read first.
     if jwk.get("kty").and_then(Value::as_str) == Some("RSA") {
-        return rsa_key_from_jwk(jwk);
+        return rsa_key_from_jwk(jwk).map(|key| Box::new(key) as Box<dyn ArtifactVerifier>);
     }
 
-    let curve = jwk.get("crv").and_then(Value::as_str).unwrap_or_default();
-    let x = jwk
-        .get("x")
-        .and_then(Value::as_str)
-        .ok_or_else(|| "the JWK has no `x`".to_owned())?;
-    let x = b64url_decode(x).ok_or_else(|| "`x` is not unpadded base64url".to_owned())?;
+    public_key_from_jwk(jwk)
+        .map(|key| Box::new(key) as Box<dyn ArtifactVerifier>)
+        .map_err(|error| error.to_string())
+}
 
-    match jwk.get("kty").and_then(Value::as_str) {
-        Some("OKP") if curve == "Ed25519" => {
-            if x.len() != 32 {
-                return Err("an Ed25519 `x` is not 32 bytes".to_owned());
-            }
-            Ok(JwkVerifier {
-                algorithm: &ED25519,
-                key: x,
-            })
-        }
-        Some("EC") if curve == "P-256" => {
-            let y = jwk
-                .get("y")
-                .and_then(Value::as_str)
-                .ok_or_else(|| "the EC JWK has no `y`".to_owned())?;
-            let y = b64url_decode(y).ok_or_else(|| "`y` is not unpadded base64url".to_owned())?;
-            if x.len() != 32 || y.len() != 32 {
-                return Err("a P-256 coordinate is not 32 bytes".to_owned());
-            }
-            // SEC1 uncompressed point, which is what ring expects.
-            let mut point = Vec::with_capacity(65);
-            point.push(0x04);
-            point.extend_from_slice(&x);
-            point.extend_from_slice(&y);
-            Ok(JwkVerifier {
-                algorithm: &ECDSA_P256_SHA256_FIXED,
-                key: point,
-            })
-        }
-        Some(other) => Err(format!("unsupported JWK `kty` `{other}`")),
-        None => Err("the JWK has no `kty`".to_owned()),
+/// The JOSE algorithm a key of this shape produces, RSA included.
+fn expected_jose_algorithm(jwk: &Value) -> Option<&'static str> {
+    if jwk.get("kty").and_then(Value::as_str) == Some("RSA") {
+        return Some("RS256");
+    }
+
+    expected_algorithms_for_jwk(jwk)
+        .ok()
+        .map(|expected| expected.jose)
+}
+
+/// A verifier over one RSA key.
+pub(crate) struct RsaVerifier {
+    key: Vec<u8>,
+}
+
+impl ArtifactVerifier for RsaVerifier {
+    fn verify(&self, data: &[u8], signature: &[u8]) -> bool {
+        UnparsedPublicKey::new(&RSA_PKCS1_2048_8192_SHA256, &self.key)
+            .verify(data, signature)
+            .is_ok()
     }
 }
 
@@ -610,7 +528,7 @@ pub(crate) fn public_key_from_jwk(jwk: &Value) -> Result<JwkVerifier, String> {
 /// `ring` verifies RSA against a DER `RSAPublicKey`, so the two integers are re-encoded into one.
 /// Keys below 2048 bits are refused: an identity provider signing with less is a finding, not
 /// something to accommodate quietly.
-fn rsa_key_from_jwk(jwk: &Value) -> Result<JwkVerifier, String> {
+fn rsa_key_from_jwk(jwk: &Value) -> Result<RsaVerifier, String> {
     let modulus = jwk
         .get("n")
         .and_then(Value::as_str)
@@ -629,8 +547,7 @@ fn rsa_key_from_jwk(jwk: &Value) -> Result<JwkVerifier, String> {
         ));
     }
 
-    Ok(JwkVerifier {
-        algorithm: &RSA_PKCS1_2048_8192_SHA256,
+    Ok(RsaVerifier {
         key: der_rsa_public_key(&modulus, &exponent),
     })
 }
@@ -1134,22 +1051,14 @@ mod tests {
             "n": KEYCLOAK_MODULUS,
             "e": "AQAB",
         });
-        let key = public_key_from_jwk(&jwk).expect("the RSA JWK is read");
+        let key = verification_key_from_jwk(&jwk).expect("the RSA JWK is read");
 
         let signing_input = format!("{KEYCLOAK_HEADER}.{KEYCLOAK_PAYLOAD}");
         let signature = b64url_decode(KEYCLOAK_SIGNATURE).expect("signature decodes");
-        assert!(ArtifactVerifier::verify(
-            &key,
-            signing_input.as_bytes(),
-            &signature
-        ));
+        assert!(key.verify(signing_input.as_bytes(), &signature));
 
         // A different payload under the same signature must not verify.
-        assert!(!ArtifactVerifier::verify(
-            &key,
-            b"not what was signed",
-            &signature
-        ));
+        assert!(!key.verify(b"not what was signed", &signature));
     }
 
     #[test]
@@ -1160,10 +1069,10 @@ mod tests {
             "n": base64url(&[0xC5; 128]),
             "e": "AQAB",
         });
-        assert!(public_key_from_jwk(&small).is_err());
+        assert!(verification_key_from_jwk(&small).is_err());
 
         let no_exponent = serde_json::json!({ "kty": "RSA", "n": base64url(&[0xC5; 256]) });
-        assert!(public_key_from_jwk(&no_exponent).is_err());
+        assert!(verification_key_from_jwk(&no_exponent).is_err());
     }
 
     #[test]

@@ -25,7 +25,7 @@ use pic::continuity::authority::{
 use pic::continuity::cose::{CoseError, SigningAlgorithm};
 use pic::continuity::por::PorValidator;
 use pic::continuity::proposal::InitialContinuityProposal;
-use pic::continuity::trust::{ArtifactSigner, ArtifactVerifier};
+use pic::continuity::trust::ArtifactSigner;
 use pic::continuity::verifier::{SettlementAuthority, SettlementContext, issue_settled};
 use regex::{Captures, Regex};
 use ring::rand::{SecureRandom, SystemRandom};
@@ -44,7 +44,8 @@ use crate::attester_keys::AttesterKeyCache;
 use crate::checkpoints::{NoRevocationConfigured, RealmSignedCheckpoints};
 use crate::conformance::ContractConformance;
 use crate::idp_keys::IdpKeyCache;
-use crate::por::{SdJwtPorValidator, expected_algorithms_for_jwk, public_key_from_jwk};
+use crate::por::{SdJwtPorValidator, verification_key_from_jwk};
+use pic::continuity::jwk::expected_algorithms_for_jwk;
 
 const GRANT_TOKEN_EXCHANGE: &str = "urn:ietf:params:oauth:grant-type:token-exchange";
 const TOKEN_TYPE_N_A: &str = "N_A";
@@ -553,10 +554,10 @@ impl TokenEndpoint {
             {
                 continue;
             }
-            let Ok(key) = public_key_from_jwk(jwk) else {
+            let Ok(key) = verification_key_from_jwk(jwk) else {
                 continue;
             };
-            if ArtifactVerifier::verify(&key, jwt.signing_input.as_bytes(), &jwt.signature) {
+            if key.verify(jwt.signing_input.as_bytes(), &jwt.signature) {
                 return Ok(());
             }
         }
