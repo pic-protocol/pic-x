@@ -53,7 +53,7 @@ members = ["crates/*"]
 # keeps it that way. A downstream binary can therefore reuse any subset of these crates and supply
 # its own implementation of the rest without forking.
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.97"
 # The SPDX expression, which is what crates.io, every licence scanner and every downstream compliance
@@ -64,16 +64,16 @@ license = "Apache-2.0"
 repository = "https://github.com/pic-protocol/pic-x"
 
 [workspace.dependencies]
-pic-x-admin = { path = "crates/pic-x-admin", version = "0.1.0" }
-pic-x-core = { path = "crates/pic-x-core", version = "0.1.0" }
-pic-x-server = { path = "crates/pic-x-server", version = "0.1.0" }
+pic-x-admin = { path = "crates/pic-x-admin", version = "0.2.0" }
+pic-x-core = { path = "crates/pic-x-core", version = "0.2.0" }
+pic-x-server = { path = "crates/pic-x-server", version = "0.2.0" }
 # `default-features = false` at the root so every member states which areas it uses, rather than
 # inheriting all of them and linking dependencies it never touches. A crate outside this workspace
-# still gets the default set by writing `pic-x-std = "0.1"`.
-pic-x-std = { path = "crates/pic-x-std", version = "0.1.0", default-features = false }
-pic-x-telemetry = { path = "crates/pic-x-telemetry", version = "0.1.0" }
-pic-x-transport = { path = "crates/pic-x-transport", version = "0.1.0" }
-pic-x-realm = { path = "crates/pic-x-realm", version = "0.1.0" }
+# still gets the default set by writing `pic-x-std = "0.2"`.
+pic-x-std = { path = "crates/pic-x-std", version = "0.2.0", default-features = false }
+pic-x-telemetry = { path = "crates/pic-x-telemetry", version = "0.2.0" }
+pic-x-transport = { path = "crates/pic-x-transport", version = "0.2.0" }
+pic-x-realm = { path = "crates/pic-x-realm", version = "0.2.0" }
 # The library name is `pic`, so code says `use pic::...` while Cargo resolves the package as
 # `pic-protocol`.
 # The curve features are explicit: the default set is Ed25519 alone, and a realm that signs or
