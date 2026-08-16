@@ -3,6 +3,14 @@
 The Docker image builds a static `pic-x` binary and runs it from `scratch` as UID/GID `65532:65532`.
 It exposes three ports and stores runtime state under `/var/lib/pic-x`.
 
+Published images are available from GitHub Container Registry:
+
+<https://github.com/pic-protocol/pic-x/pkgs/container/pic-x>
+
+```sh
+docker pull ghcr.io/pic-protocol/pic-x:0.2
+```
+
 | Port | Surface |
 | --- | --- |
 | `7556` | Public discovery and JWKS |
@@ -64,6 +72,31 @@ volume, not just the files listed above.
 
 If a host directory is mounted as the volume, its permissions must allow UID/GID `65532:65532` to
 write audit files, keys and state.
+
+## Custom Config
+
+The image entry point is `/usr/local/bin/pic-x`; the command is the config file path. The default command
+is `/etc/pic-x/config.yaml`, so mounting a file there uses a custom config without changing the command:
+
+```sh
+docker run --rm --init \
+  --publish 7556:7556 --publish 7557:7557 --publish 7558:7558 \
+  --volume "$PWD/config.prod.yaml:/etc/pic-x/config.yaml:ro" \
+  --volume "$PWD/pic-x-state:/var/lib/pic-x" \
+  ghcr.io/pic-protocol/pic-x:0.2
+```
+
+To keep the image's built-in production config untouched, mount the file somewhere else and pass that
+path as the command:
+
+```sh
+docker run --rm --init \
+  --publish 7556:7556 --publish 7557:7557 --publish 7558:7558 \
+  --volume "$PWD/my-realm.yaml:/run/pic-x/config.yaml:ro" \
+  --volume "$PWD/pic-x-state:/var/lib/pic-x" \
+  ghcr.io/pic-protocol/pic-x:0.2 \
+  /run/pic-x/config.yaml
+```
 
 ## Try the Production Shape Locally
 

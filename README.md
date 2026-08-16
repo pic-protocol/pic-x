@@ -70,6 +70,29 @@ grpcurl -cacert .volume/tls/ca.pem \
   localhost:7557 picx.admin.v1.Admin/GetVersion
 ```
 
+## Container Image
+
+Published images are available from GitHub Container Registry:
+
+<https://github.com/pic-protocol/pic-x/pkgs/container/pic-x>
+
+```sh
+docker pull ghcr.io/pic-protocol/pic-x:0.2
+```
+
+The image entry point is `pic-x`; the command is the config path. To run with a custom config, mount
+the file and pass its in-container path:
+
+```sh
+docker run --rm --init \
+  --publish 7556:7556 --publish 7557:7557 --publish 7558:7558 \
+  --volume "$PWD/config.prod.yaml:/etc/pic-x/config.yaml:ro" \
+  --volume "$PWD/pic-x-state:/var/lib/pic-x" \
+  ghcr.io/pic-protocol/pic-x:0.2
+```
+
+For volume contents, TLS material and production requirements, see [docs/docker.md](docs/docker.md).
+
 ## Run The Lab
 
 The lab is the fast path for seeing the moving pieces together:
