@@ -33,7 +33,10 @@ use pic::continuity::error::RejectReason;
 use pic::continuity::por::PorValidator;
 use pic::continuity::trust::ArtifactVerifier;
 use ring::digest::{SHA256, digest};
-use ring::signature::{ECDSA_P256_SHA256_FIXED, ED25519, UnparsedPublicKey, VerificationAlgorithm};
+use ring::signature::{
+    ECDSA_P256_SHA256_FIXED, ED25519, RSA_PKCS1_2048_8192_SHA256, UnparsedPublicKey,
+    VerificationAlgorithm,
+};
 use serde_json::Value;
 
 use pic_x_core::TrustedAttesterConfig;
@@ -279,6 +282,7 @@ fn algorithm_matches(algorithm: &str, jwk: &Value) -> bool {
         Some("EC") => {
             algorithm == "ES256" && jwk.get("crv").and_then(Value::as_str) == Some("P-256")
         }
+        Some("RSA") => algorithm == "RS256",
         _ => false,
     }
 }
@@ -422,6 +426,11 @@ pub(crate) fn public_key_from_jwk(jwk: &Value) -> Result<JwkVerifier, String> {
     if jwk.get("d").is_some() {
         return Err("the JWK carries a private key component".to_owned());
     }
+    // RSA is the shape identity providers publish; it has no `crv` and no `x`, so it is read first.
+    if jwk.get("kty").and_then(Value::as_str) == Some("RSA") {
+        return rsa_key_from_jwk(jwk);
+    }
+
     let curve = jwk.get("crv").and_then(Value::as_str).unwrap_or_default();
     let x = jwk
         .get("x")
@@ -463,6 +472,85 @@ pub(crate) fn public_key_from_jwk(jwk: &Value) -> Result<JwkVerifier, String> {
     }
 }
 
+/// An RSA verification key from its JWK modulus and exponent.
+///
+/// `ring` verifies RSA against a DER `RSAPublicKey`, so the two integers are re-encoded into one.
+/// Keys below 2048 bits are refused: an identity provider signing with less is a finding, not
+/// something to accommodate quietly.
+fn rsa_key_from_jwk(jwk: &Value) -> Result<JwkVerifier, String> {
+    let modulus = jwk
+        .get("n")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "the RSA JWK has no `n`".to_owned())?;
+    let exponent = jwk
+        .get("e")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "the RSA JWK has no `e`".to_owned())?;
+    let modulus = b64url_decode(modulus).ok_or_else(|| "`n` is not base64url".to_owned())?;
+    let exponent = b64url_decode(exponent).ok_or_else(|| "`e` is not base64url".to_owned())?;
+
+    if modulus.len() < 256 {
+        return Err(format!(
+            "the RSA key is {} bits; 2048 is the minimum",
+            modulus.len() * 8
+        ));
+    }
+
+    Ok(JwkVerifier {
+        algorithm: &RSA_PKCS1_2048_8192_SHA256,
+        key: der_rsa_public_key(&modulus, &exponent),
+    })
+}
+
+/// `RSAPublicKey ::= SEQUENCE { modulus INTEGER, publicExponent INTEGER }`, DER-encoded.
+fn der_rsa_public_key(modulus: &[u8], exponent: &[u8]) -> Vec<u8> {
+    let mut body = der_integer(modulus);
+    body.extend(der_integer(exponent));
+
+    let mut out = vec![0x30];
+    out.extend(der_length(body.len()));
+    out.extend(body);
+
+    out
+}
+
+fn der_integer(value: &[u8]) -> Vec<u8> {
+    // Strip the leading zeroes a JWK may carry, then add one back when the high bit is set, so the
+    // value stays positive in DER's two's-complement reading.
+    let trimmed = value.iter().position(|byte| *byte != 0).unwrap_or(value.len());
+    let value = &value[trimmed..];
+
+    let mut content = Vec::with_capacity(value.len() + 1);
+    if value.first().is_some_and(|byte| byte & 0x80 != 0) {
+        content.push(0x00);
+    }
+    content.extend_from_slice(value);
+
+    let mut out = vec![0x02];
+    out.extend(der_length(content.len()));
+    out.extend(content);
+
+    out
+}
+
+fn der_length(length: usize) -> Vec<u8> {
+    if length < 0x80 {
+        return vec![length as u8];
+    }
+
+    let bytes = length.to_be_bytes();
+    let significant = bytes
+        .iter()
+        .position(|byte| *byte != 0)
+        .unwrap_or(bytes.len() - 1);
+    let significant = &bytes[significant..];
+
+    let mut out = vec![0x80 | significant.len() as u8];
+    out.extend_from_slice(significant);
+
+    out
+}
+
 fn decode_json(segment: &str, label: &str) -> Result<Value, RejectReason> {
     let bytes = b64url_decode(segment)
         .ok_or_else(|| RejectReason::PorRejected(format!("the SD-JWT {label} is not base64url")))?;
@@ -499,6 +587,13 @@ mod tests {
     use serde_json::json;
 
     const NOW: i64 = 1_786_700_800;
+
+    // Captured from the lab Keycloak: a real RS256 access token and the key that signed it.
+    const KEYCLOAK_HEADER: &str = "eyJhbGciOiJSUzI1NiIsInR5cCIgOiAiSldUIiwia2lkIiA6ICI4QUtvT09DYldoQV9QbGhKTi14dzBZWnhuWk44UW92cHJURXZLdlVPaDY4In0";
+    const KEYCLOAK_PAYLOAD: &str = "eyJleHAiOjE3ODY4ODg1OTIsImlhdCI6MTc4Njg4ODI5MiwianRpIjoib25ydHJvOjFkY2I5NjE0LWQzODgtZjk1OS1kMDcxLTMyMzBjZGJiY2VmYiIsImlzcyI6Imh0dHA6Ly9sb2NhbGhvc3Q6MTgwODAvcmVhbG1zL2FjbWUtaWRwIiwiYXVkIjoicGljLXgiLCJzdWIiOiJhZGNlZTBhNi1hZWVkLTQ2ZjItYTIxYi1mMTQwNDI5Mjc2ZmYiLCJ0eXAiOiJCZWFyZXIiLCJhenAiOiJhY21lLWlkcC1jbGllbnQiLCJzaWQiOiJjVTBtZEtqNFpNMFFuVklFa3ZtSEM2M2oiLCJhY3IiOiIxIiwicmVhbG1fYWNjZXNzIjp7InJvbGVzIjpbInN0b3JhZ2U6c2F2ZSIsImRvY3VtZW50czpyZWFkOmRvY3VtZW50LTQyIiwiZXhhbXBsZS11c2VyIl19LCJzY29wZSI6ImVtYWlsIHByb2ZpbGUiLCJlbWFpbF92ZXJpZmllZCI6dHJ1ZSwibmFtZSI6IkFsaWNlIEV4YW1wbGUiLCJwcmVmZXJyZWRfdXNlcm5hbWUiOiJhbGljZSIsImdpdmVuX25hbWUiOiJBbGljZSIsImZhbWlseV9uYW1lIjoiRXhhbXBsZSIsImVtYWlsIjoiYWxpY2VAZXhhbXBsZS5sb2NhbCIsInBpY19zY29wZXMiOlsiZG9jdW1lbnRzOnJlYWQ6ZG9jdW1lbnQtNDIiLCJzdG9yYWdlOnNhdmUiXX0";
+    const KEYCLOAK_SIGNATURE: &str = "QSm_ENG0wrHjt32QH7iI731Ut2uB-hHJqtc0wCnTDOeeRWWX-2BeZI0UNpoDp-f0IB3Ie57Hr9H3GzFTedCtMnm62nkkrKL3LEn0m35vLABHtqsHwgx6MrJQ-lusdfHV7p4VILL5JovnDziWSJzbgRpXER1QDzYeS5_Y7Tqr6iJIzr9rzo7XYaiESGQ4dkm_7cuEzu_xJdllUzypW8IqnIHU_JjuwbGhMfQ1HW4sLOLGJabz4Yi9sYEoczdTvCIOw7mS2I9iPoslgvpQHdJtRVvMM6lDQXZYm04KiQr_9lEYggVXCYmC5vTeXYQh7Y_PhhQ_CQg78UuJuFJv8GoV2g";
+    const KEYCLOAK_MODULUS: &str = "p_IK08O9i822gXL1EpnwOdyBInMJvbjPebtXBGpSat0TKwXCjDVi-mWNupuoW0FC5Ama_Z-fjEjWCKCydISeXDYnVWJEgWVaJ8Rma1kEmIIdN8UHu_CUAW1NvJeyISjf4XMQsBnkx2fqVHu32HFvKLlBZ6rhL2cPjD7N8xiS_tKcQ-wDdRz6r4czW43gEPzXfSQDMphie70Bu99la5vjnm1pHnUPw7anrPoI36K2dJYY0vrYD7HCqJFcG9in5Wi2Fl1RlhpUguHyjMPnWxdGu7D6IsN5hd9SOCyaaA0C37tzNQ9U_ekTRGWAv5iXB06kEJMqSi_3iKC5JIb1zpAWow";
+
 
     /// A lab attester: an Ed25519 issuing key and the key set it publishes.
     struct Attester {
@@ -831,6 +926,49 @@ mod tests {
             validator(&attester, &keys).validate_evidence(&por(evidence.into_bytes())),
         );
         assert!(error.contains("Key Binding JWT"));
+    }
+
+    /// A real RS256 token from the lab IdP, with the JWK Keycloak publishes for it. Identity
+    /// providers sign with RSA, so this path has to work against a genuine key, not a synthetic one.
+    #[test]
+    fn an_rsa_key_verifies_a_real_identity_provider_signature() {
+        let jwk = serde_json::json!({
+            "kty": "RSA",
+            "alg": "RS256",
+            "use": "sig",
+            "n": KEYCLOAK_MODULUS,
+            "e": "AQAB",
+        });
+        let key = public_key_from_jwk(&jwk).expect("the RSA JWK is read");
+
+        let signing_input = format!("{KEYCLOAK_HEADER}.{KEYCLOAK_PAYLOAD}");
+        let signature = b64url_decode(KEYCLOAK_SIGNATURE).expect("signature decodes");
+        assert!(ArtifactVerifier::verify(
+            &key,
+            signing_input.as_bytes(),
+            &signature
+        ));
+
+        // A different payload under the same signature must not verify.
+        assert!(!ArtifactVerifier::verify(
+            &key,
+            b"not what was signed",
+            &signature
+        ));
+    }
+
+    #[test]
+    fn an_undersized_or_malformed_rsa_key_is_refused() {
+        // 1024-bit keys are not accommodated quietly.
+        let small = serde_json::json!({
+            "kty": "RSA",
+            "n": base64url(&[0xC5; 128]),
+            "e": "AQAB",
+        });
+        assert!(public_key_from_jwk(&small).is_err());
+
+        let no_exponent = serde_json::json!({ "kty": "RSA", "n": base64url(&[0xC5; 256]) });
+        assert!(public_key_from_jwk(&no_exponent).is_err());
     }
 
     #[test]
