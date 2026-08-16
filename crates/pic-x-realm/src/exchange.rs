@@ -518,7 +518,7 @@ impl TokenEndpoint {
             // Not "invalid token": this realm cannot decide, and says so with a status a client
             // can retry against.
             ExchangeError::temporarily_unavailable(format!(
-                "the key set of the identity provider for exchange profile `{}` is unavailable:                  {error}",
+                "the key set of the identity provider for exchange profile `{}` is unavailable: {error}",
                 profile.id
             ))
         })?;

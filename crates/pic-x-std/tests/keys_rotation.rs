@@ -518,3 +518,44 @@ fn the_default_ring_is_edwards_and_older_rings_still_load() {
         "EdDSA"
     );
 }
+
+/// Changing the algorithm a realm signs with must migrate the ring, not break it.
+///
+/// The realm publishes the new algorithm the moment configuration changes; if the ring kept an
+/// Edwards key signing, every exchange would fail on the mismatch between what is advertised and
+/// what is produced. The old keys stay published so what they signed keeps verifying.
+#[test]
+fn changing_the_algorithm_activates_a_key_of_the_new_kind() {
+    let directory = ring("algorithm-change");
+    let policy = KeyPolicy {
+        publish_ahead: Duration::from_secs(0),
+        ..policy()
+    };
+
+    let edwards = DirectoryKeyManager::new(directory.clone(), policy);
+    edwards.maintain().expect("the ring is created");
+    let first = edwards.sign(b"payload").expect("it signs");
+    assert_eq!(first.algorithm(), "EdDSA");
+
+    // The same directory, now configured for ES256.
+    let nist = DirectoryKeyManager::with_algorithm(directory, policy, RingAlgorithm::Es256);
+    nist.maintain().expect("the ring migrates");
+
+    let second = nist.sign(b"payload").expect("it signs with the new kind");
+    assert_eq!(second.algorithm(), "ES256");
+    assert_ne!(second.key_id().as_str(), first.key_id().as_str());
+
+    // The Edwards key is still published, so tokens it signed still verify.
+    let published = nist.public_keys().expect("the key set is published");
+    assert!(
+        published
+            .iter()
+            .any(|jwk| jwk.kid == first.key_id().as_str()),
+        "the superseded key must stay published: {published:?}"
+    );
+    assert!(
+        published
+            .iter()
+            .any(|jwk| jwk.kid == second.key_id().as_str())
+    );
+}

@@ -484,6 +484,28 @@ impl KeyManager for DirectoryKeyManager {
             report.activated += 1;
         }
 
+        // A realm that changed the algorithm it signs with needs a key of the new kind signing
+        // *now*, not at the next rotation. Without this the ring keeps a key of the old kind active
+        // and every exchange fails, because what the realm publishes and what it signs with no
+        // longer agree — the deployment would look broken rather than migrated. The keys of the old
+        // kind stay published, so everything they signed keeps verifying until they age out.
+        let active_is_current = ring
+            .keys
+            .iter()
+            .any(|entry| entry.state == KeyState::Active && entry.algorithm == self.algorithm);
+        if !active_is_current && !ring.keys.is_empty() {
+            for entry in &mut ring.keys {
+                if entry.state == KeyState::Active {
+                    entry.state = KeyState::Retired;
+                    entry.retired_at = Some(now);
+                    report.retired += 1;
+                }
+            }
+            ring.keys.push(self.create(now, true)?);
+            report.published += 1;
+            report.activated += 1;
+        }
+
         // Every published key whose window has passed takes over, oldest first. A loop rather than
         // one step because a process that was stopped for a week comes back with several due, and
         // waking up to a ring that needs three more passes to become correct is not a state worth
