@@ -44,9 +44,13 @@ use crate::attester_keys::AttesterKeySource;
 /// The algorithms this build accepts on workload-signed COSE artifacts.
 ///
 /// The same set the PoR key agreement enforces: a workload signs with the key its credential bound,
-/// and these are the key kinds that can produce a COSE signature here. RSA is verifiable for a JWS
-/// but has no COSE algorithm in this build, so it is not offered for the artifacts.
-pub(crate) const WORKLOAD_COSE_ALGORITHMS: [&str; 2] = ["EdDSA", "ES256"];
+/// and these are the key kinds that can produce a COSE signature here — the curve features this
+/// build enables on the protocol crate, no more and no less. Announcing fewer than are accepted
+/// would turn a working workload away for a reason the document does not give; announcing more
+/// would invite one that is then refused.
+///
+/// RSA is verifiable for a JWS but has no COSE algorithm, so it is not offered for the artifacts.
+pub(crate) const WORKLOAD_COSE_ALGORITHMS: [&str; 3] = ["EdDSA", "ES256", "ES384"];
 
 /// The SD-JWT digest algorithm Profile 0.2 accepts.
 const SD_ALG_SHA_256: &str = "sha-256";

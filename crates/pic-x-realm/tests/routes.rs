@@ -716,14 +716,14 @@ async fn a_realm_publishes_the_algorithms_of_each_signer() {
     // workload to sign with a key it does not have, and would hide what this realm accepts.
     assert_eq!(
         published["pic_continuity_transition"]["signing_alg_values_supported"],
-        serde_json::json!(["EdDSA", "ES256"]),
+        serde_json::json!(["EdDSA", "ES256", "ES384"]),
         "{document}"
     );
     // A Continuity COSE and a PIC Token come in both roles, so both sets apply.
     for both in ["pic_continuity", "pic_token"] {
         assert_eq!(
             published[both]["signing_alg_values_supported"],
-            serde_json::json!(["ES256", "EdDSA"]),
+            serde_json::json!(["ES256", "EdDSA", "ES384"]),
             "{both}: {document}"
         );
     }
