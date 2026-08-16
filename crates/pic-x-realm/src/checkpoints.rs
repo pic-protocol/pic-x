@@ -1,117 +1,93 @@
-//! Which PCA checkpoints a realm currently accepts as the basis for advancement.
+//! Which PCA checkpoints a realm accepts as the basis for advancement.
 //!
-//! Settlement asks one question — *are these exact signed PIC PCA COSE bytes a checkpoint I issued
-//! and still accept?* — and this answers it.
+//! Settlement asks one question — *are these exact signed PIC PCA COSE bytes a checkpoint I
+//! issued?* — and a realm can answer it without remembering anything: **it signed them**. So the
+//! answer is a signature check against this realm's own published keys, not a lookup in a store.
 //!
-//! # Why a settled predecessor is not retired
+//! # Why not a store
 //!
-//! Profile 0.2 treats sibling branches as a property, not a gap: two workloads may each continue the
-//! same checkpoint, which is what fan-out and worker pools need, and neither branch can import
-//! authority from the other. So accepting a successor does **not** retire its predecessor here.
-//! Terminating a lineage is a revocation decision, made through the revocation mechanism.
+//! Holding issued checkpoints in memory would make a restart destroy every lineage in flight — a
+//! workload would be told its checkpoint is untrusted, with no way to obtain another short of
+//! redoing the whole OAuth exchange — and would make replicas disagree depending on which one a
+//! candidate reached. A signature check has neither problem: it is stateless, so restarts and
+//! replicas are transparent.
 //!
-//! # Why entries expire
+//! # What bounds a checkpoint's life
 //!
-//! Keeping every checkpoint forever would make this grow without bound, and would keep a checkpoint
-//! usable long after the token carrying it expired. Each entry therefore carries the expiry of the
-//! token it was issued with, and the store is capped: when full, the entries closest to expiry go
-//! first.
+//! A PIC PCA COSE payload carries no expiry: Profile 0.2 defines `profile`, `position`,
+//! `context_of_authority` and `challenge`, and the articles state a PCA has no mandatory
+//! independent expiration. What bounds it here is **key retention** — a checkpoint stays advanceable
+//! for as long as the realm key that signed it is still published, which is the realm's `retain`
+//! window. Ending one lineage sooner is a revocation decision, and revocation is a separate
+//! mechanism.
+//!
+//! Sibling branches remain a property of the profile: nothing here retires a predecessor when its
+//! successor is issued, so fan-out and worker pools work, and no branch can import authority from
+//! another.
 
-use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::Arc;
 
-use pic::continuity::artifacts::{PicPcaPayload, artifact_sha256};
-use pic::continuity::trust::{RevocationCheck, TrustedCheckpoint};
+use pic::continuity::artifacts::{PicPcaCose, PicPcaPayload};
+use pic::continuity::cose::CoseError;
+use pic::continuity::trust::{ArtifactVerifier, RevocationCheck, TrustedCheckpoint};
 
-/// How many checkpoints one realm holds before the ones closest to expiry are dropped.
-const MAX_CHECKPOINTS: usize = 100_000;
+use pic_x_core::{Jwk, KeyManager};
 
-/// The checkpoints one realm currently accepts, keyed by the SHA-256 of their exact signed bytes.
-///
-/// The digest is the key, but acceptance still compares the **exact bytes**: a digest match with
-/// different bytes would mean a hash collision, and this must not turn one into acceptance.
-pub(crate) struct CheckpointStore {
-    entries: Mutex<HashMap<Vec<u8>, Entry>>,
+use crate::por::public_key_from_jwk;
+
+/// Accepts a checkpoint when this realm's own signature verifies over it.
+pub(crate) struct RealmSignedCheckpoints {
+    /// The realm's token ring. Its published keys are exactly the signatures this realm still
+    /// stands behind, so key retention *is* the acceptance window.
+    pub(crate) keys: Arc<dyn KeyManager>,
 }
 
-struct Entry {
-    /// The exact signed PIC PCA COSE bytes, compared byte for byte on lookup.
-    pca_bytes: Vec<u8>,
-    /// When this checkpoint stops being accepted, in seconds since the Unix epoch.
-    expires_at: i64,
-}
-
-impl CheckpointStore {
-    pub(crate) fn new() -> Self {
-        Self {
-            entries: Mutex::new(HashMap::new()),
-        }
-    }
-
-    /// Records a checkpoint this realm just issued, accepted until `expires_at`.
-    pub(crate) fn insert(&self, pca_bytes: Vec<u8>, expires_at: i64, now: i64) {
-        let Ok(mut entries) = self.entries.lock() else {
-            return;
+impl TrustedCheckpoint for RealmSignedCheckpoints {
+    fn is_current_checkpoint(&self, exact_pca_bytes: &[u8]) -> bool {
+        let Ok(cose) = PicPcaCose::from_bytes(exact_pca_bytes) else {
+            return false;
         };
-
-        entries.retain(|_, entry| entry.expires_at > now);
-        if entries.len() >= MAX_CHECKPOINTS {
-            // Drop what is closest to expiry: it is the entry whose loss costs the least.
-            if let Some(soonest) = entries
-                .iter()
-                .min_by_key(|(_, entry)| entry.expires_at)
-                .map(|(key, _)| key.clone())
-            {
-                entries.remove(&soonest);
-            }
-        }
-
-        entries.insert(
-            artifact_sha256(&pca_bytes),
-            Entry {
-                pca_bytes,
-                expires_at,
-            },
-        );
-    }
-
-    /// `true` when these exact bytes are an accepted, unexpired checkpoint.
-    pub(crate) fn accepts(&self, pca_bytes: &[u8], now: i64) -> bool {
-        let Ok(entries) = self.entries.lock() else {
-            // A poisoned lock must not become "everything is trusted".
+        let Ok(published) = self.keys.public_keys() else {
+            // A ring that cannot be read must not become "everything is trusted".
             return false;
         };
 
-        entries
-            .get(&artifact_sha256(pca_bytes))
-            .is_some_and(|entry| entry.expires_at > now && entry.pca_bytes == pca_bytes)
-    }
+        // The protected header names the key, so a signature from a rotated-away key is rejected
+        // without trying the rest; with no `kid`, every published key is a candidate.
+        let named = cose.kid();
 
-    #[cfg(test)]
-    fn len(&self) -> usize {
-        self.entries
-            .lock()
-            .map(|entries| entries.len())
-            .unwrap_or(0)
+        published
+            .iter()
+            .filter(|jwk| named.as_deref().is_none_or(|kid| jwk.kid == kid))
+            .any(|jwk| verifies(&cose, jwk))
     }
 }
 
-/// The [`TrustedCheckpoint`] view of the store at one instant.
-pub(crate) struct CheckpointsAt<'a> {
-    pub(crate) store: &'a CheckpointStore,
-    pub(crate) now: i64,
-}
+fn verifies(cose: &PicPcaCose, jwk: &Jwk) -> bool {
+    let Ok(key) = public_key_from_jwk(&serde_json::json!({
+        "kty": jwk.kty,
+        "crv": jwk.crv,
+        "x": jwk.x,
+        "y": jwk.y,
+    })) else {
+        return false;
+    };
 
-impl TrustedCheckpoint for CheckpointsAt<'_> {
-    fn is_current_checkpoint(&self, exact_pca_bytes: &[u8]) -> bool {
-        self.store.accepts(exact_pca_bytes, self.now)
-    }
+    cose.verify_with(|data, signature| {
+        if ArtifactVerifier::verify(&key, data, signature) {
+            Ok(())
+        } else {
+            Err(CoseError::VerificationFailed)
+        }
+    })
+    .is_ok()
 }
 
 /// Revocation is not wired yet; this states that plainly instead of pretending to check.
 ///
-/// Terminating a lineage today means letting its checkpoint expire or restarting the realm. A
-/// deployment that needs revocation replaces this with the PIC Revocation Specification mechanism.
+/// With acceptance bounded by key retention rather than by a store, revocation is the only way to
+/// end a single lineage early. A deployment that needs it replaces this with the mechanism of the
+/// PIC Revocation Specification.
 pub(crate) struct NoRevocationConfigured;
 
 impl RevocationCheck for NoRevocationConfigured {
@@ -128,68 +104,146 @@ impl RevocationCheck for NoRevocationConfigured {
 )]
 mod tests {
     use super::*;
+    use base64::Engine;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use pic::continuity::authority::{
+        AuthorityValue, IndexedAuthorityMap, Invariant, LogicalAuthority,
+    };
+    use pic::continuity::trust::{ArtifactSigner, Ed25519Signer};
+    use pic_x_core::keys::{KeyId, Maintenance, Result as KeyResult, Signature};
+    use std::collections::BTreeMap;
 
-    const NOW: i64 = 1_786_700_000;
+    /// A realm ring backed by one Ed25519 key, publishing it the way the product ring does.
+    #[derive(Debug)]
+    struct Ring {
+        key: ed25519_dalek::SigningKey,
+        kid: String,
+        publishes: bool,
+    }
 
-    #[test]
-    fn only_the_exact_bytes_of_a_recorded_checkpoint_are_accepted() {
-        let store = CheckpointStore::new();
-        store.insert(b"exact-signed-pca-0".to_vec(), NOW + 3_600, NOW);
+    impl Ring {
+        fn new(seed: u8, kid: &str) -> Self {
+            Self {
+                key: ed25519_dalek::SigningKey::from_bytes(&[seed; 32]),
+                kid: kid.to_owned(),
+                publishes: true,
+            }
+        }
 
-        assert!(store.accepts(b"exact-signed-pca-0", NOW));
-        assert!(!store.accepts(b"exact-signed-pca-1", NOW));
-        assert!(!store.accepts(b"", NOW));
+        fn signer(&self) -> Ed25519Signer {
+            Ed25519Signer::new(self.key.clone(), &self.kid)
+        }
+    }
+
+    impl KeyManager for Ring {
+        fn name(&self) -> &'static str {
+            "test-ring"
+        }
+
+        fn public_keys(&self) -> KeyResult<Vec<Jwk>> {
+            if !self.publishes {
+                return Ok(Vec::new());
+            }
+            Ok(vec![Jwk {
+                kid: self.kid.clone(),
+                kty: "OKP".to_owned(),
+                crv: Some("Ed25519".to_owned()),
+                x: URL_SAFE_NO_PAD.encode(self.key.verifying_key().as_bytes()),
+                y: None,
+                alg: "EdDSA".to_owned(),
+                usage: "sig".to_owned(),
+            }])
+        }
+
+        fn active_key_id(&self) -> KeyResult<KeyId> {
+            Ok(KeyId::new(self.kid.clone()))
+        }
+
+        fn sign(&self, payload: &[u8]) -> KeyResult<Signature> {
+            use ed25519_dalek::Signer;
+            Ok(Signature::new(
+                KeyId::new(self.kid.clone()),
+                "EdDSA",
+                self.key.sign(payload).to_bytes().to_vec(),
+            ))
+        }
+
+        fn maintain(&self) -> KeyResult<Maintenance> {
+            Ok(Maintenance::default())
+        }
+    }
+
+    fn checkpoint_signed_by(signer: &dyn ArtifactSigner) -> Vec<u8> {
+        let mut contract = BTreeMap::new();
+        contract.insert("corporation".into(), AuthorityValue::One("ACME".into()));
+        let authority = IndexedAuthorityMap::from_logical(&LogicalAuthority::new(
+            None,
+            vec![Invariant::new("storage:save", "save", "storage", "*")],
+            contract,
+        ))
+        .unwrap();
+
+        pic::continuity::verifier::issue_settled(
+            PicPcaPayload::new(0, authority, vec![0x7b; 32]),
+            signer,
+            &pic::continuity::verifier::SettlementContext::default(),
+        )
+        .unwrap()
+        .pca_bytes
     }
 
     #[test]
-    fn a_predecessor_stays_acceptable_after_a_successor_is_recorded() {
-        // Profile 0.2 sibling branches: a second workload may continue the same checkpoint, so
-        // recording PCA 1 must not retire PCA 0.
-        let store = CheckpointStore::new();
-        store.insert(b"pca-0".to_vec(), NOW + 3_600, NOW);
-        store.insert(b"pca-1".to_vec(), NOW + 3_600, NOW);
+    fn a_checkpoint_this_realm_signed_is_accepted() {
+        let ring = Ring::new(0x11, "realm-key-1");
+        let pca = checkpoint_signed_by(&ring.signer());
 
-        assert!(store.accepts(b"pca-0", NOW));
-        assert!(store.accepts(b"pca-1", NOW));
-    }
-
-    #[test]
-    fn an_expired_checkpoint_stops_being_accepted() {
-        let store = CheckpointStore::new();
-        store.insert(b"pca-0".to_vec(), NOW + 60, NOW);
-
-        assert!(store.accepts(b"pca-0", NOW));
-        assert!(!store.accepts(b"pca-0", NOW + 61));
-    }
-
-    #[test]
-    fn expired_entries_are_dropped_rather_than_accumulated() {
-        let store = CheckpointStore::new();
-        store.insert(b"old".to_vec(), NOW + 10, NOW);
-        assert_eq!(store.len(), 1);
-
-        // A later insertion sweeps what has expired by then.
-        store.insert(b"new".to_vec(), NOW + 3_600, NOW + 100);
-        assert_eq!(store.len(), 1);
-        assert!(store.accepts(b"new", NOW + 100));
-        assert!(!store.accepts(b"old", NOW + 100));
-    }
-
-    #[test]
-    fn the_trusted_checkpoint_view_answers_for_the_instant_it_was_built_with() {
-        let store = CheckpointStore::new();
-        store.insert(b"pca-0".to_vec(), NOW + 60, NOW);
-
-        let inside = CheckpointsAt {
-            store: &store,
-            now: NOW,
+        let trusted = RealmSignedCheckpoints {
+            keys: Arc::new(Ring::new(0x11, "realm-key-1")),
         };
-        assert!(inside.is_current_checkpoint(b"pca-0"));
+        assert!(trusted.is_current_checkpoint(&pca));
+    }
 
-        let after = CheckpointsAt {
-            store: &store,
-            now: NOW + 61,
+    #[test]
+    fn a_checkpoint_signed_by_another_realm_is_rejected() {
+        // Same shape, different key: a checkpoint from elsewhere must not advance here.
+        let elsewhere = Ring::new(0x22, "realm-key-1");
+        let pca = checkpoint_signed_by(&elsewhere.signer());
+
+        let trusted = RealmSignedCheckpoints {
+            keys: Arc::new(Ring::new(0x11, "realm-key-1")),
         };
-        assert!(!after.is_current_checkpoint(b"pca-0"));
+        assert!(!trusted.is_current_checkpoint(&pca));
+    }
+
+    #[test]
+    fn a_checkpoint_whose_key_is_no_longer_published_is_rejected() {
+        // Key retention is the acceptance window: once the ring stops publishing a key, the
+        // checkpoints it signed stop being advanceable.
+        let ring = Ring::new(0x11, "realm-key-1");
+        let pca = checkpoint_signed_by(&ring.signer());
+
+        let mut retired = Ring::new(0x11, "realm-key-1");
+        retired.publishes = false;
+        let trusted = RealmSignedCheckpoints {
+            keys: Arc::new(retired),
+        };
+        assert!(!trusted.is_current_checkpoint(&pca));
+    }
+
+    #[test]
+    fn tampered_or_malformed_checkpoint_bytes_are_rejected() {
+        let ring = Ring::new(0x11, "realm-key-1");
+        let pca = checkpoint_signed_by(&ring.signer());
+        let trusted = RealmSignedCheckpoints {
+            keys: Arc::new(Ring::new(0x11, "realm-key-1")),
+        };
+
+        let mut tampered = pca.clone();
+        let last = tampered.len() - 1;
+        tampered[last] ^= 0xFF;
+        assert!(!trusted.is_current_checkpoint(&tampered));
+
+        assert!(!trusted.is_current_checkpoint(b"not a COSE artifact"));
+        assert!(!trusted.is_current_checkpoint(&[]));
     }
 }

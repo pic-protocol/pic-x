@@ -54,29 +54,50 @@ impl pic_x_core::AuditSink for SilentSink {
     }
 }
 
-/// The realm signing key. Settlement never verifies its own past signatures — a checkpoint is
-/// trusted by exact bytes — so a deterministic stand-in keeps the test about the flow.
+/// The realm token ring: a real Ed25519 key that signs and publishes itself.
+///
+/// It has to be real now — a checkpoint is accepted because *this realm's signature verifies over
+/// it*, so a stand-in that returns fixed bytes would fail the very check under test.
 #[derive(Debug)]
-struct FakeKeys;
+struct RealmRing {
+    key: ed25519_dalek::SigningKey,
+}
 
-impl KeyManager for FakeKeys {
+impl RealmRing {
+    fn new() -> Self {
+        Self {
+            key: ed25519_dalek::SigningKey::from_bytes(&[0x77; 32]),
+        }
+    }
+}
+
+impl KeyManager for RealmRing {
     fn name(&self) -> &'static str {
-        "fake"
+        "test-realm-ring"
     }
 
     fn public_keys(&self) -> pic_x_core::keys::Result<Vec<Jwk>> {
-        Ok(Vec::new())
+        Ok(vec![Jwk {
+            kid: "realm-key-1".to_owned(),
+            kty: "OKP".to_owned(),
+            crv: Some("Ed25519".to_owned()),
+            x: b64(self.key.verifying_key().as_bytes()),
+            y: None,
+            alg: "EdDSA".to_owned(),
+            usage: "sig".to_owned(),
+        }])
     }
 
     fn active_key_id(&self) -> pic_x_core::keys::Result<KeyId> {
         Ok(KeyId::new("realm-key-1"))
     }
 
-    fn sign(&self, _payload: &[u8]) -> pic_x_core::keys::Result<Signature> {
+    fn sign(&self, payload: &[u8]) -> pic_x_core::keys::Result<Signature> {
+        use ed25519_dalek::Signer;
         Ok(Signature::new(
             KeyId::new("realm-key-1"),
             "EdDSA",
-            vec![0x42; 64],
+            self.key.sign(payload).to_bytes().to_vec(),
         ))
     }
 
@@ -126,25 +147,59 @@ impl Attester {
 
     /// An SD-JWT presentation binding `workload_public_key`, disclosing corporation and department.
     fn presentation(&self, workload_public_key: &[u8]) -> String {
+        self.presentation_for(workload_public_key, "ACME", "sensitive-documents")
+    }
+
+    /// A presentation that discloses only a claim the execution contract says nothing about.
+    fn presentation_silent(&self, workload_public_key: &[u8]) -> String {
+        let disclosure =
+            b64(
+                serde_json::json!(["Xn7kw6wekrrpvjPLcrMOQQ", "workload_role", "document-reader"])
+                    .to_string()
+                    .as_bytes(),
+            );
+        let digests = vec![b64(digest(&SHA256, disclosure.as_bytes()).as_ref())];
+        let jwt = self.sign_credential(workload_public_key, &digests);
+
+        format!("{jwt}~{disclosure}~")
+    }
+
+    /// The same as [`presentation`](Self::presentation), with the disclosed values chosen here.
+    fn presentation_for(
+        &self,
+        workload_public_key: &[u8],
+        corporation: &str,
+        department: &str,
+    ) -> String {
         let disclosures = [
             b64(
-                serde_json::json!(["f0UUCvMSycSUXaVfuiDWAA", "corporation", "ACME"])
+                serde_json::json!(["f0UUCvMSycSUXaVfuiDWAA", "corporation", corporation])
                     .to_string()
                     .as_bytes(),
             ),
-            b64(serde_json::json!([
-                "E54m03bpDTSeWfZOQ-1wVw",
-                "department",
-                "sensitive-documents"
-            ])
-            .to_string()
-            .as_bytes()),
+            b64(
+                serde_json::json!(["E54m03bpDTSeWfZOQ-1wVw", "department", department])
+                    .to_string()
+                    .as_bytes(),
+            ),
         ];
         let digests: Vec<String> = disclosures
             .iter()
             .map(|d| b64(digest(&SHA256, d.as_bytes()).as_ref()))
             .collect();
 
+        let mut presentation = self.sign_credential(workload_public_key, &digests);
+        for disclosure in &disclosures {
+            presentation.push('~');
+            presentation.push_str(disclosure);
+        }
+        presentation.push('~');
+
+        presentation
+    }
+
+    /// The issuer-signed half of a credential: digest commitments and the bound workload key.
+    fn sign_credential(&self, workload_public_key: &[u8], digests: &[String]) -> String {
         let header = serde_json::json!({"alg": "EdDSA", "kid": "attester-1", "typ": "vc+sd-jwt"});
         let payload = serde_json::json!({
             "iss": ATTESTER_ISSUER,
@@ -166,14 +221,7 @@ impl Attester {
         );
         let signature = self.pair.sign(signing_input.as_bytes());
 
-        let mut presentation = format!("{signing_input}.{}", b64(signature.as_ref()));
-        for disclosure in &disclosures {
-            presentation.push('~');
-            presentation.push_str(disclosure);
-        }
-        presentation.push('~');
-
-        presentation
+        format!("{signing_input}.{}", b64(signature.as_ref()))
     }
 }
 
@@ -259,7 +307,7 @@ fn realm_trusting(jwks_uri: &str) -> Realm {
         Some("https://pic-x.example.com/realms/acme".to_owned()),
         true,
         None,
-        Some(Arc::new(FakeKeys)),
+        Some(Arc::new(RealmRing::new())),
         Arc::new(SilentSink),
         None,
     )
@@ -602,4 +650,78 @@ async fn advancement_still_refuses_a_continuity_proposal() {
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn a_workload_that_contradicts_the_execution_contract_is_rejected() {
+    let lab = lab().await;
+    let (_, body) = post_token(&lab.router, initialization_body()).await;
+    let token0 = body["access_token"].as_str().expect("token 0").to_owned();
+    let (pca0_bytes, _) = checkpoint_of(&token0);
+
+    // Properly attested by an issuer this realm trusts, with a key it controls — and belonging to
+    // a corporation the lineage's execution contract does not allow.
+    let workload_pair = ed25519_dalek::SigningKey::from_bytes(&[0x55; 32]);
+    let presentation = lab.attester.presentation_for(
+        workload_pair.verifying_key().as_bytes(),
+        "OTHER-CORP",
+        "sensitive-documents",
+    );
+    let candidate = build_candidate(
+        &pca0_bytes,
+        CandidateRequest {
+            next_challenge: vec![0x5a; 32],
+            proof_of_relationship: Some(ProofOfRelationship::sd_jwt(&presentation)),
+            ..Default::default()
+        },
+        &Ed25519Signer::new(workload_pair, "spiffe://acme/outsider"),
+        None,
+    )
+    .expect("the candidate builds");
+
+    let (status, body) = post_token(&lab.router, advancement_body(&candidate.token)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error_description"]
+            .as_str()
+            .expect("a description")
+            .contains("conformance"),
+        "unexpected rejection: {body}"
+    );
+}
+
+#[tokio::test]
+async fn a_presentation_that_discloses_nothing_the_contract_constrains_is_rejected() {
+    let lab = lab().await;
+    let (_, body) = post_token(&lab.router, initialization_body()).await;
+    let token0 = body["access_token"].as_str().expect("token 0").to_owned();
+    let (pca0_bytes, _) = checkpoint_of(&token0);
+
+    // Attested, but silent about `corporation`: the credential proves a relationship and nothing
+    // about whether this workload may run in this lineage.
+    let workload_pair = ed25519_dalek::SigningKey::from_bytes(&[0x66; 32]);
+    let presentation = lab
+        .attester
+        .presentation_silent(workload_pair.verifying_key().as_bytes());
+    let candidate = build_candidate(
+        &pca0_bytes,
+        CandidateRequest {
+            next_challenge: vec![0x5a; 32],
+            proof_of_relationship: Some(ProofOfRelationship::sd_jwt(&presentation)),
+            ..Default::default()
+        },
+        &Ed25519Signer::new(workload_pair, "spiffe://acme/quiet"),
+        None,
+    )
+    .expect("the candidate builds");
+
+    let (status, body) = post_token(&lab.router, advancement_body(&candidate.token)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error_description"]
+            .as_str()
+            .expect("a description")
+            .contains("conformance"),
+        "unexpected rejection: {body}"
+    );
 }

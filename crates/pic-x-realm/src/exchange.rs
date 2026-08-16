@@ -23,7 +23,7 @@ use pic::continuity::authority::{
 };
 use pic::continuity::cose::{CoseError, SigningAlgorithm};
 use pic::continuity::proposal::InitialContinuityProposal;
-use pic::continuity::trust::{ArtifactSigner, DefaultPolicy};
+use pic::continuity::trust::ArtifactSigner;
 use pic::continuity::verifier::{SettlementAuthority, SettlementContext, issue_settled};
 use regex::{Captures, Regex};
 use ring::rand::{SecureRandom, SystemRandom};
@@ -38,22 +38,22 @@ use pic_x_core::{
 
 use crate::COMPONENT;
 use crate::attester_keys::AttesterKeyCache;
-use crate::checkpoints::{CheckpointStore, CheckpointsAt, NoRevocationConfigured};
+use crate::checkpoints::{NoRevocationConfigured, RealmSignedCheckpoints};
+use crate::conformance::ContractConformance;
 use crate::por::SdJwtPorValidator;
 
 const GRANT_TOKEN_EXCHANGE: &str = "urn:ietf:params:oauth:grant-type:token-exchange";
 const TOKEN_TYPE_N_A: &str = "N_A";
-/// How long a checkpoint stays acceptable when nothing else bounds it. A settled token and the
-/// checkpoint it carries expire together, so a lineage cannot be advanced indefinitely.
-const DEFAULT_CHECKPOINT_LIFETIME: i64 = 3_600;
+/// How long a settled token issued by an advancement is valid. The checkpoint it carries is
+/// accepted for as long as the realm key that signed it stays published, so this bounds the token,
+/// not the lineage.
+const DEFAULT_TOKEN_LIFETIME: i64 = 3_600;
 
 /// Runtime state for one realm token endpoint.
 #[derive(Clone)]
 pub(crate) struct TokenEndpoint {
     pub(crate) realm: Realm,
     pub(crate) development_mode: bool,
-    /// The checkpoints this realm issued and still accepts as a basis for advancement.
-    pub(crate) checkpoints: Arc<CheckpointStore>,
     /// The attester key sets backing Proof-of-Relationship validation.
     pub(crate) attester_keys: Arc<AttesterKeyCache>,
 }
@@ -256,14 +256,6 @@ impl TokenEndpoint {
             ExchangeError::server_error(format!("could not issue PIC Token JWT: {error}"))
         })?;
 
-        // Only now is this checkpoint a basis for advancement: recorded after it was signed, and
-        // only for as long as the token carrying it is valid.
-        self.checkpoints.insert(
-            issued.pca_bytes.clone(),
-            context.exp.unwrap_or(now + DEFAULT_CHECKPOINT_LIFETIME),
-            now,
-        );
-
         Ok(Json(TokenExchangeResponse {
             access_token: issued.token,
             issued_token_type: pic::continuity::TOKEN_TYPE_PIC,
@@ -285,7 +277,7 @@ impl TokenEndpoint {
                 "the selected realm has no token-signing key ring",
             )
         })?;
-        let signer = RealmTokenSigner::new(keys)?;
+        let signer = RealmTokenSigner::new(Arc::clone(&keys))?;
 
         let por = SdJwtPorValidator {
             attesters: self.realm.trusted_attesters(),
@@ -293,15 +285,20 @@ impl TokenEndpoint {
             now,
             accepted: Default::default(),
         };
-        let trusted = CheckpointsAt {
-            store: self.checkpoints.as_ref(),
-            now,
+        // A checkpoint is this realm's when this realm's signature verifies over it — no store,
+        // so a restart or a second replica changes nothing.
+        let trusted = RealmSignedCheckpoints {
+            keys: Arc::clone(&keys),
         };
+        // The conformance check needs the claims the presentation disclosed, which exist only after
+        // the PoR has been validated. The policy therefore reads them back from the validator,
+        // which records what it accepted during the same settlement pass.
+        let policy = ContractConformance { por: &por };
         let authority = SettlementAuthority {
             trusted: &trusted,
             por: &por,
             revocation: &NoRevocationConfigured,
-            policy: &DefaultPolicy,
+            policy: &policy,
             order: &ReferenceProfile,
             realm: &signer,
         };
@@ -317,7 +314,7 @@ impl TokenEndpoint {
             sub: None,
             aud: None,
             iat: Some(now),
-            exp: Some(now + DEFAULT_CHECKPOINT_LIFETIME),
+            exp: Some(now + DEFAULT_TOKEN_LIFETIME),
             jti: None,
         };
 
@@ -335,12 +332,6 @@ impl TokenEndpoint {
                 // and none of them reveals realm state the caller did not already hold.
                 ExchangeError::invalid_grant(format!("the candidate was rejected: {error}"))
             })?;
-
-        self.checkpoints.insert(
-            issued.pca_bytes.clone(),
-            context.exp.unwrap_or(now + DEFAULT_CHECKPOINT_LIFETIME),
-            now,
-        );
 
         // An accepted advancement has to be attributable: which attester vouched for the workload,
         // and how many claims it disclosed to do so. The values themselves stay out of the record —

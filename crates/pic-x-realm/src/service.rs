@@ -15,7 +15,6 @@ use pic_x_transport::Surface;
 
 use crate::COMPONENT;
 use crate::attester_keys::{AttesterKeyCache, REFRESH_EVERY};
-use crate::checkpoints::CheckpointStore;
 use crate::exchange::{TokenEndpoint, token};
 use crate::key_fetch::HttpKeySetFetcher;
 use crate::routes::{
@@ -181,7 +180,6 @@ impl WellKnownService {
                         .with_state(TokenEndpoint {
                             realm: realm.clone(),
                             development_mode: config.development_mode(),
-                            checkpoints: Arc::new(CheckpointStore::new()),
                             attester_keys: self.attester_keys(realm),
                         }),
                 );

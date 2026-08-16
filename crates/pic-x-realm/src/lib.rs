@@ -24,6 +24,7 @@
 
 mod attester_keys;
 mod checkpoints;
+mod conformance;
 mod exchange;
 mod key_fetch;
 mod por;
