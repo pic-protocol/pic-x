@@ -82,6 +82,11 @@ RUN ldd /usr/local/bin/pic-x 2>&1 | grep -qE "statically linked|not a dynamic ex
 # process being hard to reach, and worth having anyway.
 FROM scratch AS runtime
 
+LABEL org.opencontainers.image.title="PIC-X" \
+      org.opencontainers.image.description="Provenance Identity Continuity Exchange." \
+      org.opencontainers.image.source="https://github.com/pic-protocol/pic-x" \
+      org.opencontainers.image.licenses="Apache-2.0"
+
 COPY --from=builder /staged/passwd /staged/group /etc/
 COPY --from=builder /usr/local/bin/pic-x /usr/local/bin/pic-x
 COPY --from=builder --chown=65532:65532 /staged/var/lib/pic-x /var/lib/pic-x
