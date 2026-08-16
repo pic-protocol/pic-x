@@ -38,6 +38,11 @@ pic-x-std = { workspace = true, features = [
 pic-x-telemetry.workspace = true
 pic-x-transport.workspace = true
 pic-x-realm.workspace = true
+# PIC protocol types (PCA / PoC / COSE envelopes) from the sibling `pic-rust` repository. A local
+# path dependency while the two projects are developed side by side: changes over there are picked
+# up by the next `cargo run` here, no publish needed. Once `pic-rust` stabilises this moves to the
+# published crates.io version.
+pic-protocol.workspace = true
 # Reading a published key set back, to check what the audit trail's seals were signed with.
 serde_json.workspace = true
 tokio.workspace = true
@@ -72,6 +77,9 @@ pic-x-std = { path = "crates/pic-x-std", version = "0.1.0", default-features = f
 pic-x-telemetry = { path = "crates/pic-x-telemetry", version = "0.1.0" }
 pic-x-transport = { path = "crates/pic-x-transport", version = "0.1.0" }
 pic-x-realm = { path = "crates/pic-x-realm", version = "0.1.0" }
+# Filesystem dependency on the sibling repository (../pic-rust): the library name is `pic`, so code
+# says `use pic::...`. Swap `path` for a crates.io `version` when the protocol crates are published.
+pic-protocol = { path = "../pic-rust" }
 
 anyhow = "1"
 async-stream = "0.3"
