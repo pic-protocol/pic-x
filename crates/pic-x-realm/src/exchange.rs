@@ -17,7 +17,7 @@ use axum::response::{IntoResponse, Response};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use pic::continuity::artifacts::token::decode_token;
-use pic::continuity::artifacts::{PicContinuityCose, PicPcaPayload, PicTransitionCose};
+use pic::continuity::artifacts::{PicContinuityCose, PicPcaCose, PicPcaPayload, PicTransitionCose};
 use pic::continuity::authority::attenuation::ReferenceProfile;
 use pic::continuity::authority::{
     AuthorityValue, IndexedAuthorityMap, Invariant, LogicalAuthority,
@@ -236,7 +236,9 @@ impl TokenEndpoint {
         SystemRandom::new()
             .fill(&mut challenge)
             .map_err(|_| ExchangeError::server_error("could not generate the next challenge"))?;
-        let checkpoint = PicPcaPayload::new(0, authority, challenge);
+        let lineage_id = new_lineage_id()?;
+        let checkpoint =
+            PicPcaPayload::new(0, authority, challenge).with_lineage_id(lineage_id.clone());
 
         let keys = self.realm.token_keys().map(Arc::clone).ok_or_else(|| {
             ExchangeError::temporarily_unavailable(
@@ -255,7 +257,7 @@ impl TokenEndpoint {
             aud: None,
             iat: Some(now),
             exp: jwt.claim_i64("exp"),
-            jti: None,
+            jti: Some(lineage_id.clone()),
         };
         let issued = issue_settled(checkpoint, &signer, &context).map_err(|error| {
             ExchangeError::server_error(format!("could not issue PIC Token JWT: {error}"))
@@ -270,7 +272,9 @@ impl TokenEndpoint {
                     .as_deref()
                     .map_or(Subject::Anonymous, Subject::Principal),
             )
-            .on(&profile.id),
+            .on(&profile.id)
+            .with_continuity_id(&lineage_id)
+            .at_continuity_position(issued.checkpoint.position),
         )
         .await?;
 
@@ -303,25 +307,20 @@ impl TokenEndpoint {
             now,
             accepted: Default::default(),
         };
-        preflight_candidate_key_metadata(candidate_token, &por)?;
-        // A checkpoint is this realm's when this realm's signature verifies over it — no store,
-        // so a restart or a second replica changes nothing.
-        let trusted = RealmSignedCheckpoints {
-            keys: Arc::clone(&keys),
+        let candidate_metadata = match preflight_candidate_key_metadata(candidate_token, &por) {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                self.record_advancement_rejected(None, None).await?;
+                return Err(error);
+            }
         };
-        // The conformance check needs the claims the presentation disclosed, which exist only after
-        // the PoR has been validated. The policy therefore reads them back from the validator,
-        // which records what it accepted during the same settlement pass.
-        let policy = ContractConformance { por: &por };
-        let authority = SettlementAuthority {
-            trusted: &trusted,
-            por: &por,
-            revocation: &NoRevocationConfigured,
-            policy: &policy,
-            order: &ReferenceProfile,
-            realm: &signer,
+        let Some(lineage_id) = candidate_metadata.lineage_id.clone() else {
+            self.record_advancement_rejected(None, Some(candidate_metadata.proposed_position))
+                .await?;
+            return Err(ExchangeError::invalid_grant(
+                "the candidate predecessor checkpoint has no lineage identifier",
+            ));
         };
-
         // The settled token inherits the lifetime of the checkpoint it advances, so a lineage
         // cannot outlive the authority it started from by advancing repeatedly.
         let context = SettlementContext {
@@ -334,12 +333,33 @@ impl TokenEndpoint {
             aud: None,
             iat: Some(now),
             exp: Some(now + DEFAULT_TOKEN_LIFETIME),
-            jti: None,
+            jti: Some(lineage_id.clone()),
         };
 
-        let issued = authority
-            .settle(candidate_token, &context)
-            .map_err(|error| {
+        let settled = {
+            // A checkpoint is this realm's when this realm's signature verifies over it — no store,
+            // so a restart or a second replica changes nothing.
+            let trusted = RealmSignedCheckpoints {
+                keys: Arc::clone(&keys),
+            };
+            // The conformance check needs the claims the presentation disclosed, which exist only
+            // after the PoR has been validated. The policy therefore reads them back from the
+            // validator, which records what it accepted during the same settlement pass.
+            let policy = ContractConformance { por: &por };
+            let authority = SettlementAuthority {
+                trusted: &trusted,
+                por: &por,
+                revocation: &NoRevocationConfigured,
+                policy: &policy,
+                order: &ReferenceProfile,
+                realm: &signer,
+            };
+            authority.settle(candidate_token, &context)
+        };
+
+        let issued = match settled {
+            Ok(issued) => issued,
+            Err(error) => {
                 warn!(
                     event.name = "token_exchange.advancement_rejected",
                     component = COMPONENT,
@@ -347,10 +367,18 @@ impl TokenEndpoint {
                     error = %error,
                     "a candidate PIC Token JWT was rejected"
                 );
+                self.record_advancement_rejected(
+                    Some(&lineage_id),
+                    Some(candidate_metadata.proposed_position),
+                )
+                .await?;
                 // The reason is deliberately specific: every variant names a check the caller can fix,
                 // and none of them reveals realm state the caller did not already hold.
-                ExchangeError::invalid_grant(format!("the candidate was rejected: {error}"))
-            })?;
+                return Err(ExchangeError::invalid_grant(format!(
+                    "the candidate was rejected: {error}"
+                )));
+            }
+        };
 
         // An accepted advancement has to be attributable: which attester vouched for the workload,
         // and how many claims it disclosed to do so. The values themselves stay out of the record —
@@ -367,6 +395,17 @@ impl TokenEndpoint {
                 "a candidate PIC Token JWT was settled into the next checkpoint"
             );
         }
+
+        let lineage_id = issued.checkpoint.lineage_id.clone().ok_or_else(|| {
+            ExchangeError::server_error("the settled checkpoint has no lineage identifier to audit")
+        })?;
+        self.record(
+            AuditEvent::continuity("pic.exchange.advanced", &lineage_id)
+                .on(self.realm.name())
+                .with_continuity_id(&lineage_id)
+                .at_continuity_position(issued.checkpoint.position),
+        )
+        .await?;
 
         Ok(Json(TokenExchangeResponse {
             access_token: issued.token,
@@ -534,12 +573,34 @@ impl TokenEndpoint {
                 ))
             })
     }
+
+    async fn record_advancement_rejected(
+        &self,
+        lineage_id: Option<&str>,
+        position: Option<u64>,
+    ) -> Result<(), ExchangeError> {
+        let mut event = match lineage_id {
+            Some(id) => AuditEvent::continuity("pic.exchange.rejected", id).with_continuity_id(id),
+            None => AuditEvent::anonymous("pic.exchange.rejected"),
+        }
+        .on(self.realm.name());
+        if let Some(position) = position {
+            event = event.at_continuity_position(position);
+        }
+
+        self.record(event).await
+    }
+}
+
+struct CandidateMetadata {
+    lineage_id: Option<String>,
+    proposed_position: u64,
 }
 
 fn preflight_candidate_key_metadata(
     candidate_token: &str,
     por: &SdJwtPorValidator<'_>,
-) -> Result<(), ExchangeError> {
+) -> Result<CandidateMetadata, ExchangeError> {
     let decoded = decode_token(candidate_token).map_err(|error| {
         ExchangeError::invalid_grant(format!(
             "the candidate PIC Token JWT cannot be decoded: {error}"
@@ -573,6 +634,16 @@ fn preflight_candidate_key_metadata(
     let transition = transition_cose.payload_unverified().map_err(|error| {
         ExchangeError::invalid_grant(format!(
             "the candidate Transition COSE payload cannot be decoded: {error}"
+        ))
+    })?;
+    let predecessor = PicPcaCose::from_bytes(&continuity.root.pca).map_err(|error| {
+        ExchangeError::invalid_grant(format!(
+            "the candidate predecessor PCA COSE cannot be decoded: {error}"
+        ))
+    })?;
+    let predecessor = predecessor.payload_unverified().map_err(|error| {
+        ExchangeError::invalid_grant(format!(
+            "the candidate predecessor PCA payload cannot be decoded: {error}"
         ))
     })?;
 
@@ -628,7 +699,26 @@ fn preflight_candidate_key_metadata(
     )?;
     require_matching_cose_kid(continuity_cose.kid(), transition_cose.kid())?;
 
-    Ok(())
+    if let Some(expected) = predecessor.lineage_id.as_deref() {
+        match decoded.claims.jti.as_deref() {
+            Some(actual) if actual == expected => {}
+            Some(_) => {
+                return Err(ExchangeError::invalid_grant(
+                    "candidate PIC Token JWT jti does not match predecessor PCA lineage_id",
+                ));
+            }
+            None => {
+                return Err(ExchangeError::invalid_grant(
+                    "candidate PIC Token JWT has no jti matching predecessor PCA lineage_id",
+                ));
+            }
+        }
+    }
+
+    Ok(CandidateMetadata {
+        lineage_id: predecessor.lineage_id,
+        proposed_position: transition.position,
+    })
 }
 
 fn require_cose_algorithm(
@@ -1021,6 +1111,15 @@ fn unix_now() -> Result<i64, ExchangeError> {
         .map_err(|error| {
             ExchangeError::server_error(format!("system clock is before Unix epoch: {error}"))
         })
+}
+
+fn new_lineage_id() -> Result<String, ExchangeError> {
+    let mut bytes = [0_u8; 16];
+    SystemRandom::new()
+        .fill(&mut bytes)
+        .map_err(|_| ExchangeError::server_error("could not generate a lineage identifier"))?;
+
+    Ok(URL_SAFE_NO_PAD.encode(bytes))
 }
 
 struct RealmTokenSigner {

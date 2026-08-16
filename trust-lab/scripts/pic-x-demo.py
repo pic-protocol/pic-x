@@ -6,6 +6,8 @@ from __future__ import annotations
 import json
 import os
 import base64
+import re
+import shlex
 import sys
 import time
 import http.client
@@ -59,6 +61,24 @@ COLORS = {
 COLOR_ENABLED = os.environ.get("LAB_DEMO_COLOR", "auto").lower()
 
 
+def truthy_env(name: str) -> bool:
+    return os.environ.get(name, "").lower() in {
+        "1",
+        "true",
+        "yes",
+        "always",
+    }
+
+
+CLI_ARGS = set(sys.argv[1:])
+INTERACTIVE = truthy_env("LAB_DEMO_INTERACTIVE") or bool(
+    CLI_ARGS & {"interactive", "--interactive", "--guided", "--step"}
+)
+PRINT_VALUES = INTERACTIVE or truthy_env("LAB_DEMO_PRINT_VALUES") or bool(
+    CLI_ARGS & {"print", "--print", "--print-tokens"}
+)
+
+
 class DemoError(Exception):
     """A user-facing demo failure."""
 
@@ -103,6 +123,11 @@ def main() -> int:
     print()
     print_flow_map()
     print()
+    interactive_panel(
+        "Guide Mode",
+        "Each step shows the current object, the command that will use it, and the result.",
+    )
+    interactive_pause("check that the local lab services are reachable")
 
     try:
         print_step(
@@ -136,12 +161,25 @@ def main() -> int:
         print_kv("realm", KEYCLOAK_REALM)
         print_kv("client", KEYCLOAK_CLIENT_ID)
         print_kv("user", KEYCLOAK_USERNAME)
+        interactive_panel(
+            "Command: Keycloak Password Grant",
+            "Keycloak issues an OAuth access token. PIC-X later validates that JWT with the IdP JWKS.",
+        )
+        interactive_pause("request the OAuth access token from Keycloak")
         end_to_end_start = time.perf_counter()
         token = timed("Keycloak password grant -> OAuth access token", request_access_token)
         print()
 
         print_step("3", "Access token")
-        print_token(token)
+        interactive_panel(
+            "Object: OAuth Access Token",
+            "This is OAuth authority. It is not a PIC token yet.",
+        )
+        print_token("OAuth access token", token)
+        print_jwt_details("OAuth access token", token)
+        interactive_pause(
+            "inspect the claims that the Exchange Profile uses to build PCA 0"
+        )
         print()
 
         print_step("4", "Decoded access-token facts used by the Exchange Profile")
@@ -157,6 +195,10 @@ def main() -> int:
                 "dev/keycloak/acme-idp-realm.json is imported."
             )
         print_kv("pic_scopes", json.dumps(pic_scopes))
+        interactive_panel(
+            "Mapping Input",
+            "PIC-X maps these OAuth claims and scopes into an indexed authority map.",
+        )
         print()
 
         print_step("5", "Exchanging OAuth authority for PIC Token JWT 0")
@@ -164,6 +206,24 @@ def main() -> int:
         proposal_wire = b64url_json(proposal_json)
         print_kv("realm token endpoint", f"{PIC_X_URL}/realms/{PIC_X_REALM}/token")
         print_kv("continuity proposal", compact_json(proposal_json))
+        if INTERACTIVE:
+            interactive_panel(
+                "Command: OAuth Access Token -> PIC Token JWT 0",
+                "This request validates the OAuth JWT, materializes PCA 0, and signs PIC Token JWT 0.",
+            )
+            print_json_block("continuity initialization proposal", proposal_json)
+            print_form_curl(
+                "PIC-X initial token exchange curl",
+                f"{PIC_X_URL}/realms/{PIC_X_REALM}/token",
+                initial_exchange_form(token, proposal_wire),
+                {
+                    "subject_token": "OAUTH_ACCESS_TOKEN",
+                    "continuity_proposal": "CONTINUITY_PROPOSAL",
+                },
+            )
+            interactive_pause(
+                "call PIC-X and initialize the continuity lineage"
+            )
         pic_response = timed(
             "PIC-X token exchange -> PIC Token JWT 0",
             lambda: exchange_initial_token(token, proposal_wire),
@@ -182,9 +242,21 @@ def main() -> int:
             pic_token,
             TIMINGS["PIC-X token exchange -> PIC Token JWT 0"],
         )
-        print_token(pic_token)
+        interactive_panel(
+            "Result: PIC Token JWT 0",
+            "The realm signs the JWT and the embedded Continuity/PCA COSE artifacts.",
+        )
+        print_token("PIC Token JWT 0", pic_token)
+        print_pic_token_details("PIC Token JWT 0", pic_token)
+        if INTERACTIVE:
+            print_checkpoint_focus("PCA 0", pic_token)
         print_kv("issued_token_type", str(pic_response.get("issued_token_type")))
         print_kv("token_type", str(pic_response.get("token_type")))
+        interactive_panel(
+            "Correlation",
+            "JWT jti and PCA lineage_id are the same stable audit correlation id.",
+        )
+        interactive_pause("review size tables and continue to Proof of Relationship material")
         print()
 
         print_step("6", "Payload weight")
@@ -201,6 +273,9 @@ def main() -> int:
         print_por_artifact(worker_2)
         print_bullet(
             "The Rust trust-lab runtime signs the SD-JWT/JWS and writes the selected presentations to disk."
+        )
+        interactive_pause(
+            "build a workload-signed candidate PIC token and send it to PIC-X"
         )
         print()
 
@@ -301,15 +376,9 @@ def request_access_token() -> str:
 
 def exchange_initial_token(access_token: str, proposal_wire: str) -> dict:
     token_endpoint = f"{PIC_X_URL}/realms/{PIC_X_REALM}/token"
-    body = urllib.parse.urlencode(
-        {
-            "grant_type": TOKEN_EXCHANGE_GRANT,
-            "subject_token": access_token,
-            "subject_token_type": ACCESS_TOKEN_TYPE,
-            "requested_token_type": PIC_TOKEN_TYPE,
-            "continuity_proposal": proposal_wire,
-        }
-    ).encode("utf-8")
+    body = urllib.parse.urlencode(initial_exchange_form(access_token, proposal_wire)).encode(
+        "utf-8"
+    )
     request = urllib.request.Request(
         token_endpoint,
         data=body,
@@ -326,6 +395,25 @@ def exchange_initial_token(access_token: str, proposal_wire: str) -> dict:
     if not isinstance(payload, dict):
         raise DemoError("PIC-X token endpoint did not return a JSON object")
     return payload
+
+
+def initial_exchange_form(access_token: str, proposal_wire: str) -> dict:
+    return {
+        "grant_type": TOKEN_EXCHANGE_GRANT,
+        "subject_token": access_token,
+        "subject_token_type": ACCESS_TOKEN_TYPE,
+        "requested_token_type": PIC_TOKEN_TYPE,
+        "continuity_proposal": proposal_wire,
+    }
+
+
+def advancement_exchange_form(candidate_token: str) -> dict:
+    return {
+        "grant_type": TOKEN_EXCHANGE_GRANT,
+        "subject_token": candidate_token,
+        "subject_token_type": PIC_TOKEN_TYPE,
+        "requested_token_type": PIC_TOKEN_TYPE,
+    }
 
 
 def initial_continuity_proposal() -> dict:
@@ -551,18 +639,33 @@ def advance_once(pic_token: str, hop: int, remove_invariant: int, claims: dict) 
         "--remove-invariant",
         str(remove_invariant),
     )
+    if INTERACTIVE:
+        interactive_panel(
+            f"Object: Candidate PIC Token JWT {hop - 1} -> {hop}",
+            "The workload signs this candidate. It carries the predecessor PCA and one transition.",
+        )
+        print_token(f"candidate PIC Token JWT {hop - 1} -> {hop}", candidate["token"])
+    print_pic_token_details(f"candidate PIC Token JWT {hop - 1} -> {hop}", candidate["token"])
+    if INTERACTIVE:
+        interactive_panel(
+            f"Command: Settle Candidate Into PIC Token JWT {hop}",
+            "PIC-X validates PoR, signatures, transition position, challenge continuity, "
+            "non-expansion, and execution-contract conformance.",
+        )
+        print_form_curl(
+            f"PIC-X advancement {hop - 1} -> {hop} curl",
+            f"{PIC_X_URL}/realms/{PIC_X_REALM}/token",
+            advancement_exchange_form(candidate["token"]),
+            {"subject_token": "CANDIDATE_PIC_TOKEN"},
+        )
+        interactive_pause(f"send the candidate and materialize PCA {hop}")
 
     label = f"PIC-X advancement {hop - 1} -> {hop}"
     settled = timed(
         label,
         lambda: post_form(
             f"{PIC_X_URL}/realms/{PIC_X_REALM}/token",
-            {
-                "grant_type": TOKEN_EXCHANGE_GRANT,
-                "subject_token": candidate["token"],
-                "subject_token_type": PIC_TOKEN_TYPE,
-                "requested_token_type": PIC_TOKEN_TYPE,
-            },
+            advancement_exchange_form(candidate["token"]),
         ),
     )
     next_token = settled.get("access_token")
@@ -587,6 +690,14 @@ def advance_once(pic_token: str, hop: int, remove_invariant: int, claims: dict) 
         f" continuity {candidate['continuity_bytes']} B)",
     )
     print_kv("  settled", f"PIC Token JWT {hop}, {len(next_token)} bytes")
+    interactive_panel(
+        f"Result: PIC Token JWT {hop}",
+        "The lineage id stays stable; the PCA position and materialized authority advance.",
+    )
+    print_pic_token_details(f"PIC Token JWT {hop}", next_token)
+    if INTERACTIVE:
+        print_checkpoint_focus(f"PCA {hop}", next_token)
+        interactive_pause(f"continue after PCA {hop}")
 
     return next_token
 
@@ -631,6 +742,29 @@ def invariants_of(pic_token: str) -> list:
     return [tuple(entry)[0] for entry in invariants.values()]
 
 
+def pca_payload_of(pic_token: str) -> dict:
+    pca_bytes = b64url_decode(pca_of(pic_token))
+    parts, _ = cose_sign1_parts(pca_bytes)
+    fields, _ = cbor_map_fields(parts[2][0])
+    return {name: value for name, value, _ in fields}
+
+
+def print_checkpoint_focus(label: str, pic_token: str) -> None:
+    """Human-sized checkpoint view: the stable id, position, authority and contract."""
+    _, jwt_payload = decode_jwt(pic_token)
+    pca = pca_payload_of(pic_token)
+    authority = pca.get("context_of_authority", {})
+    execution_contract = (
+        authority.get("execution_contract", {}) if isinstance(authority, dict) else {}
+    )
+
+    print_kv(f"{label} JWT jti", str(jwt_payload.get("jti", "<missing>")))
+    print_kv(f"{label} PCA lineage_id", str(pca.get("lineage_id", "<missing>")))
+    print_kv(f"{label} PCA position", str(pca.get("position", "<missing>")))
+    print_json_block(f"{label} materialized context_of_authority", jsonable(authority))
+    print_json_block(f"{label} execution_contract", jsonable(execution_contract))
+
+
 def post_form(url: str, form: dict) -> dict:
     request = urllib.request.Request(
         url,
@@ -660,6 +794,18 @@ def run_oauth_token_exchange(access_token: str) -> None:
         "audience": KEYCLOAK_EXCHANGE_AUDIENCE,
     }
     endpoint = f"{KEYCLOAK_URL}/realms/{KEYCLOAK_REALM}/protocol/openid-connect/token"
+    if INTERACTIVE:
+        interactive_panel(
+            "Command: Keycloak OAuth Token Exchange",
+            "This is only a timing comparison against the IdP's own RFC 8693 exchange.",
+        )
+        print_form_curl(
+            "Keycloak OAuth token exchange curl",
+            endpoint,
+            form,
+            {"subject_token": "OAUTH_ACCESS_TOKEN"},
+        )
+        interactive_pause("run the Keycloak OAuth token-exchange comparison")
 
     try:
         exchanged = timed(
@@ -1148,9 +1294,156 @@ def print_kv(key: str, value: str) -> None:
     print(f"    {paint(key + ':', 'cyan')} {value}")
 
 
-def print_token(token: str) -> None:
-    print(paint(token, "cyan"))
-    print_dim(f"token length: {len(token)} characters")
+def interactive_panel(title: str, detail: str | None = None) -> None:
+    if not INTERACTIVE:
+        return
+    print()
+    print(f"    {paint('=' * 72, 'dim')}")
+    print(f"    {paint(title, 'bold_cyan')}")
+    if detail:
+        print_dim(f"    {detail}")
+    print(f"    {paint('-' * 72, 'dim')}")
+
+
+def interactive_pause(next_action: str) -> None:
+    if not INTERACTIVE:
+        return
+    print()
+    print(f"    {paint('Next:', 'yellow')} {next_action}")
+    prompt = f"    {paint('Press Enter to continue...', 'yellow')} "
+    try:
+        input(prompt)
+    except EOFError:
+        print_dim("    stdin is closed; continuing without interactive pauses")
+    print()
+
+
+def print_form_curl(
+    title: str, url: str, form: dict, variables: dict[str, str] | None = None
+) -> None:
+    variables = variables or {}
+    print(f"    {paint(title + ':', 'bold')}")
+    print(f"    {paint('Form parameters:', 'cyan')}")
+    for key, value in form.items():
+        value_text = str(value)
+        if key in variables:
+            rendered = f"${variables[key]} ({len(value_text)} chars)"
+        else:
+            rendered = value_text
+        print(f"      {key:<24} {rendered}")
+
+    if variables:
+        print(f"    {paint('Shell placeholders:', 'cyan')}")
+        for key, variable in variables.items():
+            print(f"      {variable}=<value printed above for {key}>")
+
+    lines = [
+        f"curl -fsS -X POST {shlex.quote(url)}",
+        "-H 'Accept: application/json'",
+        "-H 'Content-Type: application/x-www-form-urlencoded'",
+    ]
+    for key, value in form.items():
+        if key in variables:
+            lines.append(f'--data-urlencode "{key}=${variables[key]}"')
+        else:
+            lines.append(f"--data-urlencode {shlex.quote(f'{key}={value}')}")
+
+    for index, line in enumerate(lines):
+        suffix = " \\" if index < len(lines) - 1 else ""
+        print(f"      {line}{suffix}")
+
+
+def print_token(label: str, token: str) -> None:
+    if PRINT_VALUES:
+        print_kv(label, paint(token, "cyan"))
+    print_dim(f"{label} length: {len(token)} characters")
+    if not PRINT_VALUES:
+        print_dim("    run with `print` or `--print-tokens` to dump token contents")
+
+
+def print_jwt_details(label: str, token: str) -> None:
+    if not PRINT_VALUES:
+        return
+    header, payload = decode_jwt(token)
+    print_json_block(f"{label} header", header)
+    print_json_block(f"{label} payload", payload)
+
+
+def print_pic_token_details(label: str, token: str) -> None:
+    if not PRINT_VALUES:
+        return
+    header, payload = decode_jwt(token)
+    print_json_block(f"{label} header", header)
+    print_json_block(f"{label} payload", payload)
+
+    root = payload.get("pic", {}).get("root")
+    if not isinstance(root, str):
+        return
+    continuity_bytes = b64url_decode(root)
+    continuity_parts, _ = cose_sign1_parts(continuity_bytes)
+    continuity_payload = continuity_parts[2][0]
+    continuity_fields, _ = cbor_map_fields(continuity_payload)
+    continuity = {name: jsonable(value) for name, value, _ in continuity_fields}
+    print_json_block(f"{label} PIC Continuity payload", continuity)
+
+    pca = field_value(continuity_fields, "root")
+    if isinstance(pca, dict) and isinstance(pca.get("pca"), bytes):
+        pca_parts, _ = cose_sign1_parts(pca["pca"])
+        pca_payload = pca_parts[2][0]
+        pca_fields, _ = cbor_map_fields(pca_payload)
+        print_json_block(
+            f"{label} PIC PCA payload",
+            {name: jsonable(value) for name, value, _ in pca_fields},
+        )
+
+    transitions = field_value(continuity_fields, "transitions")
+    if isinstance(transitions, list):
+        for index, transition_bytes in enumerate(transitions):
+            if not isinstance(transition_bytes, bytes):
+                continue
+            transition_parts, _ = cose_sign1_parts(transition_bytes)
+            transition_payload = transition_parts[2][0]
+            transition_fields, _ = cbor_map_fields(transition_payload)
+            print_json_block(
+                f"{label} PIC Transition payload {index}",
+                {name: jsonable(value) for name, value, _ in transition_fields},
+            )
+
+
+def jsonable(value):
+    if isinstance(value, bytes):
+        return {
+            "bytes": len(value),
+            "b64url": b64url(value),
+        }
+    if isinstance(value, list):
+        return [jsonable(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): jsonable(item) for key, item in value.items()}
+    return value
+
+
+def print_json_block(title: str, value) -> None:
+    print(f"    {paint(title + ':', 'bold')}")
+    text = json.dumps(value, indent=2, sort_keys=True, ensure_ascii=False)
+    for line in text.splitlines():
+        print(f"    {color_json(line)}")
+
+
+def color_json(line: str) -> str:
+    if not color_is_enabled():
+        return line
+    line = re.sub(
+        r'^(\s*)"([^"]+)":',
+        lambda match: f"{match.group(1)}{paint(json.dumps(match.group(2)), 'cyan')}:",
+        line,
+    )
+    line = re.sub(
+        r': "([^"]*)"',
+        lambda match: f': {paint(json.dumps(match.group(1)), "green")}',
+        line,
+    )
+    return line
 
 
 def print_bullet(text: str) -> None:

@@ -203,6 +203,8 @@ pub struct AuditEvent<'a> {
     action: &'a str,
     subject: Subject<'a>,
     target: Option<&'a str>,
+    continuity_id: Option<&'a str>,
+    continuity_position: Option<u64>,
 }
 
 impl<'a> AuditEvent<'a> {
@@ -212,6 +214,8 @@ impl<'a> AuditEvent<'a> {
             action,
             subject,
             target: None,
+            continuity_id: None,
+            continuity_position: None,
         }
     }
 
@@ -225,9 +229,33 @@ impl<'a> AuditEvent<'a> {
         self
     }
 
+    /// Adds the stable continuity/lineage identifier associated with this event.
+    pub fn with_continuity_id(mut self, continuity_id: &'a str) -> Self {
+        self.continuity_id = Some(continuity_id);
+
+        self
+    }
+
+    /// Adds the PCA position associated with this event.
+    pub fn at_continuity_position(mut self, position: u64) -> Self {
+        self.continuity_position = Some(position);
+
+        self
+    }
+
     /// Returns what the action was done to, when the event names something.
     pub fn target(&self) -> Option<&'a str> {
         self.target
+    }
+
+    /// Returns the stable continuity/lineage identifier, when present.
+    pub fn continuity_id(&self) -> Option<&'a str> {
+        self.continuity_id
+    }
+
+    /// Returns the PCA position, when present.
+    pub fn continuity_position(&self) -> Option<u64> {
+        self.continuity_position
     }
 
     /// Builds an event about a part of the system.

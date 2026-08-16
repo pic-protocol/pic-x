@@ -86,6 +86,12 @@ pub struct Body {
     /// What it was done to, when the event named something.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub target: Option<String>,
+    /// Stable continuity/lineage identifier, mirrored from PIC Token JWT `jti` when present.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub continuity_id: Option<String>,
+    /// PCA position associated with the continuity event.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub continuity_position: Option<u64>,
     /// Which build recorded it.
     pub service: String,
     /// Which version of it.
@@ -496,6 +502,8 @@ impl AuditSink for FileAuditSink {
                 subject_kind: event.subject().kind().to_owned(),
                 subject_sensitivity: event.subject().sensitivity().as_str().to_owned(),
                 target: event.target().map(ToOwned::to_owned),
+                continuity_id: event.continuity_id().map(ToOwned::to_owned),
+                continuity_position: event.continuity_position(),
                 service: self.service_name.clone(),
                 version: self.service_version.clone(),
             };
@@ -766,6 +774,8 @@ mod tests {
             subject_kind: "system".to_owned(),
             subject_sensitivity: "public".to_owned(),
             target: None,
+            continuity_id: None,
+            continuity_position: None,
             service: "pic-x".to_owned(),
             version: "0.1.0".to_owned(),
         }
@@ -792,6 +802,15 @@ mod tests {
             Record::expected_digest(&retargeted).expect("it digests"),
             digest,
             "adding a target left the digest alone"
+        );
+
+        let mut correlated = body(1, GENESIS);
+        correlated.continuity_id = Some("picx-test-lineage".to_owned());
+
+        assert_ne!(
+            Record::expected_digest(&correlated).expect("it digests"),
+            digest,
+            "adding a continuity id left the digest alone"
         );
     }
 

@@ -7,7 +7,7 @@
 //! served from a real key-set endpoint the realm fetches over HTTP, and the workload signs the three
 //! candidate artifacts with the key that credential binds.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -18,6 +18,7 @@ use ring::rand::SystemRandom;
 use ring::signature::{Ed25519KeyPair, KeyPair};
 use tower::ServiceExt;
 
+use pic::continuity::artifacts::token::{decode_token, sign_token};
 use pic::continuity::artifacts::{
     PicContinuityCose, PicContinuityPayload, PicPcaCose, PicPcaPayload, ProofOfRelationship,
 };
@@ -41,13 +42,29 @@ const ATTESTER_ISSUER: &str = "https://attestation.example.com";
 #[derive(Debug, Default)]
 struct SilentSink {
     broken: std::sync::atomic::AtomicBool,
+    events: Mutex<Vec<RecordedEvent>>,
+}
+
+#[derive(Debug, Clone)]
+struct RecordedEvent {
+    action: String,
+    subject: String,
+    subject_kind: String,
+    target: Option<String>,
+    continuity_id: Option<String>,
+    continuity_position: Option<u64>,
 }
 
 impl SilentSink {
     fn breaks() -> Self {
         Self {
             broken: std::sync::atomic::AtomicBool::new(true),
+            events: Mutex::new(Vec::new()),
         }
+    }
+
+    fn events(&self) -> Vec<RecordedEvent> {
+        self.events.lock().expect("events lock").clone()
     }
 }
 
@@ -58,13 +75,24 @@ impl pic_x_core::AuditSink for SilentSink {
 
     fn record<'a>(
         &'a self,
-        _event: &'a AuditEvent<'a>,
-        _policy: Option<&'a dyn Pseudonymizer>,
+        event: &'a AuditEvent<'a>,
+        policy: Option<&'a dyn Pseudonymizer>,
     ) -> BoxFuture<'a, AuditResult<()>> {
         Box::pin(async move {
             if self.broken.load(std::sync::atomic::Ordering::Relaxed) {
                 return Err(pic_x_core::AuditError::backend("the trail is full"));
             }
+            self.events
+                .lock()
+                .expect("events lock")
+                .push(RecordedEvent {
+                    action: event.action().to_owned(),
+                    subject: event.subject().render(policy),
+                    subject_kind: event.subject().kind().to_owned(),
+                    target: event.target().map(ToOwned::to_owned),
+                    continuity_id: event.continuity_id().map(ToOwned::to_owned),
+                    continuity_position: event.continuity_position(),
+                });
             Ok(())
         })
     }
@@ -432,7 +460,11 @@ fn realm_with_broken_trail(jwks_uri: &str, idp_issuer: &str) -> Realm {
     }])
 }
 
-fn realm_trusting(jwks_uri: &str, idp_issuer: &str) -> Realm {
+fn realm_trusting_with_audit(
+    jwks_uri: &str,
+    idp_issuer: &str,
+    audit: Arc<dyn pic_x_core::AuditSink>,
+) -> Realm {
     Realm::new(
         "acme",
         "/realms/acme".to_owned(),
@@ -440,7 +472,7 @@ fn realm_trusting(jwks_uri: &str, idp_issuer: &str) -> Realm {
         true,
         None,
         Some(Arc::new(RealmRing::new())),
-        Arc::new(SilentSink::default()),
+        audit,
         None,
     )
     .with_exchange_profiles([exchange_profile(idp_issuer)])
@@ -488,6 +520,12 @@ async fn post_token(router: &axum::Router, body: String) -> (StatusCode, serde_j
         status,
         serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null),
     )
+}
+
+fn jwt_payload(token: &str) -> serde_json::Value {
+    let payload = token.split('.').nth(1).expect("the token has a payload");
+    serde_json::from_slice(&URL_SAFE_NO_PAD.decode(payload).expect("base64url"))
+        .expect("the payload is JSON")
 }
 
 fn initialization_body(access_token: &str) -> String {
@@ -542,12 +580,15 @@ fn rewrite_token_algorithm(token: &str, algorithm: &str) -> String {
     )
 }
 
+fn rewrite_token_jti_and_resign(token: &str, jti: Option<&str>, signer: &Ed25519Signer) -> String {
+    let mut decoded = decode_token(token).expect("the token decodes");
+    decoded.claims.jti = jti.map(ToOwned::to_owned);
+    sign_token(&decoded.claims, signer).expect("the token resigns")
+}
+
 /// The exact signed PIC PCA COSE bytes a settled token carries, and the checkpoint they decode to.
 fn checkpoint_of(token: &str) -> (Vec<u8>, PicPcaPayload) {
-    let payload = token.split('.').nth(1).expect("the token has a payload");
-    let claims: serde_json::Value =
-        serde_json::from_slice(&URL_SAFE_NO_PAD.decode(payload).expect("base64url"))
-            .expect("the payload is JSON");
+    let claims = jwt_payload(token);
     let continuity_bytes = URL_SAFE_NO_PAD
         .decode(claims["pic"]["root"].as_str().expect("pic.root"))
         .expect("pic.root is base64url");
@@ -569,13 +610,19 @@ struct Lab {
     router: axum::Router,
     attester: Attester,
     provider: IdentityProvider,
+    audit: Arc<SilentSink>,
 }
 
 async fn lab() -> Lab {
     let attester = Attester::new();
     let provider = serve_identity_provider().await;
     let jwks_uri = serve_key_set(attester.key_set()).await;
-    let realms = Realms::new([realm_trusting(&jwks_uri, &provider.issuer)]);
+    let audit = Arc::new(SilentSink::default());
+    let realms = Realms::new([realm_trusting_with_audit(
+        &jwks_uri,
+        &provider.issuer,
+        audit.clone(),
+    )]);
     let config = development_config();
 
     let service = WellKnownService::new();
@@ -591,6 +638,7 @@ async fn lab() -> Lab {
         router,
         attester,
         provider,
+        audit,
     }
 }
 
@@ -607,7 +655,12 @@ async fn a_workload_advances_the_lineage_and_the_removed_authority_is_gone() {
     assert_eq!(status, StatusCode::OK, "initialization failed: {body}");
     let token0 = body["access_token"].as_str().expect("token 0").to_owned();
     let (pca0_bytes, pca0) = checkpoint_of(&token0);
+    let token0_jti = jwt_payload(&token0)["jti"]
+        .as_str()
+        .expect("token 0 has jti")
+        .to_owned();
     assert_eq!(pca0.position, 0);
+    assert_eq!(pca0.lineage_id.as_deref(), Some(token0_jti.as_str()));
     assert_eq!(pca0.context_of_authority.invariants.len(), 2);
     assert_eq!(
         pca0.context_of_authority.invariants[&0].0,
@@ -646,7 +699,13 @@ async fn a_workload_advances_the_lineage_and_the_removed_authority_is_gone() {
 
     let token1 = body["access_token"].as_str().expect("token 1");
     let (_, pca1) = checkpoint_of(token1);
+    let token1_jti = jwt_payload(token1)["jti"]
+        .as_str()
+        .expect("token 1 has jti")
+        .to_owned();
     assert_eq!(pca1.position, 1);
+    assert_eq!(token1_jti, token0_jti);
+    assert_eq!(pca1.lineage_id.as_deref(), Some(token0_jti.as_str()));
     // The read authority is gone, storage:save survives and is re-indexed to 0.
     assert_eq!(pca1.context_of_authority.invariants.len(), 1);
     assert_eq!(pca1.context_of_authority.invariants[&0].0, "storage:save");
@@ -654,6 +713,83 @@ async fn a_workload_advances_the_lineage_and_the_removed_authority_is_gone() {
     assert_eq!(pca1.challenge.next_challenge, vec![0x5a; 32]);
     // The execution contract carried forward untouched.
     assert_eq!(pca1.context_of_authority.execution_contract.len(), 2);
+
+    let events = lab.audit.events();
+    let initialized = events
+        .iter()
+        .find(|event| event.action == "pic.exchange.initialized")
+        .expect("initialization was audited");
+    assert_eq!(
+        initialized.continuity_id.as_deref(),
+        Some(token0_jti.as_str())
+    );
+    assert_eq!(initialized.continuity_position, Some(0));
+    assert_eq!(initialized.target.as_deref(), Some("test-oauth-to-pic"));
+
+    let advanced = events
+        .iter()
+        .find(|event| event.action == "pic.exchange.advanced")
+        .expect("advancement was audited");
+    assert_eq!(advanced.subject_kind, "continuity");
+    assert_eq!(advanced.subject, token0_jti);
+    assert_eq!(
+        advanced.continuity_id.as_deref(),
+        Some(advanced.subject.as_str())
+    );
+    assert_eq!(advanced.continuity_position, Some(1));
+}
+
+#[tokio::test]
+async fn a_candidate_jti_must_match_the_predecessor_lineage() {
+    let lab = lab().await;
+    let (_, body) = post_token(
+        &lab.router,
+        initialization_body(&lab.provider.access_token()),
+    )
+    .await;
+    let token0 = body["access_token"].as_str().expect("token 0").to_owned();
+    let (pca0_bytes, _) = checkpoint_of(&token0);
+
+    let workload_pair = ed25519_dalek::SigningKey::from_bytes(&[0x68; 32]);
+    let presentation = lab
+        .attester
+        .presentation(workload_pair.verifying_key().as_bytes());
+    let workload = Ed25519Signer::new(workload_pair, "spiffe://acme/wrong-jti");
+    let candidate = build_candidate(
+        &pca0_bytes,
+        CandidateRequest {
+            attenuations: Attenuations {
+                invariants: RemoveBitmap::from_indices(&[0]),
+                ..Default::default()
+            },
+            next_challenge: vec![0x5a; 32],
+            proof_of_relationship: Some(ProofOfRelationship::sd_jwt(&presentation)),
+            aud: Some("pic-x".to_owned()),
+            ..Default::default()
+        },
+        &workload,
+        None,
+    )
+    .expect("the candidate builds");
+    let rewritten =
+        rewrite_token_jti_and_resign(&candidate.token, Some("not-the-predecessor"), &workload);
+
+    let (status, body) = post_token(&lab.router, advancement_body(&rewritten)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error_description"]
+            .as_str()
+            .expect("a description")
+            .contains("jti"),
+        "unexpected rejection: {body}"
+    );
+    assert!(
+        lab.audit
+            .events()
+            .iter()
+            .any(|event| event.action == "pic.exchange.rejected"),
+        "rejected advancement was not audited"
+    );
 }
 
 #[tokio::test]
@@ -895,6 +1031,15 @@ async fn a_workload_that_contradicts_the_execution_contract_is_rejected() {
             .expect("a description")
             .contains("conformance"),
         "unexpected rejection: {body}"
+    );
+    assert!(
+        lab.audit
+            .events()
+            .iter()
+            .any(|event| event.action == "pic.exchange.rejected"
+                && event.subject_kind == "continuity"
+                && event.continuity_position == Some(1)),
+        "rejected advancement was not audited"
     );
 }
 

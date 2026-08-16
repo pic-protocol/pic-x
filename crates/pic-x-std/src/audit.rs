@@ -76,6 +76,8 @@ impl AuditSink for TracingAuditSink {
             // Absent rather than empty when there is none: a field that is always present and
             // sometimes blank is a field every query has to special-case.
             audit.target = event.target(),
+            audit.continuity.id = event.continuity_id(),
+            audit.continuity.position = event.continuity_position(),
             "audit"
         );
 

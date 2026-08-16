@@ -76,7 +76,7 @@ pic-x-transport = { path = "crates/pic-x-transport", version = "0.1.0" }
 pic-x-realm = { path = "crates/pic-x-realm", version = "0.1.0" }
 # The library name is `pic`, so code says `use pic::...` while Cargo resolves the package as
 # `pic-protocol`.
-pic-protocol = "0.2.0"
+pic-protocol = "0.2.1"
 
 anyhow = "1"
 async-stream = "0.3"

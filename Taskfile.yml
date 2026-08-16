@@ -374,10 +374,45 @@ tasks:
 
       Examples:
         task lab-demo
+        task lab-demo ARGS=--print-tokens
+        task lab-demo ARGS=--interactive
+    vars:
+      PYTHON: '{{.PYTHON | default "python3"}}'
+      ARGS: '{{.ARGS | default ""}}'
+    cmds:
+      - '{{.PYTHON}} trust-lab/scripts/pic-x-demo.py {{.ARGS}}'
+
+  lab-demo-print:
+    desc: Run the local lab walkthrough and print decoded token/PIC artifact values.
+    silent: true
+    summary: |
+      Run the didactic lab walkthrough with token and PIC artifact inspection enabled.
+
+      Start the lab first with `task lab-up`.
+
+      Examples:
+        task lab-demo-print
     vars:
       PYTHON: '{{.PYTHON | default "python3"}}'
     cmds:
-      - '{{.PYTHON}} trust-lab/scripts/pic-x-demo.py'
+      - '{{.PYTHON}} trust-lab/scripts/pic-x-demo.py --print-tokens'
+
+  lab-demo-interactive:
+    desc: Run the local lab walkthrough step by step with pauses and curl commands.
+    silent: true
+    summary: |
+      Run the didactic lab walkthrough in guided mode. It pauses before each exchange, prints the
+      OAuth access token, PIC Token JWTs, Continuity/PCA payloads, execution contract, and the curl
+      commands used for the exchanges.
+
+      Start the lab first with `task lab-up`.
+
+      Examples:
+        task lab-demo-interactive
+    vars:
+      PYTHON: '{{.PYTHON | default "python3"}}'
+    cmds:
+      - '{{.PYTHON}} trust-lab/scripts/pic-x-demo.py --interactive'
 
   lab-run-demo:
     desc: Alias for lab-demo.
