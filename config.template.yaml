@@ -75,6 +75,14 @@
 ##   - `keys`         its own token-signing ring — what it signs the tokens it issues with. Mandatory:
 ##                    signing policy is security, never inherited from `operations.keys` nor defaulted,
 ##                    so every realm states its full lifecycle (publish_ahead, rotate_every, retain).
+##   - `exchange_profiles`
+##                    realm-scoped Token Exchange Profiles. They say which upstream JWT access tokens
+##                    this realm accepts, how they are validated, and how their claims become PIC
+##                    execution invariants. There is deliberately no common profile block: two realms
+##                    that integrate the same IdP still declare their own policy.
+##   - `attesters`   realm-scoped Proof-of-Relationship attestation issuers. The realm document lists
+##                    them at `attestations_endpoint`; advancement validation later fetches/checks
+##                    their key material and accepted schemas from this trust source.
 ##   - `operations`   its override of the shared `operations` block below — the keys that seal its
 ##                    trail, the trail itself, and its pseudonymisation. Same shape as the top level.
 ##   - `issuer`       defaults to `{public.url}/realms/<name>`; set it only when the realm lives on
@@ -91,6 +99,64 @@
 #       publish_ahead: 1h
 #       rotate_every: 90d
 #       retain: 400d
+#     exchange_profiles:
+#       - id: corporate-oauth-to-pic
+#         source:
+#           token_type: oauth-access-token
+#           format: jwt
+#           issuer: https://idp.example.com
+#           audience: pic-x
+#           validation:
+#             allowed_algorithms:
+#               - ES256
+#             require_expiration: true
+#             require_token_type: at+jwt
+#         claims:
+#           identity_context:
+#             type:
+#               value: user
+#             id:
+#               from: sub
+#             roles:
+#               from: roles
+#               type: set
+#             groups:
+#               from: groups
+#               type: set
+#             securityDomain:
+#               from: tenant_id
+#           scopes:
+#             from: scope
+#             encoding: space-delimited
+#             type: set
+#         privileges:
+#           source: scopes
+#           rules:
+#             - name: resource-instance
+#               priority: 10
+#               pattern: '^(?<resourceType>[a-z][a-z0-9_-]*):(?<operation>[a-z][a-z0-9_-]*):(?<resourceId>[a-zA-Z0-9_-]+)$'
+#               emit:
+#                 scope: '${raw}'
+#                 operation: '${operation}'
+#                 resource_type: '${resourceType}'
+#                 resource_id: '${resourceId}'
+#             - name: resource-collection
+#               priority: 1
+#               pattern: '^(?<resourceType>[a-z][a-z0-9_-]*):(?<operation>[a-z][a-z0-9_-]*)$'
+#               emit:
+#                 scope: '${raw}'
+#                 operation: '${operation}'
+#                 resource_type: '${resourceType}'
+#                 resource_id: '*'
+#         on_unmatched_scope: reject
+#     attesters:
+#       - id: corporate-por-attester
+#         issuer: https://attestation.example.com
+#         jwks_uri: https://attestation.example.com/jwks.json
+#         proof_types:
+#           - sd-jwt
+#         formats:
+#           - sd-jwt
 #     operations:
 #       audit:
 #         retention: 365d

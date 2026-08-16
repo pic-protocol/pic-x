@@ -13,7 +13,11 @@ use crate::keys::KEY_SET_MAX_AGE;
 use crate::limits::Limits;
 use crate::logging::{LogFormat, LogLevel};
 use crate::peer::AllowedPeer;
-use crate::realm::{RealmConfig, RealmInput};
+use crate::realm::{
+    EXCHANGE_ON_UNMATCHED_SCOPE_REJECT, EXCHANGE_SOURCE_FORMAT_JWT,
+    EXCHANGE_SOURCE_OAUTH_ACCESS_TOKEN, ExchangeProfileConfig, RealmConfig, RealmInput,
+    TrustedAttesterConfig,
+};
 use crate::secrets::{SecretProvider, SecretRef};
 use crate::tls::TlsSettings;
 
@@ -664,6 +668,8 @@ impl Config {
                     name.to_uppercase().replace('-', "_")
                 )
             }),
+            exchange_profiles: input.exchange_profiles,
+            trusted_attesters: input.trusted_attesters,
             name,
         })
     }
@@ -970,6 +976,225 @@ impl Config {
                          `audit.pseudonym.key_ref`"
                     );
                 }
+            }
+
+            self.validate_exchange_profiles(realm.exchange_profiles(), name)?;
+            self.validate_trusted_attesters(realm.trusted_attesters(), name)?;
+        }
+
+        Ok(())
+    }
+
+    /// Refuses attestation issuer metadata that cannot be published or used safely later.
+    fn validate_trusted_attesters(
+        &self,
+        attesters: &[TrustedAttesterConfig],
+        realm: &str,
+    ) -> Result<()> {
+        let mut seen = BTreeSet::new();
+
+        for attester in attesters {
+            let id = attester.id.trim();
+            if id.is_empty() {
+                bail!("the realm `{realm}` declares an attester with an empty id");
+            }
+            if !seen.insert(id.to_owned()) {
+                bail!("the realm `{realm}` declares the attester `{id}` twice");
+            }
+            if attester.issuer.trim().is_empty() {
+                bail!("the attester `{id}` in realm `{realm}` has an empty issuer");
+            }
+            if attester.jwks_uri.trim().is_empty() {
+                bail!("the attester `{id}` in realm `{realm}` has an empty jwks_uri");
+            }
+            self.require_public_https(
+                &attester.issuer,
+                &format!("issuer of attester `{id}` in realm `{realm}`"),
+            )?;
+            self.require_public_https(
+                &attester.jwks_uri,
+                &format!("jwks_uri of attester `{id}` in realm `{realm}`"),
+            )?;
+            if attester.proof_types.is_empty() {
+                bail!("the attester `{id}` in realm `{realm}` declares no proof types");
+            }
+            if !attester.proof_types.iter().any(|value| value == "sd-jwt") {
+                bail!(
+                    "the attester `{id}` in realm `{realm}` does not support Profile 0.2 proof type `sd-jwt`"
+                );
+            }
+            if attester.formats.is_empty() {
+                bail!("the attester `{id}` in realm `{realm}` declares no formats");
+            }
+            if !attester.formats.iter().any(|value| value == "sd-jwt") {
+                bail!(
+                    "the attester `{id}` in realm `{realm}` does not publish Profile 0.2 format `sd-jwt`"
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Refuses Exchange Profiles whose stated validation or mapping cannot be applied safely.
+    fn validate_exchange_profiles(
+        &self,
+        profiles: &[ExchangeProfileConfig],
+        realm: &str,
+    ) -> Result<()> {
+        let mut seen = BTreeSet::new();
+
+        for profile in profiles {
+            let id = profile.id.trim();
+            if id.is_empty() {
+                bail!("the realm `{realm}` declares an exchange profile with an empty id");
+            }
+            if !seen.insert(id.to_owned()) {
+                bail!("the realm `{realm}` declares the exchange profile `{id}` twice");
+            }
+
+            if profile.source.token_type != EXCHANGE_SOURCE_OAUTH_ACCESS_TOKEN {
+                bail!(
+                    "the exchange profile `{id}` in realm `{realm}` has unsupported source token \
+                     type `{}`; this build supports `{EXCHANGE_SOURCE_OAUTH_ACCESS_TOKEN}` for \
+                     initialization",
+                    profile.source.token_type
+                );
+            }
+            if profile.source.format != EXCHANGE_SOURCE_FORMAT_JWT {
+                bail!(
+                    "the exchange profile `{id}` in realm `{realm}` has unsupported source format \
+                     `{}`; this build supports `{EXCHANGE_SOURCE_FORMAT_JWT}`",
+                    profile.source.format
+                );
+            }
+            if profile.source.issuer.trim().is_empty() {
+                bail!("the exchange profile `{id}` in realm `{realm}` has an empty source issuer");
+            }
+            if profile.source.audience.trim().is_empty() {
+                bail!(
+                    "the exchange profile `{id}` in realm `{realm}` has an empty source audience"
+                );
+            }
+            if profile.source.validation.allowed_algorithms.is_empty() {
+                bail!(
+                    "the exchange profile `{id}` in realm `{realm}` declares no allowed source JWT \
+                     algorithms"
+                );
+            }
+            if !profile.source.validation.require_expiration {
+                bail!(
+                    "the exchange profile `{id}` in realm `{realm}` must require expiration on \
+                     incoming access tokens"
+                );
+            }
+            if profile
+                .source
+                .validation
+                .require_token_type
+                .as_deref()
+                .is_none_or(|value| value.trim().is_empty())
+            {
+                bail!(
+                    "the exchange profile `{id}` in realm `{realm}` must require an explicit source \
+                     JWT `typ`"
+                );
+            }
+
+            for (claim, mapping) in &profile.claims.identity_context {
+                let has_from = mapping
+                    .from
+                    .as_ref()
+                    .is_some_and(|value| !value.trim().is_empty());
+                let has_value = mapping
+                    .value
+                    .as_ref()
+                    .is_some_and(|value| !value.trim().is_empty());
+                if has_from == has_value {
+                    bail!(
+                        "the identity-context mapping `{claim}` in exchange profile `{id}` of realm \
+                         `{realm}` must declare exactly one of `from` or `value`"
+                    );
+                }
+            }
+
+            if profile
+                .claims
+                .scopes
+                .from
+                .as_deref()
+                .is_none_or(|value| value.is_empty())
+            {
+                bail!(
+                    "the exchange profile `{id}` in realm `{realm}` must map `claims.scopes.from`"
+                );
+            }
+            if profile.claims.scopes.value_type.as_deref() != Some("set") {
+                bail!(
+                    "the exchange profile `{id}` in realm `{realm}` must map `claims.scopes.type: set`"
+                );
+            }
+            if profile.privileges.source != "scopes" {
+                bail!(
+                    "the exchange profile `{id}` in realm `{realm}` has unsupported privileges source \
+                     `{}`; use `scopes`",
+                    profile.privileges.source
+                );
+            }
+            if profile.privileges.rules.is_empty() {
+                bail!("the exchange profile `{id}` in realm `{realm}` declares no privilege rules");
+            }
+
+            let mut priorities = BTreeSet::new();
+            let mut names = BTreeSet::new();
+            for rule in &profile.privileges.rules {
+                if rule.name.trim().is_empty() {
+                    bail!(
+                        "an exchange profile rule in `{id}` of realm `{realm}` has an empty name"
+                    );
+                }
+                if !names.insert(rule.name.as_str()) {
+                    bail!(
+                        "the exchange profile `{id}` in realm `{realm}` declares rule `{}` twice",
+                        rule.name
+                    );
+                }
+                if !priorities.insert(rule.priority) {
+                    bail!(
+                        "the exchange profile `{id}` in realm `{realm}` reuses priority {}; rules \
+                         with equal priority have unspecified order",
+                        rule.priority
+                    );
+                }
+                if rule.pattern.trim().is_empty() {
+                    bail!(
+                        "the exchange profile `{id}` in realm `{realm}` has an empty pattern for \
+                         rule `{}`",
+                        rule.name
+                    );
+                }
+                for (field, template) in [
+                    ("scope", &rule.emit.scope),
+                    ("operation", &rule.emit.operation),
+                    ("resource_type", &rule.emit.resource_type),
+                    ("resource_id", &rule.emit.resource_id),
+                ] {
+                    if template.trim().is_empty() {
+                        bail!(
+                            "the exchange profile `{id}` in realm `{realm}` emits an empty `{field}` \
+                             from rule `{}`",
+                            rule.name
+                        );
+                    }
+                }
+            }
+
+            if profile.on_unmatched_scope != EXCHANGE_ON_UNMATCHED_SCOPE_REJECT {
+                bail!(
+                    "the exchange profile `{id}` in realm `{realm}` has unsupported \
+                     on_unmatched_scope `{}`; use `{EXCHANGE_ON_UNMATCHED_SCOPE_REJECT}`",
+                    profile.on_unmatched_scope
+                );
             }
         }
 

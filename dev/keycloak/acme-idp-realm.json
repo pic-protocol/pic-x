@@ -16,6 +16,14 @@
       {
         "name": "example-user",
         "description": "Local development role for ACME IdP token tests"
+      },
+      {
+        "name": "documents:read:document-42",
+        "description": "PIC lab authority to read the sensitive document"
+      },
+      {
+        "name": "storage:save",
+        "description": "PIC lab authority to store the processed result"
       }
     ]
   },
@@ -34,7 +42,24 @@
       "serviceAccountsEnabled": false,
       "authorizationServicesEnabled": false,
       "redirectUris": [],
-      "webOrigins": []
+      "webOrigins": [],
+      "protocolMappers": [
+        {
+          "name": "pic-scopes",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.attribute": "pic_scopes",
+            "claim.name": "pic_scopes",
+            "jsonType.label": "String",
+            "multivalued": "true",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "userinfo.token.claim": "false"
+          }
+        }
+      ]
     }
   ],
   "users": [
@@ -46,8 +71,16 @@
       "enabled": true,
       "emailVerified": true,
       "requiredActions": [],
+      "attributes": {
+        "pic_scopes": [
+          "documents:read:document-42",
+          "storage:save"
+        ]
+      },
       "realmRoles": [
-        "example-user"
+        "example-user",
+        "documents:read:document-42",
+        "storage:save"
       ],
       "credentials": [
         {

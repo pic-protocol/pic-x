@@ -35,6 +35,97 @@ use crate::secrets::{SecretProvider, SecretRef};
 /// section — is an added entry rather than a breaking change, but the code here knows exactly one.
 pub const PIC_PROFILE: &str = "https://pic-protocol.org/profiles/0.2";
 
+/// OAuth RFC 8693 subject-token type for an access token.
+pub const OAUTH_ACCESS_TOKEN_TYPE: &str = "urn:ietf:params:oauth:token-type:access_token";
+
+/// The source token kind an Exchange Profile accepts.
+pub const EXCHANGE_SOURCE_OAUTH_ACCESS_TOKEN: &str = "oauth-access-token";
+
+/// The JWT source format named by the Exchange Profile article.
+pub const EXCHANGE_SOURCE_FORMAT_JWT: &str = "jwt";
+
+/// The only unmatched-scope policy implemented by Profile 0.2 PIC-X exchange.
+pub const EXCHANGE_ON_UNMATCHED_SCOPE_REJECT: &str = "reject";
+
+/// A realm-scoped Exchange Profile: validation and mapping rules for one upstream token source.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ExchangeProfileConfig {
+    pub id: String,
+    pub source: ExchangeProfileSource,
+    pub claims: ExchangeProfileClaims,
+    pub privileges: ExchangeProfilePrivileges,
+    pub on_unmatched_scope: String,
+}
+
+/// The upstream token shape and validation policy a profile accepts.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ExchangeProfileSource {
+    pub token_type: String,
+    pub format: String,
+    pub issuer: String,
+    pub audience: String,
+    pub validation: ExchangeTokenValidation,
+}
+
+/// Header and claim checks applied before any upstream claim is mapped.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ExchangeTokenValidation {
+    pub allowed_algorithms: Vec<String>,
+    pub require_expiration: bool,
+    pub require_token_type: Option<String>,
+}
+
+/// Claim mappings used to build the logical PIC authority input.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ExchangeProfileClaims {
+    pub identity_context: BTreeMap<String, ClaimMapping>,
+    pub scopes: ClaimMapping,
+}
+
+/// One source or literal mapping from an upstream JWT to a PIC logical value.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ClaimMapping {
+    pub from: Option<String>,
+    pub value: Option<String>,
+    pub value_type: Option<String>,
+    pub encoding: Option<String>,
+}
+
+/// Scope-to-privilege mapping rules.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ExchangeProfilePrivileges {
+    pub source: String,
+    pub rules: Vec<PrivilegeRule>,
+}
+
+/// One ordered regular-expression rule over an upstream scope value.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PrivilegeRule {
+    pub name: String,
+    pub priority: i32,
+    pub pattern: String,
+    pub emit: PrivilegeEmit,
+}
+
+/// The invariant fields emitted when a scope rule matches.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PrivilegeEmit {
+    pub scope: String,
+    pub operation: String,
+    pub resource_type: String,
+    pub resource_id: String,
+}
+
+/// A trusted Proof-of-Relationship attestation issuer configured for one realm.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TrustedAttesterConfig {
+    pub id: String,
+    pub issuer: String,
+    pub jwks_uri: String,
+    pub proof_types: Vec<String>,
+    pub formats: Vec<String>,
+}
+
 /// What a realm declared in a configuration file, before it is resolved against the server's values.
 ///
 /// Every field is what the file literally said — a string, or absent — because parsing a duration or
@@ -64,6 +155,8 @@ pub struct RealmInput {
     pub audit_pseudonym_key_version: Option<String>,
     pub secrets_provider: Option<String>,
     pub secrets_env_prefix: Option<String>,
+    pub exchange_profiles: Vec<ExchangeProfileConfig>,
+    pub trusted_attesters: Vec<TrustedAttesterConfig>,
 }
 
 /// One realm as the composition root reads it: identity **and** the full policy it runs under, each
@@ -96,6 +189,8 @@ pub struct RealmConfig {
     pub(crate) audit_pseudonym_key_version: String,
     pub(crate) secrets_provider: SecretProvider,
     pub(crate) secrets_env_prefix: String,
+    pub(crate) exchange_profiles: Vec<ExchangeProfileConfig>,
+    pub(crate) trusted_attesters: Vec<TrustedAttesterConfig>,
 }
 
 impl RealmConfig {
@@ -193,6 +288,16 @@ impl RealmConfig {
     pub fn secrets_env_prefix(&self) -> &str {
         &self.secrets_env_prefix
     }
+
+    /// The Exchange Profiles this realm accepts, in configuration order.
+    pub fn exchange_profiles(&self) -> &[ExchangeProfileConfig] {
+        &self.exchange_profiles
+    }
+
+    /// The trusted PoR attestation issuers this realm advertises.
+    pub fn trusted_attesters(&self) -> &[TrustedAttesterConfig] {
+        &self.trusted_attesters
+    }
 }
 
 /// One issuer: everything a realm signs, records and is reached at.
@@ -209,6 +314,8 @@ pub struct Realm {
     token_keys: Option<Arc<dyn KeyManager>>,
     audit: Arc<dyn AuditSink>,
     pseudonymizer: Option<Arc<dyn Pseudonymizer>>,
+    exchange_profiles: Vec<ExchangeProfileConfig>,
+    trusted_attesters: Vec<TrustedAttesterConfig>,
 }
 
 impl Realm {
@@ -242,7 +349,27 @@ impl Realm {
             token_keys,
             audit,
             pseudonymizer,
+            exchange_profiles: Vec::new(),
+            trusted_attesters: Vec::new(),
         }
+    }
+
+    /// Attaches the Exchange Profiles loaded for this realm.
+    pub fn with_exchange_profiles(
+        mut self,
+        profiles: impl IntoIterator<Item = ExchangeProfileConfig>,
+    ) -> Self {
+        self.exchange_profiles = profiles.into_iter().collect();
+        self
+    }
+
+    /// Attaches the trusted PoR attestation issuers configured for this realm.
+    pub fn with_trusted_attesters(
+        mut self,
+        attesters: impl IntoIterator<Item = TrustedAttesterConfig>,
+    ) -> Self {
+        self.trusted_attesters = attesters.into_iter().collect();
+        self
     }
 
     /// Returns the realm's name, which is unique within a deployment.
@@ -294,6 +421,16 @@ impl Realm {
     /// Returns the privacy policy this realm's subjects are recorded under, when it has one.
     pub fn pseudonymizer(&self) -> Option<&Arc<dyn Pseudonymizer>> {
         self.pseudonymizer.as_ref()
+    }
+
+    /// The Exchange Profiles this realm accepts.
+    pub fn exchange_profiles(&self) -> &[ExchangeProfileConfig] {
+        &self.exchange_profiles
+    }
+
+    /// The trusted PoR attestation issuers this realm advertises.
+    pub fn trusted_attesters(&self) -> &[TrustedAttesterConfig] {
+        &self.trusted_attesters
     }
 
     /// Returns the absolute URL a client should use for `path` within this realm.

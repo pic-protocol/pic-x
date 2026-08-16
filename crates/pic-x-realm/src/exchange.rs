@@ -1,0 +1,747 @@
+//! Realm token exchange for PIC Profile 0.2.
+//!
+//! This module is intentionally the boundary between HTTP/OAuth integration and the pure PIC
+//! protocol crate. It validates and maps the incoming access token according to the selected realm's
+//! Exchange Profile, then hands an already-canonicalized authority checkpoint to `pic-rust` for the
+//! PIC PCA COSE, settled Continuity COSE, and PIC Token JWT serialization/signing.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use axum::Json;
+use axum::body::Bytes;
+use axum::extract::State;
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
+use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use pic::continuity::artifacts::PicPcaPayload;
+use pic::continuity::authority::{
+    AuthorityValue, IndexedAuthorityMap, Invariant, LogicalAuthority,
+};
+use pic::continuity::cose::{CoseError, SigningAlgorithm};
+use pic::continuity::proposal::InitialContinuityProposal;
+use pic::continuity::trust::ArtifactSigner;
+use pic::continuity::verifier::{SettlementContext, issue_settled};
+use regex::{Captures, Regex};
+use ring::rand::{SecureRandom, SystemRandom};
+use serde::Serialize;
+use serde_json::Value;
+use tracing::warn;
+
+use pic_x_core::{
+    ClaimMapping, EXCHANGE_ON_UNMATCHED_SCOPE_REJECT, EXCHANGE_SOURCE_OAUTH_ACCESS_TOKEN,
+    ExchangeProfileConfig, KeyManager, OAUTH_ACCESS_TOKEN_TYPE, Realm,
+};
+
+use crate::COMPONENT;
+
+const GRANT_TOKEN_EXCHANGE: &str = "urn:ietf:params:oauth:grant-type:token-exchange";
+const TOKEN_TYPE_N_A: &str = "N_A";
+
+/// Runtime state for one realm token endpoint.
+#[derive(Clone)]
+pub(crate) struct TokenEndpoint {
+    pub(crate) realm: Realm,
+    pub(crate) development_mode: bool,
+}
+
+/// RFC 8693 token-exchange response carrying a PIC Token JWT.
+#[derive(Serialize)]
+struct TokenExchangeResponse {
+    access_token: String,
+    issued_token_type: &'static str,
+    token_type: &'static str,
+}
+
+/// OAuth-style error body.
+#[derive(Serialize)]
+struct ErrorBody<'a> {
+    error: &'a str,
+    error_description: String,
+}
+
+#[derive(Debug)]
+struct ExchangeError {
+    status: StatusCode,
+    code: &'static str,
+    description: String,
+}
+
+impl ExchangeError {
+    fn invalid_request(description: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            code: "invalid_request",
+            description: description.into(),
+        }
+    }
+
+    fn invalid_grant(description: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            code: "invalid_grant",
+            description: description.into(),
+        }
+    }
+
+    fn invalid_target(description: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            code: "invalid_target",
+            description: description.into(),
+        }
+    }
+
+    fn unsupported_token_type(description: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            code: "unsupported_token_type",
+            description: description.into(),
+        }
+    }
+
+    fn temporarily_unavailable(description: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            code: "temporarily_unavailable",
+            description: description.into(),
+        }
+    }
+
+    fn server_error(description: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            code: "server_error",
+            description: description.into(),
+        }
+    }
+
+    fn response(self) -> Response {
+        (
+            self.status,
+            Json(ErrorBody {
+                error: self.code,
+                error_description: self.description,
+            }),
+        )
+            .into_response()
+    }
+}
+
+/// The realm's token endpoint.
+pub(crate) async fn token(State(endpoint): State<TokenEndpoint>, body: Bytes) -> Response {
+    match endpoint.exchange(body) {
+        Ok(response) => response,
+        Err(error) => error.response(),
+    }
+}
+
+impl TokenEndpoint {
+    fn exchange(&self, body: Bytes) -> Result<Response, ExchangeError> {
+        let form = parse_form(&body)?;
+
+        require(&form, "grant_type").and_then(|grant| {
+            if grant == GRANT_TOKEN_EXCHANGE {
+                Ok(())
+            } else {
+                Err(ExchangeError::invalid_request(format!(
+                    "unsupported grant_type `{grant}`"
+                )))
+            }
+        })?;
+
+        let requested = form.get("requested_token_type");
+        if requested.is_some_and(|value| value != pic::continuity::TOKEN_TYPE_PIC) {
+            return Err(ExchangeError::invalid_target(format!(
+                "requested_token_type must be `{}`",
+                pic::continuity::TOKEN_TYPE_PIC
+            )));
+        }
+
+        let subject_token_type = require(&form, "subject_token_type")?;
+        let subject_token = require(&form, "subject_token")?;
+
+        match subject_token_type {
+            OAUTH_ACCESS_TOKEN_TYPE => self.exchange_initial(subject_token, &form),
+            value if value == pic::continuity::TOKEN_TYPE_PIC => {
+                if form.contains_key("continuity_proposal")
+                    || form.contains_key("continuity_proposal_type")
+                {
+                    return Err(ExchangeError::invalid_request(
+                        "Profile 0.2 PIC-to-PIC advancement omits continuity_proposal",
+                    ));
+                }
+                Err(ExchangeError::unsupported_token_type(
+                    "PIC-to-PIC continuity advancement is not enabled until PoR, revocation and \
+                     trusted-checkpoint storage are configured",
+                ))
+            }
+            value => Err(ExchangeError::unsupported_token_type(format!(
+                "unsupported subject_token_type `{value}`"
+            ))),
+        }
+    }
+
+    fn exchange_initial(
+        &self,
+        access_token: &str,
+        form: &BTreeMap<String, String>,
+    ) -> Result<Response, ExchangeError> {
+        let proposal_value = require(form, "continuity_proposal")?;
+        if form
+            .get("continuity_proposal_type")
+            .is_some_and(|value| value != pic::continuity::PROPOSAL_TYPE_CONTINUITY_INITIAL)
+        {
+            return Err(ExchangeError::invalid_request(format!(
+                "continuity_proposal_type must be `{}`",
+                pic::continuity::PROPOSAL_TYPE_CONTINUITY_INITIAL
+            )));
+        }
+
+        let jwt = DecodedJwt::decode(access_token)?;
+        let profile = self.select_initial_profile(&jwt)?;
+        self.validate_source_jwt(&jwt, profile)?;
+
+        let mapped = map_authority(profile, &jwt.payload)?;
+        let proposal = InitialContinuityProposal::from_continuity_proposal(proposal_value)
+            .map_err(|error| {
+                ExchangeError::invalid_request(format!("invalid continuity_proposal: {error}"))
+            })?;
+
+        let logical = LogicalAuthority::new(
+            mapped.identity_context,
+            mapped.invariants,
+            proposal.execution_contract,
+        );
+        let authority = IndexedAuthorityMap::from_logical(&logical).map_err(|error| {
+            ExchangeError::invalid_grant(format!("invalid derived authority: {error}"))
+        })?;
+
+        let mut challenge = vec![0_u8; 32];
+        SystemRandom::new()
+            .fill(&mut challenge)
+            .map_err(|_| ExchangeError::server_error("could not generate the next challenge"))?;
+        let checkpoint = PicPcaPayload::new(0, authority, challenge);
+
+        let keys = self.realm.token_keys().map(Arc::clone).ok_or_else(|| {
+            ExchangeError::temporarily_unavailable(
+                "the selected realm has no token-signing key ring",
+            )
+        })?;
+        let signer = RealmTokenSigner::new(keys)?;
+        let now = unix_now()?;
+        let context = SettlementContext {
+            iss: self
+                .realm
+                .issuer()
+                .map(ToOwned::to_owned)
+                .unwrap_or_else(|| self.realm.mount_path().to_owned()),
+            sub: jwt.claim_string("sub"),
+            aud: None,
+            iat: Some(now),
+            exp: jwt.claim_i64("exp"),
+            jti: None,
+        };
+        let issued = issue_settled(checkpoint, &signer, &context).map_err(|error| {
+            ExchangeError::server_error(format!("could not issue PIC Token JWT: {error}"))
+        })?;
+
+        Ok(Json(TokenExchangeResponse {
+            access_token: issued.token,
+            issued_token_type: pic::continuity::TOKEN_TYPE_PIC,
+            token_type: TOKEN_TYPE_N_A,
+        })
+        .into_response())
+    }
+
+    fn select_initial_profile<'a>(
+        &'a self,
+        jwt: &DecodedJwt,
+    ) -> Result<&'a ExchangeProfileConfig, ExchangeError> {
+        self.realm
+            .exchange_profiles()
+            .iter()
+            .find(|profile| {
+                profile.source.token_type == EXCHANGE_SOURCE_OAUTH_ACCESS_TOKEN
+                    && jwt.claim_string("iss").as_deref() == Some(profile.source.issuer.as_str())
+                    && jwt.audience_contains(&profile.source.audience)
+            })
+            .ok_or_else(|| {
+                ExchangeError::invalid_grant(
+                    "no exchange profile accepts this token issuer and audience in the selected realm",
+                )
+            })
+    }
+
+    fn validate_source_jwt(
+        &self,
+        jwt: &DecodedJwt,
+        profile: &ExchangeProfileConfig,
+    ) -> Result<(), ExchangeError> {
+        let alg = jwt.header_string("alg").ok_or_else(|| {
+            ExchangeError::invalid_grant("source access token header has no `alg`")
+        })?;
+        if !profile
+            .source
+            .validation
+            .allowed_algorithms
+            .iter()
+            .any(|allowed| allowed == &alg)
+        {
+            return Err(ExchangeError::invalid_grant(format!(
+                "source access token algorithm `{alg}` is not allowed by exchange profile `{}`",
+                profile.id
+            )));
+        }
+
+        if let Some(required) = &profile.source.validation.require_token_type {
+            let typ = jwt.header_string("typ").ok_or_else(|| {
+                ExchangeError::invalid_grant("source access token header has no `typ`")
+            })?;
+            if typ != *required {
+                return Err(ExchangeError::invalid_grant(format!(
+                    "source access token typ `{typ}` does not match required `{required}`"
+                )));
+            }
+        }
+
+        if jwt.claim_string("iss").as_deref() != Some(profile.source.issuer.as_str()) {
+            return Err(ExchangeError::invalid_grant(
+                "source access token issuer does not match the exchange profile",
+            ));
+        }
+        if !jwt.audience_contains(&profile.source.audience) {
+            return Err(ExchangeError::invalid_grant(
+                "source access token audience does not match the exchange profile",
+            ));
+        }
+
+        if profile.source.validation.require_expiration {
+            let exp = jwt.claim_i64("exp").ok_or_else(|| {
+                ExchangeError::invalid_grant("source access token has no numeric `exp`")
+            })?;
+            let now = unix_now()?;
+            if exp <= now {
+                return Err(ExchangeError::invalid_grant(
+                    "source access token is expired",
+                ));
+            }
+        }
+
+        if !self.development_mode {
+            return Err(ExchangeError::invalid_grant(
+                "source JWT signature verification is not configured yet for this build",
+            ));
+        }
+        warn!(
+            event.name = "token_exchange.source_signature_skipped",
+            component = COMPONENT,
+            realm = self.realm.name(),
+            exchange_profile = profile.id,
+            "development mode accepted a source JWT after structural validation only"
+        );
+
+        Ok(())
+    }
+}
+
+struct DecodedJwt {
+    header: Value,
+    payload: Value,
+}
+
+impl DecodedJwt {
+    fn decode(token: &str) -> Result<Self, ExchangeError> {
+        let mut parts = token.split('.');
+        let (Some(header), Some(payload), Some(_signature), None) =
+            (parts.next(), parts.next(), parts.next(), parts.next())
+        else {
+            return Err(ExchangeError::invalid_grant(
+                "source access token is not a compact JWS",
+            ));
+        };
+
+        Ok(Self {
+            header: decode_json_segment(header, "source access token header")?,
+            payload: decode_json_segment(payload, "source access token payload")?,
+        })
+    }
+
+    fn header_string(&self, name: &str) -> Option<String> {
+        self.header.get(name)?.as_str().map(ToOwned::to_owned)
+    }
+
+    fn claim_string(&self, name: &str) -> Option<String> {
+        claim_at_path(&self.payload, name)?
+            .as_str()
+            .map(ToOwned::to_owned)
+    }
+
+    fn claim_i64(&self, name: &str) -> Option<i64> {
+        claim_at_path(&self.payload, name)?.as_i64()
+    }
+
+    fn audience_contains(&self, expected: &str) -> bool {
+        match claim_at_path(&self.payload, "aud") {
+            Some(Value::String(value)) => value == expected,
+            Some(Value::Array(values)) => values
+                .iter()
+                .any(|value| value.as_str().is_some_and(|aud| aud == expected)),
+            _ => false,
+        }
+    }
+}
+
+struct MappedAuthority {
+    identity_context: Option<BTreeMap<String, AuthorityValue>>,
+    invariants: Vec<Invariant>,
+}
+
+fn map_authority(
+    profile: &ExchangeProfileConfig,
+    payload: &Value,
+) -> Result<MappedAuthority, ExchangeError> {
+    let identity_context = map_identity_context(profile, payload)?;
+    let scopes = map_scopes(&profile.claims.scopes, payload)?;
+    let invariants = map_invariants(profile, &scopes)?;
+
+    Ok(MappedAuthority {
+        identity_context,
+        invariants,
+    })
+}
+
+fn map_identity_context(
+    profile: &ExchangeProfileConfig,
+    payload: &Value,
+) -> Result<Option<BTreeMap<String, AuthorityValue>>, ExchangeError> {
+    let mut identity = BTreeMap::new();
+    for (key, mapping) in &profile.claims.identity_context {
+        let value = map_authority_value(mapping, payload).map_err(|error| {
+            ExchangeError::invalid_grant(format!(
+                "identity-context claim `{key}` could not be mapped: {error}"
+            ))
+        })?;
+        identity.insert(key.clone(), value);
+    }
+
+    Ok((!identity.is_empty()).then_some(identity))
+}
+
+fn map_scopes(mapping: &ClaimMapping, payload: &Value) -> Result<Vec<String>, ExchangeError> {
+    if mapping.value_type.as_deref() != Some("set") {
+        return Err(ExchangeError::invalid_grant(
+            "claims.scopes must be mapped as `type: set`",
+        ));
+    }
+
+    let Some(path) = &mapping.from else {
+        return Err(ExchangeError::invalid_grant(
+            "claims.scopes must map from an upstream claim",
+        ));
+    };
+    let source = claim_at_path(payload, path).ok_or_else(|| {
+        ExchangeError::invalid_grant(format!("source access token has no `{path}` claim"))
+    })?;
+
+    let scopes = match source {
+        Value::String(text) if mapping.encoding.as_deref() == Some("space-delimited") => text
+            .split_whitespace()
+            .map(ToOwned::to_owned)
+            .collect::<Vec<_>>(),
+        Value::String(text) => vec![text.clone()],
+        Value::Array(values) => values
+            .iter()
+            .map(|value| {
+                value.as_str().map(ToOwned::to_owned).ok_or_else(|| {
+                    ExchangeError::invalid_grant(format!(
+                        "`{path}` must contain only string scope values"
+                    ))
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?,
+        _ => {
+            return Err(ExchangeError::invalid_grant(format!(
+                "`{path}` must be a string or array of strings"
+            )));
+        }
+    };
+
+    let scopes = scopes
+        .into_iter()
+        .filter(|scope| !scope.is_empty())
+        .collect::<Vec<_>>();
+    if scopes.is_empty() {
+        return Err(ExchangeError::invalid_grant(
+            "source access token produced no scopes",
+        ));
+    }
+
+    Ok(scopes)
+}
+
+fn map_invariants(
+    profile: &ExchangeProfileConfig,
+    scopes: &[String],
+) -> Result<Vec<Invariant>, ExchangeError> {
+    let mut rules = Vec::new();
+    for rule in &profile.privileges.rules {
+        let pattern = Regex::new(&rule.pattern).map_err(|error| {
+            ExchangeError::invalid_request(format!(
+                "exchange profile `{}` has an invalid rule pattern `{}`: {error}",
+                profile.id, rule.name
+            ))
+        })?;
+        rules.push((rule.priority, rule, pattern));
+    }
+    rules.sort_by(|left, right| right.0.cmp(&left.0));
+
+    let mut invariants = BTreeSet::new();
+    for scope in scopes {
+        let mut matched = false;
+        for (_, rule, pattern) in &rules {
+            let Some(captures) = pattern.captures(scope) else {
+                continue;
+            };
+            let invariant = Invariant::new(
+                render_template(&rule.emit.scope, scope, &captures)?,
+                render_template(&rule.emit.operation, scope, &captures)?,
+                render_template(&rule.emit.resource_type, scope, &captures)?,
+                render_template(&rule.emit.resource_id, scope, &captures)?,
+            );
+            invariants.insert(invariant);
+            matched = true;
+            break;
+        }
+
+        if !matched && profile.on_unmatched_scope == EXCHANGE_ON_UNMATCHED_SCOPE_REJECT {
+            return Err(ExchangeError::invalid_grant(format!(
+                "scope `{scope}` is not accepted by exchange profile `{}`",
+                profile.id
+            )));
+        }
+    }
+
+    if invariants.is_empty() {
+        return Err(ExchangeError::invalid_grant(
+            "the exchange produced no executable authority invariants",
+        ));
+    }
+
+    Ok(invariants.into_iter().collect())
+}
+
+fn map_authority_value(mapping: &ClaimMapping, payload: &Value) -> Result<AuthorityValue, String> {
+    if let Some(value) = &mapping.value {
+        return Ok(AuthorityValue::One(value.clone()));
+    }
+
+    let path = mapping
+        .from
+        .as_ref()
+        .ok_or_else(|| "mapping has no `from` or `value`".to_owned())?;
+    let value = claim_at_path(payload, path).ok_or_else(|| format!("missing `{path}`"))?;
+
+    match mapping.value_type.as_deref() {
+        Some("set") => match value {
+            Value::Array(values) => values
+                .iter()
+                .map(|item| {
+                    item.as_str()
+                        .map(ToOwned::to_owned)
+                        .ok_or_else(|| format!("`{path}` contains a non-string value"))
+                })
+                .collect::<Result<Vec<_>, _>>()
+                .map(AuthorityValue::Many),
+            Value::String(text) if mapping.encoding.as_deref() == Some("space-delimited") => Ok(
+                AuthorityValue::Many(text.split_whitespace().map(ToOwned::to_owned).collect()),
+            ),
+            Value::String(text) => Ok(AuthorityValue::Many(vec![text.clone()])),
+            _ => Err(format!("`{path}` is not a string or array of strings")),
+        },
+        _ => value
+            .as_str()
+            .map(|text| AuthorityValue::One(text.to_owned()))
+            .ok_or_else(|| format!("`{path}` is not a string")),
+    }
+}
+
+fn render_template(
+    template: &str,
+    raw: &str,
+    captures: &Captures<'_>,
+) -> Result<String, ExchangeError> {
+    let mut rendered = String::new();
+    let mut rest = template;
+
+    while let Some(start) = rest.find("${") {
+        rendered.push_str(&rest[..start]);
+        let after = &rest[start + 2..];
+        let Some(end) = after.find('}') else {
+            return Err(ExchangeError::invalid_request(format!(
+                "template `{template}` has an unterminated placeholder"
+            )));
+        };
+        let name = &after[..end];
+        if name == "raw" {
+            rendered.push_str(raw);
+        } else {
+            let Some(value) = captures.name(name) else {
+                return Err(ExchangeError::invalid_request(format!(
+                    "template `{template}` references missing capture `{name}`"
+                )));
+            };
+            rendered.push_str(value.as_str());
+        }
+        rest = &after[end + 1..];
+    }
+
+    rendered.push_str(rest);
+    Ok(rendered)
+}
+
+fn claim_at_path<'a>(value: &'a Value, path: &str) -> Option<&'a Value> {
+    let mut current = value;
+    for segment in path.split('.') {
+        current = current.get(segment)?;
+    }
+    Some(current)
+}
+
+fn decode_json_segment(segment: &str, label: &str) -> Result<Value, ExchangeError> {
+    let bytes = URL_SAFE_NO_PAD.decode(segment).map_err(|error| {
+        ExchangeError::invalid_grant(format!("{label} is not base64url: {error}"))
+    })?;
+    serde_json::from_slice(&bytes)
+        .map_err(|error| ExchangeError::invalid_grant(format!("{label} is not JSON: {error}")))
+}
+
+fn parse_form(body: &Bytes) -> Result<BTreeMap<String, String>, ExchangeError> {
+    let text = std::str::from_utf8(body).map_err(|error| {
+        ExchangeError::invalid_request(format!("request body is not UTF-8: {error}"))
+    })?;
+    let mut form = BTreeMap::new();
+
+    for pair in text.split('&').filter(|pair| !pair.is_empty()) {
+        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+        form.insert(percent_decode(key)?, percent_decode(value)?);
+    }
+
+    Ok(form)
+}
+
+fn percent_decode(value: &str) -> Result<String, ExchangeError> {
+    let mut decoded = Vec::new();
+    let bytes = value.as_bytes();
+    let mut index = 0;
+
+    while index < bytes.len() {
+        match bytes[index] {
+            b'+' => {
+                decoded.push(b' ');
+                index += 1;
+            }
+            b'%' => {
+                if index + 2 >= bytes.len() {
+                    return Err(ExchangeError::invalid_request(
+                        "form value contains an incomplete percent escape",
+                    ));
+                }
+                let high = from_hex(bytes[index + 1])?;
+                let low = from_hex(bytes[index + 2])?;
+                decoded.push((high << 4) | low);
+                index += 3;
+            }
+            byte => {
+                decoded.push(byte);
+                index += 1;
+            }
+        }
+    }
+
+    String::from_utf8(decoded).map_err(|error| {
+        ExchangeError::invalid_request(format!("form value is not UTF-8: {error}"))
+    })
+}
+
+fn from_hex(byte: u8) -> Result<u8, ExchangeError> {
+    match byte {
+        b'0'..=b'9' => Ok(byte - b'0'),
+        b'a'..=b'f' => Ok(byte - b'a' + 10),
+        b'A'..=b'F' => Ok(byte - b'A' + 10),
+        _ => Err(ExchangeError::invalid_request(
+            "form value contains a non-hex percent escape",
+        )),
+    }
+}
+
+fn require<'a>(form: &'a BTreeMap<String, String>, name: &str) -> Result<&'a str, ExchangeError> {
+    form.get(name)
+        .filter(|value| !value.is_empty())
+        .map(String::as_str)
+        .ok_or_else(|| ExchangeError::invalid_request(format!("missing `{name}` parameter")))
+}
+
+fn unix_now() -> Result<i64, ExchangeError> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .map_err(|error| {
+            ExchangeError::server_error(format!("system clock is before Unix epoch: {error}"))
+        })
+}
+
+struct RealmTokenSigner {
+    keys: Arc<dyn KeyManager>,
+    kid: String,
+}
+
+impl RealmTokenSigner {
+    fn new(keys: Arc<dyn KeyManager>) -> Result<Self, ExchangeError> {
+        let kid = keys
+            .active_key_id()
+            .map_err(|error| {
+                ExchangeError::temporarily_unavailable(format!(
+                    "the realm token-signing key ring is not ready: {error}"
+                ))
+            })?
+            .to_string();
+        Ok(Self { keys, kid })
+    }
+}
+
+impl ArtifactSigner for RealmTokenSigner {
+    fn kid(&self) -> &str {
+        &self.kid
+    }
+
+    fn cose_algorithm(&self) -> SigningAlgorithm {
+        SigningAlgorithm::EdDSA
+    }
+
+    fn jws_algorithm(&self) -> &str {
+        "EdDSA"
+    }
+
+    fn sign(&self, data: &[u8]) -> Result<Vec<u8>, CoseError> {
+        let signature = self
+            .keys
+            .sign(data)
+            .map_err(|error| CoseError::InvalidKey(error.to_string()))?;
+        if signature.algorithm() != self.jws_algorithm() {
+            return Err(CoseError::AlgorithmMismatch {
+                expected: self.jws_algorithm().to_owned(),
+                got: signature.algorithm().to_owned(),
+            });
+        }
+        if signature.key_id().as_str() != self.kid {
+            return Err(CoseError::InvalidKey(
+                "active signing key changed while signing".to_owned(),
+            ));
+        }
+
+        Ok(signature.bytes().to_vec())
+    }
+}

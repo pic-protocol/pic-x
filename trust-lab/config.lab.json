@@ -1,0 +1,11 @@
+{
+  "public_url": "http://localhost:17080",
+  "artifact_dir": ".volume/trust-lab/artifacts",
+  "attesters": [
+    {
+      "id": "acme-por-attester",
+      "path": "/attesters/acme-por-attester",
+      "key_id": "lab-attester-ed25519-1"
+    }
+  ]
+}

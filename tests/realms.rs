@@ -262,15 +262,15 @@ fn test_two_realms_each_get_their_own_issuer_surface_and_key() {
         !kids(&acme_token_keys).is_empty(),
         "the realm publishes no token keys: {acme_token_keys}"
     );
-    // The token endpoint answers a POST — with 501, since issuance is not built — rather than 404.
+    // The token endpoint answers a POST with token-exchange validation, rather than 404.
     let (token_status, token_body) = post(&server.public, "/realms/acme/token");
     assert!(
-        token_status.contains("501"),
+        token_status.contains("400"),
         "the token endpoint should answer a POST: {token_status}"
     );
     assert!(
-        token_body.contains("not_implemented"),
-        "the 501 should say why: {token_body}"
+        token_body.contains("invalid_request"),
+        "the validation error should say why: {token_body}"
     );
     // The old realm key path is gone; the key set moved to `{issuer}/keys`.
     let (old_path_status, _) = get(&server.public, "/realms/acme/.well-known/jwks.json");

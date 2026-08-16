@@ -34,7 +34,11 @@ use crate::config::{
     SETTING_TELEMETRY_TLS_CERT, SETTING_TELEMETRY_TLS_KEY, SETTING_TELEMETRY_TLS_MIN_VERSION,
     SETTING_TLS_RELOAD, SETTING_TLS_RELOAD_INTERVAL, SETTING_WORKING_DIR,
 };
-use crate::realm::RealmInput;
+use crate::realm::{
+    ClaimMapping, ExchangeProfileClaims, ExchangeProfileConfig, ExchangeProfilePrivileges,
+    ExchangeProfileSource, ExchangeTokenValidation, PrivilegeEmit, PrivilegeRule, RealmInput,
+    TrustedAttesterConfig,
+};
 
 /// The section names this crate parses into typed settings.
 const KNOWN_SECTIONS: [&str; 8] = [
@@ -110,6 +114,189 @@ struct RealmSection {
     /// itself, and its pseudonymisation. Any field absent inherits the server's `operations`.
     #[serde(default)]
     operations: RealmOperationsSection,
+    /// Realm-scoped OAuth/PIC Exchange Profiles. Each realm owns its own mappings.
+    #[serde(default)]
+    exchange_profiles: Vec<ExchangeProfileSection>,
+    /// Realm-scoped trusted Proof-of-Relationship attestation issuers.
+    #[serde(default)]
+    attesters: Vec<TrustedAttesterSection>,
+}
+
+/// One Exchange Profile exactly as the file declares it.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExchangeProfileSection {
+    id: String,
+    source: ExchangeProfileSourceSection,
+    claims: ExchangeProfileClaimsSection,
+    privileges: ExchangeProfilePrivilegesSection,
+    #[serde(default, alias = "onUnmatchedScope")]
+    on_unmatched_scope: Option<String>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExchangeProfileSourceSection {
+    #[serde(alias = "tokenType")]
+    token_type: String,
+    format: String,
+    issuer: String,
+    audience: String,
+    #[serde(default)]
+    validation: ExchangeTokenValidationSection,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExchangeTokenValidationSection {
+    #[serde(default, alias = "allowedAlgorithms")]
+    allowed_algorithms: Vec<String>,
+    #[serde(default, alias = "requireExpiration")]
+    require_expiration: Option<bool>,
+    #[serde(default, alias = "requireTokenType")]
+    require_token_type: Option<String>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExchangeProfileClaimsSection {
+    #[serde(default)]
+    identity_context: BTreeMap<String, ClaimMappingSection>,
+    scopes: ClaimMappingSection,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ClaimMappingSection {
+    #[serde(default)]
+    from: Option<String>,
+    #[serde(default)]
+    value: Option<String>,
+    #[serde(default, rename = "type")]
+    value_type: Option<String>,
+    #[serde(default)]
+    encoding: Option<String>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExchangeProfilePrivilegesSection {
+    source: String,
+    #[serde(default)]
+    rules: Vec<PrivilegeRuleSection>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PrivilegeRuleSection {
+    name: String,
+    priority: i32,
+    pattern: String,
+    emit: PrivilegeEmitSection,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PrivilegeEmitSection {
+    scope: String,
+    operation: String,
+    #[serde(alias = "resourceType")]
+    resource_type: String,
+    #[serde(alias = "resourceId")]
+    resource_id: String,
+}
+
+/// One trusted attestation issuer exactly as the file declares it.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TrustedAttesterSection {
+    id: String,
+    issuer: String,
+    jwks_uri: String,
+    #[serde(default)]
+    proof_types: Vec<String>,
+    #[serde(default)]
+    formats: Vec<String>,
+}
+
+impl TrustedAttesterSection {
+    fn to_input(&self) -> TrustedAttesterConfig {
+        TrustedAttesterConfig {
+            id: self.id.clone(),
+            issuer: self.issuer.clone(),
+            jwks_uri: self.jwks_uri.clone(),
+            proof_types: self.proof_types.clone(),
+            formats: self.formats.clone(),
+        }
+    }
+}
+
+impl ExchangeProfileSection {
+    fn to_input(&self) -> ExchangeProfileConfig {
+        ExchangeProfileConfig {
+            id: self.id.clone(),
+            source: ExchangeProfileSource {
+                token_type: self.source.token_type.clone(),
+                format: self.source.format.clone(),
+                issuer: self.source.issuer.clone(),
+                audience: self.source.audience.clone(),
+                validation: ExchangeTokenValidation {
+                    allowed_algorithms: self.source.validation.allowed_algorithms.clone(),
+                    require_expiration: self.source.validation.require_expiration.unwrap_or(false),
+                    require_token_type: self.source.validation.require_token_type.clone(),
+                },
+            },
+            claims: ExchangeProfileClaims {
+                identity_context: self
+                    .claims
+                    .identity_context
+                    .iter()
+                    .map(|(key, mapping)| (key.clone(), mapping.to_input()))
+                    .collect(),
+                scopes: self.claims.scopes.to_input(),
+            },
+            privileges: ExchangeProfilePrivileges {
+                source: self.privileges.source.clone(),
+                rules: self
+                    .privileges
+                    .rules
+                    .iter()
+                    .map(PrivilegeRuleSection::to_input)
+                    .collect(),
+            },
+            on_unmatched_scope: self
+                .on_unmatched_scope
+                .clone()
+                .unwrap_or_else(|| "reject".to_owned()),
+        }
+    }
+}
+
+impl ClaimMappingSection {
+    fn to_input(&self) -> ClaimMapping {
+        ClaimMapping {
+            from: self.from.clone(),
+            value: self.value.clone(),
+            value_type: self.value_type.clone(),
+            encoding: self.encoding.clone(),
+        }
+    }
+}
+
+impl PrivilegeRuleSection {
+    fn to_input(&self) -> PrivilegeRule {
+        PrivilegeRule {
+            name: self.name.clone(),
+            priority: self.priority,
+            pattern: self.pattern.clone(),
+            emit: PrivilegeEmit {
+                scope: self.emit.scope.clone(),
+                operation: self.emit.operation.clone(),
+                resource_type: self.emit.resource_type.clone(),
+                resource_id: self.emit.resource_id.clone(),
+            },
+        }
+    }
 }
 
 /// A realm's override of the shared `operations` block. Each sub-block mirrors the server's, so a
@@ -566,6 +753,16 @@ impl ConfigFile {
                 audit_pseudonym_key_version: realm.operations.audit.pseudonym.key_version.clone(),
                 secrets_provider: realm.operations.secrets.provider.clone(),
                 secrets_env_prefix: realm.operations.secrets.env_prefix.clone(),
+                exchange_profiles: realm
+                    .exchange_profiles
+                    .iter()
+                    .map(ExchangeProfileSection::to_input)
+                    .collect(),
+                trusted_attesters: realm
+                    .attesters
+                    .iter()
+                    .map(TrustedAttesterSection::to_input)
+                    .collect(),
             })
             .collect()
     }

@@ -12,10 +12,18 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::routing::get;
+use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use tower::ServiceExt;
 
 use pic_x_core::audit::{AuditEvent, Result};
-use pic_x_core::{BoxFuture, Config, Layers, ProductIdentity, Pseudonymizer, Realm, Realms};
+use pic_x_core::{
+    BoxFuture, ClaimMapping, Config, EXCHANGE_ON_UNMATCHED_SCOPE_REJECT,
+    EXCHANGE_SOURCE_FORMAT_JWT, EXCHANGE_SOURCE_OAUTH_ACCESS_TOKEN, ExchangeProfileClaims,
+    ExchangeProfileConfig, ExchangeProfilePrivileges, ExchangeProfileSource,
+    ExchangeTokenValidation, Jwk, KeyId, KeyManager, Layers, Maintenance, ProductIdentity,
+    Pseudonymizer, Realm, Realms, Signature, TrustedAttesterConfig,
+};
 use pic_x_realm::{RouteProvider, WellKnownService};
 
 fn identity() -> ProductIdentity {
@@ -40,6 +48,35 @@ impl pic_x_core::AuditSink for SilentSink {
     }
 }
 
+#[derive(Debug)]
+struct FakeKeys;
+
+impl KeyManager for FakeKeys {
+    fn name(&self) -> &'static str {
+        "fake"
+    }
+
+    fn public_keys(&self) -> pic_x_core::keys::Result<Vec<Jwk>> {
+        Ok(Vec::new())
+    }
+
+    fn active_key_id(&self) -> pic_x_core::keys::Result<KeyId> {
+        Ok(KeyId::new("realm-key-1"))
+    }
+
+    fn sign(&self, _payload: &[u8]) -> pic_x_core::keys::Result<Signature> {
+        Ok(Signature::new(
+            KeyId::new("realm-key-1"),
+            "EdDSA",
+            vec![0x42; 64],
+        ))
+    }
+
+    fn maintain(&self) -> pic_x_core::keys::Result<Maintenance> {
+        Ok(Maintenance::default())
+    }
+}
+
 /// A realm mounted at `/realms/{name}`, with neither operations nor token keys of its own.
 fn realm(name: &str, issuer: Option<&str>, listed: bool) -> Realm {
     Realm::new(
@@ -52,6 +89,103 @@ fn realm(name: &str, issuer: Option<&str>, listed: bool) -> Realm {
         Arc::new(SilentSink),
         None,
     )
+}
+
+fn issuing_realm(name: &str, issuer: &str) -> Realm {
+    Realm::new(
+        name,
+        format!("/realms/{name}"),
+        Some(issuer.to_owned()),
+        true,
+        None,
+        Some(Arc::new(FakeKeys)),
+        Arc::new(SilentSink),
+        None,
+    )
+    .with_exchange_profiles([exchange_profile()])
+    .with_trusted_attesters([trusted_attester()])
+}
+
+fn trusted_attester() -> TrustedAttesterConfig {
+    TrustedAttesterConfig {
+        id: "test-por-attester".to_owned(),
+        issuer: "https://attestation.example.com".to_owned(),
+        jwks_uri: "https://attestation.example.com/jwks.json".to_owned(),
+        proof_types: vec!["sd-jwt".to_owned()],
+        formats: vec!["sd-jwt".to_owned()],
+    }
+}
+
+fn exchange_profile() -> ExchangeProfileConfig {
+    ExchangeProfileConfig {
+        id: "test-oauth-to-pic".to_owned(),
+        source: ExchangeProfileSource {
+            token_type: EXCHANGE_SOURCE_OAUTH_ACCESS_TOKEN.to_owned(),
+            format: EXCHANGE_SOURCE_FORMAT_JWT.to_owned(),
+            issuer: "https://idp.example.com".to_owned(),
+            audience: "pic-x".to_owned(),
+            validation: ExchangeTokenValidation {
+                allowed_algorithms: vec!["RS256".to_owned()],
+                require_expiration: true,
+                require_token_type: Some("JWT".to_owned()),
+            },
+        },
+        claims: ExchangeProfileClaims {
+            identity_context: [
+                (
+                    "type".to_owned(),
+                    ClaimMapping {
+                        value: Some("user".to_owned()),
+                        ..ClaimMapping::default()
+                    },
+                ),
+                (
+                    "id".to_owned(),
+                    ClaimMapping {
+                        from: Some("sub".to_owned()),
+                        ..ClaimMapping::default()
+                    },
+                ),
+            ]
+            .into_iter()
+            .collect(),
+            scopes: ClaimMapping {
+                from: Some("scope".to_owned()),
+                value_type: Some("set".to_owned()),
+                encoding: Some("space-delimited".to_owned()),
+                ..ClaimMapping::default()
+            },
+        },
+        privileges: ExchangeProfilePrivileges {
+            source: "scopes".to_owned(),
+            rules: vec![
+                pic_x_core::PrivilegeRule {
+                    name: "resource-instance".to_owned(),
+                    priority: 10,
+                    pattern: "^(?<resourceType>[a-z][a-z0-9_-]*):(?<operation>[a-z][a-z0-9_-]*):(?<resourceId>[a-zA-Z0-9_-]+)$".to_owned(),
+                    emit: pic_x_core::PrivilegeEmit {
+                        scope: "${raw}".to_owned(),
+                        operation: "${operation}".to_owned(),
+                        resource_type: "${resourceType}".to_owned(),
+                        resource_id: "${resourceId}".to_owned(),
+                    },
+                },
+                pic_x_core::PrivilegeRule {
+                    name: "resource-collection".to_owned(),
+                    priority: 1,
+                    pattern: "^(?<resourceType>[a-z][a-z0-9_-]*):(?<operation>[a-z][a-z0-9_-]*)$"
+                        .to_owned(),
+                    emit: pic_x_core::PrivilegeEmit {
+                        scope: "${raw}".to_owned(),
+                        operation: "${operation}".to_owned(),
+                        resource_type: "${resourceType}".to_owned(),
+                        resource_id: "*".to_owned(),
+                    },
+                },
+            ],
+        },
+        on_unmatched_scope: EXCHANGE_ON_UNMATCHED_SCOPE_REJECT.to_owned(),
+    }
 }
 
 /// A provider of the kind a build outside this workspace would register.
@@ -79,6 +213,13 @@ fn config_with(pairs: &[(&str, &str)]) -> Config {
         ),
     )
     .expect("the config builds")
+}
+
+fn compact_jwt(header: serde_json::Value, payload: serde_json::Value) -> String {
+    let header = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&header).expect("header encodes"));
+    let payload = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&payload).expect("payload encodes"));
+    let signature = URL_SAFE_NO_PAD.encode(b"test-signature");
+    format!("{header}.{payload}.{signature}")
 }
 
 async fn ask(service: &WellKnownService, path: &str) -> (StatusCode, String) {
@@ -252,16 +393,14 @@ async fn test_a_realm_serves_its_own_discovery_and_keys_at_its_path() {
         document.contains(r#""token_endpoint":"https://acme.example.com/token""#),
         "{document}"
     );
-    // Only the token surface is advertised: this deployment hosts no revocation, attestation or
-    // trust-anchor endpoints.
-    for absent in [
+    for present in [
         "revocation_endpoint",
         "attestations_endpoint",
         "trust_anchors_endpoint",
     ] {
         assert!(
-            !document.contains(absent),
-            "{absent} should not be advertised: {document}"
+            document.contains(present),
+            "{present} should be advertised: {document}"
         );
     }
     assert!(
@@ -276,7 +415,9 @@ async fn test_a_realm_serves_its_own_discovery_and_keys_at_its_path() {
     for required in [
         "pic_context_of_authority",
         "pic_continuity_proposals",
+        "pic_continuity_transition",
         "pic_continuity",
+        "pic_token",
     ] {
         assert!(
             discovery.get(required).is_some(),
@@ -307,11 +448,11 @@ async fn test_a_realm_serves_its_own_discovery_and_keys_at_its_path() {
 }
 
 #[tokio::test]
-async fn test_the_token_endpoint_is_a_post_that_reports_it_is_not_implemented() {
+async fn test_the_token_endpoint_is_a_post_that_validates_the_exchange_request() {
     let realms = Realms::new([realm("acme", Some("https://acme.example.com"), true)]);
     let service = WellKnownService::new();
 
-    // A POST is answered — with 501, because issuance is not built — not a 404.
+    // A POST is answered by the token-exchange handler, not a 404.
     let response = service
         .router(&identity(), &config_with(&[]), &realms)
         .oneshot(
@@ -323,13 +464,13 @@ async fn test_the_token_endpoint_is_a_post_that_reports_it_is_not_implemented() 
         )
         .await
         .expect("the route answers");
-    assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     let body = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .expect("the body is readable");
     assert!(
-        String::from_utf8_lossy(&body).contains("not_implemented"),
-        "the 501 should say why"
+        String::from_utf8_lossy(&body).contains("invalid_request"),
+        "the error should say why"
     );
 
     // The method is part of the contract: a GET is refused with 405, not served.
@@ -339,6 +480,117 @@ async fn test_the_token_endpoint_is_a_post_that_reports_it_is_not_implemented() 
             .0,
         StatusCode::METHOD_NOT_ALLOWED
     );
+}
+
+#[tokio::test]
+async fn test_realm_attestations_list_the_configured_por_issuers() {
+    let realms = Realms::new([issuing_realm(
+        "acme",
+        "https://pic-x.example.com/realms/acme",
+    )]);
+
+    let (status, body) = ask_full(
+        &WellKnownService::new(),
+        &config_with(&[]),
+        &realms,
+        "/realms/acme/attestations",
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    let document: serde_json::Value =
+        serde_json::from_str(&body).expect("attestations document is JSON");
+    let issuers = document["issuers"].as_array().expect("issuers is an array");
+    assert_eq!(issuers.len(), 1);
+    assert_eq!(issuers[0]["id"], "test-por-attester");
+    assert_eq!(issuers[0]["proof_types_supported"][0], "sd-jwt");
+    assert_eq!(issuers[0]["formats_supported"][0], "sd-jwt");
+}
+
+#[tokio::test]
+async fn test_the_token_endpoint_issues_initial_pic_token_from_an_exchange_profile() {
+    let realms = Realms::new([issuing_realm(
+        "acme",
+        "https://pic-x.example.com/realms/acme",
+    )]);
+    let config = config_with(&[(pic_x_core::config::SETTING_DEVELOPMENT_MODE, "true")]);
+    let service = WellKnownService::new();
+    let access_token = compact_jwt(
+        serde_json::json!({
+            "alg": "RS256",
+            "typ": "JWT",
+            "kid": "idp-key-1"
+        }),
+        serde_json::json!({
+            "iss": "https://idp.example.com",
+            "sub": "user-123",
+            "aud": "pic-x",
+            "iat": 1786700400_i64,
+            "exp": 4_000_000_000_i64,
+            "scope": "documents:read:document-42 storage:save"
+        }),
+    );
+    let proposal = pic::continuity::proposal::InitialContinuityProposal::new(
+        [
+            (
+                "corporation".to_owned(),
+                pic::continuity::authority::AuthorityValue::One("ACME".to_owned()),
+            ),
+            (
+                "department".to_owned(),
+                pic::continuity::authority::AuthorityValue::One("sensitive-documents".to_owned()),
+            ),
+        ]
+        .into_iter()
+        .collect(),
+    )
+    .to_continuity_proposal()
+    .expect("the proposal encodes");
+    let body = format!(
+        "grant_type=urn:ietf:params:oauth:grant-type:token-exchange\
+         &subject_token={access_token}\
+         &subject_token_type=urn:ietf:params:oauth:token-type:access_token\
+         &requested_token_type=https://pic-protocol.org/definitions/token-types/pic\
+         &continuity_proposal={proposal}"
+    );
+
+    let response = service
+        .router(&identity(), &config, &realms)
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/realms/acme/token")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(body))
+                .expect("the request builds"),
+        )
+        .await
+        .expect("the route answers");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("the body is readable");
+    let payload: serde_json::Value =
+        serde_json::from_slice(&body).expect("the exchange response is JSON");
+    assert_eq!(
+        payload["issued_token_type"],
+        "https://pic-protocol.org/definitions/token-types/pic"
+    );
+    assert_eq!(payload["token_type"], "N_A");
+
+    let pic_token = payload["access_token"]
+        .as_str()
+        .expect("the response carries a token");
+    let decoded =
+        pic::continuity::artifacts::token::decode_token(pic_token).expect("the PIC token decodes");
+    assert_eq!(decoded.typ, "pic+jwt");
+    assert_eq!(
+        decoded.claims.iss.as_deref(),
+        Some("https://pic-x.example.com/realms/acme")
+    );
+    assert_eq!(decoded.claims.sub.as_deref(), Some("user-123"));
+    assert!(decoded.claims.root_bytes().expect("pic.root decodes").len() > 100);
 }
 
 #[tokio::test]

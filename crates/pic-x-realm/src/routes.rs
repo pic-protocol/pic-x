@@ -102,6 +102,22 @@ pub(crate) struct RealmMeta {
     pub(crate) jwks_uri: String,
 }
 
+/// The attestation issuers a realm accepts for Profile 0.2 Proof-of-Relationship evidence.
+#[derive(Clone, Serialize)]
+pub(crate) struct Attestations {
+    pub(crate) issuers: Vec<AttestationIssuer>,
+}
+
+/// One trusted attestation issuer and its published capabilities.
+#[derive(Clone, Serialize)]
+pub(crate) struct AttestationIssuer {
+    pub(crate) id: String,
+    pub(crate) issuer: String,
+    pub(crate) jwks_uri: String,
+    pub(crate) proof_types_supported: Vec<String>,
+    pub(crate) formats_supported: Vec<String>,
+}
+
 /// What a realm's landing page shows.
 ///
 /// Enough to tell an operator which realm this is and where its machine-readable documents are, so
@@ -126,39 +142,58 @@ struct Discovery {
     issuer: Option<String>,
     profile: &'static str,
     token_endpoint: String,
+    revocation_endpoint: String,
     jwks_uri: String,
+    attestations_endpoint: String,
+    trust_anchors_endpoint: String,
     grant_types_supported: &'static [&'static str],
     subject_token_types_supported: &'static [&'static str],
     issued_token_types_supported: &'static [&'static str],
+    artifact_hash_alg_values_supported: &'static [&'static str],
     token_endpoint_auth_methods_supported: &'static [&'static str],
     token_exchange_parameters_supported: &'static [&'static str],
     pic_context_of_authority: PicContextOfAuthority,
     pic_continuity_proposals: PicContinuityProposals,
+    pic_continuity_transition: PicContinuityTransition,
     pic_continuity: PicContinuity,
+    pic_token: PicToken,
 }
 
 /// The PIC context-of-authority capabilities block of the discovery document.
 #[derive(Serialize)]
 struct PicContextOfAuthority {
-    format: &'static str,
-    execution_contract_binding_methods_supported: &'static [&'static str],
+    formats_supported: &'static [&'static str],
+    signing_alg_values_supported: &'static [&'static str],
 }
 
 /// The PIC continuity-proposal parameters block of the discovery document.
 #[derive(Serialize)]
 struct PicContinuityProposals {
     parameter: &'static str,
-    type_parameter: &'static str,
     types_supported: &'static [&'static str],
 }
 
-/// The PIC continuity-token capabilities block of the discovery document.
+/// The PIC continuity-transition capabilities block of the discovery document.
+#[derive(Serialize)]
+struct PicContinuityTransition {
+    formats_supported: &'static [&'static str],
+    signing_alg_values_supported: &'static [&'static str],
+}
+
+/// The PIC continuity-container capabilities block of the discovery document.
 #[derive(Serialize)]
 struct PicContinuity {
-    token_type: &'static str,
-    transition_signing_alg_values_supported: &'static [&'static str],
     formats_supported: &'static [&'static str],
+    signing_alg_values_supported: &'static [&'static str],
     continuity_modes_supported: &'static [&'static str],
+}
+
+/// The PIC Token JWT capabilities block of the discovery document.
+#[derive(Serialize)]
+struct PicToken {
+    token_type: &'static str,
+    formats_supported: &'static [&'static str],
+    signing_alg_values_supported: &'static [&'static str],
 }
 
 /// One link a landing page offers: a label and the path it points at.
@@ -277,6 +312,10 @@ pub(crate) async fn realm_root(State(realm): State<RealmLanding>) -> impl IntoRe
             label: "Keys".to_owned(),
             href: format!("{}/keys", realm.mount_path),
         },
+        Link {
+            label: "Attestations".to_owned(),
+            href: format!("{}/attestations", realm.mount_path),
+        },
     ];
 
     landing(
@@ -307,11 +346,9 @@ pub(crate) async fn server_configuration(State(server): State<Server>) -> impl I
 /// The issuer discovery a client integrates a realm against.
 ///
 /// The `issuer`, `token_endpoint` and `jwks_uri` are the realm's own; everything else is the PIC
-/// profile 0.2 capability set this build implements, fixed for now. Only the token surface is
-/// advertised — this deployment does not host revocation, attestation or trust-anchor endpoints.
-/// The `token_endpoint` is advertised ahead of the issuance it describes: a client learns the
-/// contract here, and the handler answering `POST /token` returns "not implemented" until real
-/// issuance lands.
+/// profile 0.2 capability set this build implements, fixed for now. Revocation and trust-anchor
+/// endpoints are advertised for the profile surface but remain future handlers; attestation issuers
+/// are listed at `/attestations`, and token initialization is served by `POST /token`.
 pub(crate) async fn realm_configuration(State(realm): State<RealmMeta>) -> impl IntoResponse {
     // A typed document rather than a `json!` value: `json!` builds an ordered map and serialises its
     // members alphabetically, which scrambles a document whose order is meaningful. A struct
@@ -320,47 +357,65 @@ pub(crate) async fn realm_configuration(State(realm): State<RealmMeta>) -> impl 
         issuer: realm.issuer,
         profile: PIC_PROFILE,
 
-        token_endpoint: realm.token_endpoint,
-        jwks_uri: realm.jwks_uri,
+        token_endpoint: realm.token_endpoint.clone(),
+        revocation_endpoint: endpoint_like(&realm.token_endpoint, "/revoke"),
+        jwks_uri: realm.jwks_uri.clone(),
+        attestations_endpoint: endpoint_like(&realm.token_endpoint, "/attestations"),
+        trust_anchors_endpoint: endpoint_like(&realm.token_endpoint, "/trust-anchors"),
 
         grant_types_supported: &["urn:ietf:params:oauth:grant-type:token-exchange"],
 
         subject_token_types_supported: &[
             "urn:ietf:params:oauth:token-type:access_token",
-            "https://pic-protocol.org/definitions/token-types/continuity",
+            pic::continuity::TOKEN_TYPE_PIC,
         ],
 
-        issued_token_types_supported: &[
-            "https://pic-protocol.org/definitions/token-types/continuity",
-        ],
+        issued_token_types_supported: &[pic::continuity::TOKEN_TYPE_PIC],
+
+        artifact_hash_alg_values_supported: &["sha-256"],
 
         token_endpoint_auth_methods_supported: &["none"],
 
-        token_exchange_parameters_supported: &["continuity_proposal", "continuity_proposal_type"],
+        token_exchange_parameters_supported: &["continuity_proposal"],
 
         pic_context_of_authority: PicContextOfAuthority {
-            format: "json",
-            execution_contract_binding_methods_supported: &["embedded"],
+            formats_supported: &[pic::continuity::FORMAT_PIC_PCA_COSE],
+            signing_alg_values_supported: &["EdDSA"],
         },
 
         pic_continuity_proposals: PicContinuityProposals {
             parameter: "continuity_proposal",
-            type_parameter: "continuity_proposal_type",
-            types_supported: &[
-                "https://pic-protocol.org/definitions/proposal-types/continuity-initial",
-                "https://pic-protocol.org/definitions/proposal-types/continuity",
-            ],
+            types_supported: &[pic::continuity::PROPOSAL_TYPE_CONTINUITY_INITIAL],
+        },
+
+        pic_continuity_transition: PicContinuityTransition {
+            formats_supported: &[pic::continuity::FORMAT_PIC_TRANSITION_COSE],
+            signing_alg_values_supported: &["EdDSA"],
         },
 
         pic_continuity: PicContinuity {
-            token_type: "https://pic-protocol.org/definitions/token-types/continuity",
-            // EdDSA to match the token ring this build signs with. A profile that mandates ES256 gets
-            // it when real issuance lands and the ring gains an EC algorithm.
-            transition_signing_alg_values_supported: &["EdDSA"],
-            formats_supported: &["jwt"],
-            continuity_modes_supported: &["centralized-continuity", "decentralized-continuity"],
+            formats_supported: &[pic::continuity::FORMAT_PIC_CONTINUITY_COSE],
+            signing_alg_values_supported: &["EdDSA"],
+            continuity_modes_supported: &["centralized-continuity"],
+        },
+
+        pic_token: PicToken {
+            token_type: pic::continuity::TOKEN_TYPE_PIC,
+            formats_supported: &[pic::continuity::FORMAT_PIC_TOKEN_JWT],
+            signing_alg_values_supported: &["EdDSA"],
         },
     })
+}
+
+/// Lists the attestation issuers this realm is configured to trust for PoR evidence.
+pub(crate) async fn attestations(State(attestations): State<Attestations>) -> impl IntoResponse {
+    Json(attestations)
+}
+
+fn endpoint_like(token_endpoint: &str, leaf: &str) -> String {
+    token_endpoint
+        .strip_suffix("/token")
+        .map_or_else(|| leaf.to_owned(), |base| format!("{base}{leaf}"))
 }
 
 /// The keys a client verifies signatures with, for whichever ring is behind this route.
@@ -392,23 +447,6 @@ pub(crate) async fn jwks(State(ring): State<KeyRing>) -> Response {
                 .into_response()
         }
     }
-}
-
-/// The realm's token endpoint — a `POST`, per OAuth 2.0 Token Exchange.
-///
-/// Advertised in the realm's discovery so a client learns the contract, and mounted so it answers
-/// rather than 404s — but it mints nothing yet: continuity-token issuance is a protocol this build
-/// does not implement, so it returns `501` with a machine-readable reason. The method is part of the
-/// contract, so a `GET` gets a `405` from the router, not this handler.
-pub(crate) async fn token() -> Response {
-    (
-        StatusCode::NOT_IMPLEMENTED,
-        Json(serde_json::json!({
-            "error": "not_implemented",
-            "error_description": "token issuance is not implemented on this build yet"
-        })),
-    )
-        .into_response()
 }
 
 /// Serves a key set with the cache directive its lifecycle assumes.

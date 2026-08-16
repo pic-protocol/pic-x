@@ -13,9 +13,10 @@ use pic_x_core::{
 use pic_x_transport::Surface;
 
 use crate::COMPONENT;
+use crate::exchange::{TokenEndpoint, token};
 use crate::routes::{
-    CatalogRealm, KeyRing, ProfileEntry, RealmLanding, RealmMeta, Server, jwks,
-    realm_configuration, realm_root, root, server_configuration, token,
+    AttestationIssuer, Attestations, CatalogRealm, KeyRing, ProfileEntry, RealmLanding, RealmMeta,
+    Server, attestations, jwks, realm_configuration, realm_root, root, server_configuration,
 };
 
 /// Contributes routes to the public surface.
@@ -143,12 +144,34 @@ impl WellKnownService {
                             jwks_uri: realm.url("/keys"),
                         }),
                 )
+                .merge(
+                    Router::new()
+                        .route("/attestations", get(attestations))
+                        .with_state(Attestations {
+                            issuers: realm
+                                .trusted_attesters()
+                                .iter()
+                                .map(|attester| AttestationIssuer {
+                                    id: attester.id.clone(),
+                                    issuer: attester.issuer.clone(),
+                                    jwks_uri: attester.jwks_uri.clone(),
+                                    proof_types_supported: attester.proof_types.clone(),
+                                    formats_supported: attester.formats.clone(),
+                                })
+                                .collect(),
+                        }),
+                )
                 .merge(Router::new().route("/keys", get(jwks)).with_state(KeyRing {
                     keys: realm.token_keys().map(Arc::clone),
                 }))
-                // The token endpoint. A POST — a GET gets a 405 — that returns "not implemented"
-                // until real issuance exists. It takes no state, so it needs no `with_state`.
-                .merge(Router::new().route("/token", post(token)));
+                .merge(
+                    Router::new()
+                        .route("/token", post(token))
+                        .with_state(TokenEndpoint {
+                            realm: realm.clone(),
+                            development_mode: config.development_mode(),
+                        }),
+                );
 
             // The nest answers the realm's path and everything under it, but a nested `/` route matches
             // only the path *without* a trailing slash. A browser often adds one, so `/realms/<name>/`

@@ -22,6 +22,7 @@
 #![forbid(unsafe_code)]
 #![deny(clippy::all, clippy::unwrap_used, clippy::expect_used)]
 
+mod exchange;
 pub mod routes;
 pub mod service;
 

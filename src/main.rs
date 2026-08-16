@@ -376,7 +376,9 @@ fn build_realm(config: &Config, realm: &RealmConfig) -> anyhow::Result<Realm> {
         token_keys,
         audit,
         pseudonymizer,
-    ))
+    )
+    .with_exchange_profiles(realm.exchange_profiles().iter().cloned())
+    .with_trusted_attesters(realm.trusted_attesters().iter().cloned()))
 }
 
 /// Builds the secret store the effective configuration names.

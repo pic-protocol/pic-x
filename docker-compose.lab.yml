@@ -35,8 +35,14 @@ services:
       context: ./trust-lab
     environment:
       TRUST_LAB_BIND_ADDR: 0.0.0.0:7080
+      TRUST_LAB_PUBLIC_URL: http://localhost:${TRUST_LAB_HTTP_PORT:-17080}
+      TRUST_LAB_CONFIG: /etc/trust-lab/config.lab.json
+      TRUST_LAB_ARTIFACT_DIR: /var/lib/trust-lab/artifacts
     ports:
       - "127.0.0.1:${TRUST_LAB_HTTP_PORT:-17080}:7080"
+    volumes:
+      - ./trust-lab/config.lab.json:/etc/trust-lab/config.lab.json:ro
+      - ./.volume/trust-lab:/var/lib/trust-lab
     depends_on:
       - keycloak
 

@@ -7,7 +7,13 @@
 use std::time::Duration;
 
 use pic_x_core::config::*;
-use pic_x_core::{BuildSettings, Config, LogFormat, LogLevel, RealmInput, TlsVersion};
+use pic_x_core::{
+    BuildSettings, ClaimMapping, Config, EXCHANGE_ON_UNMATCHED_SCOPE_REJECT,
+    EXCHANGE_SOURCE_FORMAT_JWT, EXCHANGE_SOURCE_OAUTH_ACCESS_TOKEN, ExchangeProfileClaims,
+    ExchangeProfileConfig, ExchangeProfilePrivileges, ExchangeProfileSource,
+    ExchangeTokenValidation, LogFormat, LogLevel, PrivilegeEmit, PrivilegeRule, RealmInput,
+    TlsVersion, TrustedAttesterConfig,
+};
 
 /// The extra-settings layer of a build that declares none.
 const NO_DECLARED: [&str; 0] = [];
@@ -660,6 +666,88 @@ fn realm(name: &str) -> RealmInput {
     }
 }
 
+fn exchange_profile() -> ExchangeProfileConfig {
+    ExchangeProfileConfig {
+        id: "corporate-oauth-to-pic".to_owned(),
+        source: ExchangeProfileSource {
+            token_type: EXCHANGE_SOURCE_OAUTH_ACCESS_TOKEN.to_owned(),
+            format: EXCHANGE_SOURCE_FORMAT_JWT.to_owned(),
+            issuer: "https://idp.example.com".to_owned(),
+            audience: "pic-x".to_owned(),
+            validation: ExchangeTokenValidation {
+                allowed_algorithms: vec!["ES256".to_owned()],
+                require_expiration: true,
+                require_token_type: Some("at+jwt".to_owned()),
+            },
+        },
+        claims: ExchangeProfileClaims {
+            identity_context: [
+                (
+                    "type".to_owned(),
+                    ClaimMapping {
+                        value: Some("user".to_owned()),
+                        ..ClaimMapping::default()
+                    },
+                ),
+                (
+                    "id".to_owned(),
+                    ClaimMapping {
+                        from: Some("sub".to_owned()),
+                        ..ClaimMapping::default()
+                    },
+                ),
+            ]
+            .into_iter()
+            .collect(),
+            scopes: ClaimMapping {
+                from: Some("scope".to_owned()),
+                value_type: Some("set".to_owned()),
+                encoding: Some("space-delimited".to_owned()),
+                ..ClaimMapping::default()
+            },
+        },
+        privileges: ExchangeProfilePrivileges {
+            source: "scopes".to_owned(),
+            rules: vec![
+                PrivilegeRule {
+                    name: "resource-instance".to_owned(),
+                    priority: 10,
+                    pattern: "^(?<resourceType>[a-z][a-z0-9_-]*):(?<operation>[a-z][a-z0-9_-]*):(?<resourceId>[a-zA-Z0-9_-]+)$".to_owned(),
+                    emit: PrivilegeEmit {
+                        scope: "${raw}".to_owned(),
+                        operation: "${operation}".to_owned(),
+                        resource_type: "${resourceType}".to_owned(),
+                        resource_id: "${resourceId}".to_owned(),
+                    },
+                },
+                PrivilegeRule {
+                    name: "resource-collection".to_owned(),
+                    priority: 1,
+                    pattern: "^(?<resourceType>[a-z][a-z0-9_-]*):(?<operation>[a-z][a-z0-9_-]*)$"
+                        .to_owned(),
+                    emit: PrivilegeEmit {
+                        scope: "${raw}".to_owned(),
+                        operation: "${operation}".to_owned(),
+                        resource_type: "${resourceType}".to_owned(),
+                        resource_id: "*".to_owned(),
+                    },
+                },
+            ],
+        },
+        on_unmatched_scope: EXCHANGE_ON_UNMATCHED_SCOPE_REJECT.to_owned(),
+    }
+}
+
+fn trusted_attester() -> TrustedAttesterConfig {
+    TrustedAttesterConfig {
+        id: "corporate-por-attester".to_owned(),
+        issuer: "https://attestation.example.com".to_owned(),
+        jwks_uri: "https://attestation.example.com/jwks.json".to_owned(),
+        proof_types: vec!["sd-jwt".to_owned()],
+        formats: vec!["sd-jwt".to_owned()],
+    }
+}
+
 #[test]
 fn test_a_realm_gets_its_own_resource_directories_under_the_volume() {
     // Isolation is on disk: a realm's keys, trail and secrets never share a directory with the
@@ -694,6 +782,83 @@ fn test_a_realm_gets_its_own_resource_directories_under_the_volume() {
     );
     // And the mount path is derived, not configured.
     assert_eq!(config.realms()[0].mount_path(), "/realms/acme");
+}
+
+#[test]
+fn test_a_realm_keeps_its_exchange_profiles_in_the_resolved_config() {
+    let mut input = realm("acme");
+    input.exchange_profiles = vec![exchange_profile()];
+    let config = servable().with_realms([input]).expect("the realm resolves");
+
+    let profiles = config.realms()[0].exchange_profiles();
+    assert_eq!(profiles.len(), 1);
+    assert_eq!(profiles[0].id, "corporate-oauth-to-pic");
+    config
+        .validate()
+        .expect("a complete exchange profile is valid");
+}
+
+#[test]
+fn test_invalid_exchange_profiles_are_refused() {
+    let mut missing_algorithms = exchange_profile();
+    missing_algorithms
+        .source
+        .validation
+        .allowed_algorithms
+        .clear();
+    let mut input = realm("acme");
+    input.exchange_profiles = vec![missing_algorithms];
+    let config = servable().with_realms([input]).expect("the realm resolves");
+    let error = config
+        .validate()
+        .expect_err("a profile without allowed algorithms is refused");
+    assert!(format!("{error}").contains("algorithms"), "{error}");
+
+    let mut duplicate_priorities = exchange_profile();
+    duplicate_priorities.privileges.rules[1].priority = 10;
+    let mut input = realm("beta");
+    input.exchange_profiles = vec![duplicate_priorities];
+    let config = servable().with_realms([input]).expect("the realm resolves");
+    let error = config
+        .validate()
+        .expect_err("ambiguous rule order is refused");
+    assert!(format!("{error}").contains("priority"), "{error}");
+}
+
+#[test]
+fn test_a_realm_keeps_its_trusted_attesters_in_the_resolved_config() {
+    let mut input = realm("acme");
+    input.trusted_attesters = vec![trusted_attester()];
+    let config = servable().with_realms([input]).expect("the realm resolves");
+
+    let attesters = config.realms()[0].trusted_attesters();
+    assert_eq!(attesters.len(), 1);
+    assert_eq!(attesters[0].id, "corporate-por-attester");
+    assert_eq!(attesters[0].formats, vec!["sd-jwt"]);
+    config.validate().expect("the attester metadata is valid");
+}
+
+#[test]
+fn test_invalid_trusted_attesters_are_refused() {
+    let mut no_proof_types = trusted_attester();
+    no_proof_types.proof_types.clear();
+    let mut input = realm("acme");
+    input.trusted_attesters = vec![no_proof_types];
+    let config = servable().with_realms([input]).expect("the realm resolves");
+    let error = config
+        .validate()
+        .expect_err("an attester without proof types is refused");
+    assert!(format!("{error}").contains("proof types"), "{error}");
+
+    let mut unsupported = trusted_attester();
+    unsupported.formats = vec!["jwt".to_owned()];
+    let mut input = realm("beta");
+    input.trusted_attesters = vec![unsupported];
+    let config = servable().with_realms([input]).expect("the realm resolves");
+    let error = config
+        .validate()
+        .expect_err("an attester without sd-jwt format is refused");
+    assert!(format!("{error}").contains("sd-jwt"), "{error}");
 }
 
 #[test]

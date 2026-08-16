@@ -47,7 +47,13 @@ pub use logging::{LogFormat, LogLevel};
 pub use metrics::{Kind, Label, Metric, Metrics, Reading, Recorder, Sample};
 pub use peer::{AllowedPeer, PeerIdentity};
 pub use pseudonym::Pseudonymizer;
-pub use realm::{PIC_PROFILE, Realm, RealmConfig, RealmInput, Realms};
+pub use realm::{
+    ClaimMapping, EXCHANGE_ON_UNMATCHED_SCOPE_REJECT, EXCHANGE_SOURCE_FORMAT_JWT,
+    EXCHANGE_SOURCE_OAUTH_ACCESS_TOKEN, ExchangeProfileClaims, ExchangeProfileConfig,
+    ExchangeProfilePrivileges, ExchangeProfileSource, ExchangeTokenValidation,
+    OAUTH_ACCESS_TOKEN_TYPE, PIC_PROFILE, PrivilegeEmit, PrivilegeRule, Realm, RealmConfig,
+    RealmInput, Realms, TrustedAttesterConfig,
+};
 pub use redact::Masked;
 pub use secrets::{Secret, SecretProvider, SecretRef, SecretStore};
 pub use server::{AuditRecorder, Health, ServerContext, ServerHost, Service};

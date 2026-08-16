@@ -5,11 +5,13 @@ from __future__ import annotations
 
 import json
 import os
+import base64
 import sys
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
 
 
 KEYCLOAK_URL = os.environ.get("KEYCLOAK_URL", "http://localhost:18080").rstrip("/")
@@ -22,8 +24,20 @@ KEYCLOAK_USERNAME = os.environ.get("KEYCLOAK_USERNAME", "alice")
 KEYCLOAK_PASSWORD = os.environ.get("KEYCLOAK_PASSWORD", "alice-password")
 
 PIC_X_URL = os.environ.get("PIC_X_URL", "http://localhost:17556").rstrip("/")
+PIC_X_REALM = os.environ.get("PIC_X_REALM", "acme")
 TRUST_LAB_URL = os.environ.get("TRUST_LAB_URL", "http://localhost:17080").rstrip("/")
+TRUST_LAB_ATTESTER_ID = os.environ.get("TRUST_LAB_ATTESTER_ID", "acme-por-attester")
+TRUST_LAB_ARTIFACT_DIR = Path(
+    os.environ.get("TRUST_LAB_ARTIFACT_DIR", ".volume/trust-lab/artifacts")
+)
 WAIT_SECONDS = float(os.environ.get("LAB_DEMO_WAIT_SECONDS", "30"))
+
+PIC_TOKEN_TYPE = "https://pic-protocol.org/definitions/token-types/pic"
+TOKEN_EXCHANGE_GRANT = "urn:ietf:params:oauth:grant-type:token-exchange"
+ACCESS_TOKEN_TYPE = "urn:ietf:params:oauth:token-type:access_token"
+INITIAL_PROPOSAL_TYPE = (
+    "https://pic-protocol.org/definitions/proposal-types/continuity-initial"
+)
 
 COLORS = {
     "reset": "\033[0m",
@@ -48,7 +62,7 @@ def main() -> int:
     print_banner("PIC-X local trust lab demo")
     print()
     print_dim("A short local run through IdP, PIC-X and the public trust API.")
-    print_dim("No cloud account. No TLS ceremony. Just the path we will extend into exchange.")
+    print_dim("No cloud account. No TLS ceremony. OAuth authority becomes a PIC Token JWT.")
     print()
     print_flow_map()
     print()
@@ -63,6 +77,14 @@ def main() -> int:
 
         trust_lab = wait_for_json("Trust Lab public API", f"{TRUST_LAB_URL}/")
         print_ok("Trust Lab API", trust_lab.get("message", "<message missing>"))
+        attester_config = wait_for_json(
+            "Trust Lab attester",
+            (
+                f"{TRUST_LAB_URL}/attesters/{TRUST_LAB_ATTESTER_ID}"
+                "/.well-known/attester-configuration"
+            ),
+        )
+        print_ok("Trust Lab attester", str(attester_config.get("issuer", "<issuer missing>")))
 
         pic_x = wait_for_json(
             "PIC-X public API", f"{PIC_X_URL}/.well-known/server-configuration"
@@ -81,12 +103,54 @@ def main() -> int:
         print_token(token)
         print()
 
-        print_step("4", "What this proves")
-        print_bullet("Keycloak is issuing a real local OIDC token.")
-        print_bullet("The trust dependencies are reachable from the local lab.")
-        print_bullet("PIC-X is running from the local source image with config.lab.yaml.")
-        print_bullet("The next demo step can exchange this token with pic_context_of_authority.")
-        print_bullet("Then we can propagate across nodes and emit relationship/continuity proofs.")
+        print_step("4", "Decoded access-token facts used by the Exchange Profile")
+        access_header, access_payload = decode_jwt(token)
+        print_kv("alg", str(access_header.get("alg", "<missing>")))
+        print_kv("typ", str(access_header.get("typ", "<missing>")))
+        print_kv("iss", str(access_payload.get("iss", "<missing>")))
+        print_kv("aud", json.dumps(access_payload.get("aud", "<missing>")))
+        pic_scopes = access_payload.get("pic_scopes", [])
+        if not isinstance(pic_scopes, list) or not pic_scopes:
+            raise DemoError(
+                "Keycloak access token has no non-empty pic_scopes claim; recreate the lab so "
+                "dev/keycloak/acme-idp-realm.json is imported."
+            )
+        print_kv("pic_scopes", json.dumps(pic_scopes))
+        print()
+
+        print_step("5", "Exchanging OAuth authority for PIC Token JWT 0")
+        proposal_json = initial_continuity_proposal()
+        proposal_wire = b64url_json(proposal_json)
+        print_kv("realm token endpoint", f"{PIC_X_URL}/realms/{PIC_X_REALM}/token")
+        print_kv("continuity proposal", compact_json(proposal_json))
+        pic_response = exchange_initial_token(token, proposal_wire)
+        pic_token = pic_response.get("access_token")
+        if not isinstance(pic_token, str) or not pic_token:
+            raise DemoError("PIC-X answered without an access_token")
+        print_token(pic_token)
+        print_kv("issued_token_type", str(pic_response.get("issued_token_type")))
+        print_kv("token_type", str(pic_response.get("token_type")))
+        print()
+
+        print_step("6", "Payload weight")
+        print_size_table(token, proposal_json, proposal_wire, pic_token)
+        print()
+
+        print_step("7", "Proof-of-Relationship fixtures from disk")
+        print_kv("artifact dir", str(TRUST_LAB_ARTIFACT_DIR))
+        worker_1 = load_por_artifact("worker-1")
+        worker_2 = load_por_artifact("worker-2")
+        print_por_artifact(worker_1)
+        print_por_artifact(worker_2)
+        print_bullet(
+            "The next exchange will use a workload-signed candidate PIC Token JWT as subject_token."
+        )
+        print_bullet(
+            "The Rust trust-lab runtime signs the SD-JWT/JWS and writes the selected presentations to disk."
+        )
+        print_bullet(
+            "PIC-X currently rejects PIC-to-PIC advancement fail-closed until PoR validation and trusted-checkpoint storage are wired."
+        )
         print()
         print_success("Demo complete.")
         return 0
@@ -167,6 +231,108 @@ def request_access_token() -> str:
     return token
 
 
+def exchange_initial_token(access_token: str, proposal_wire: str) -> dict:
+    token_endpoint = f"{PIC_X_URL}/realms/{PIC_X_REALM}/token"
+    body = urllib.parse.urlencode(
+        {
+            "grant_type": TOKEN_EXCHANGE_GRANT,
+            "subject_token": access_token,
+            "subject_token_type": ACCESS_TOKEN_TYPE,
+            "requested_token_type": PIC_TOKEN_TYPE,
+            "continuity_proposal": proposal_wire,
+        }
+    ).encode("utf-8")
+    request = urllib.request.Request(
+        token_endpoint,
+        data=body,
+        headers={
+            "Accept": "application/json",
+            "Content-Type": "application/x-www-form-urlencoded",
+        },
+        method="POST",
+    )
+
+    with open_url(request) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+
+    if not isinstance(payload, dict):
+        raise DemoError("PIC-X token endpoint did not return a JSON object")
+    return payload
+
+
+def initial_continuity_proposal() -> dict:
+    return {
+        "type": INITIAL_PROPOSAL_TYPE,
+        "executionContract": {
+            "corporation": "ACME",
+            "department": "sensitive-documents",
+        },
+    }
+
+
+def load_por_artifact(worker_id: str) -> dict:
+    worker_dir = (
+        TRUST_LAB_ARTIFACT_DIR
+        / "attesters"
+        / TRUST_LAB_ATTESTER_ID
+        / "workers"
+        / worker_id
+    )
+    manifest = read_json_file(worker_dir / "manifest.json")
+    presentation = read_text_file(worker_dir / "presentation.sd-jwt")
+    processed = read_json_file(worker_dir / "processed-payload.json")
+
+    return {
+        "manifest": manifest,
+        "presentation": presentation,
+        "processed": processed,
+    }
+
+
+def read_json_file(path: Path) -> dict:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as error:
+        raise DemoError(f"missing trust-lab artifact {path}") from error
+    except json.JSONDecodeError as error:
+        raise DemoError(f"trust-lab artifact {path} is not JSON: {error}") from error
+
+    if not isinstance(value, dict):
+        raise DemoError(f"trust-lab artifact {path} is not a JSON object")
+    return value
+
+
+def read_text_file(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8")
+    except FileNotFoundError as error:
+        raise DemoError(f"missing trust-lab artifact {path}") from error
+
+
+def print_por_artifact(artifact: dict) -> None:
+    manifest = artifact["manifest"]
+    presentation = artifact["presentation"]
+    processed = artifact["processed"]
+    worker = str(manifest.get("worker_id", "<worker missing>"))
+    role = str(manifest.get("role", "<role missing>"))
+    presented = manifest.get("presented_disclosures", [])
+    undisclosed = manifest.get("undisclosed_disclosures", [])
+
+    if not isinstance(presented, list) or not isinstance(undisclosed, list):
+        raise DemoError(f"{worker} manifest has malformed disclosure lists")
+
+    print_kv(f"{worker}", role)
+    print_kv("  PoR issuer", str(manifest.get("issuer", "<issuer missing>")))
+    print_kv("  presented disclosures", ", ".join(str(item) for item in presented))
+    print_kv("  hidden disclosures", str(len(undisclosed)))
+    print_kv("  processed keys", ", ".join(sorted(processed.keys())))
+    print_size(
+        f"  {worker} SD-JWT presentation",
+        len(presentation),
+        len(presentation.encode("utf-8")),
+    )
+
+
 def open_url(request: urllib.request.Request):
     try:
         return urllib.request.urlopen(request, timeout=3)
@@ -185,6 +351,83 @@ def describe_pic_x(payload: dict) -> str:
     if isinstance(version, str) and version:
         return f"{product} {version}"
     return str(product)
+
+
+def compact_json(value: dict) -> str:
+    return json.dumps(value, separators=(",", ":"), sort_keys=True)
+
+
+def b64url_json(value: dict) -> str:
+    return b64url(compact_json(value).encode("utf-8"))
+
+
+def b64url(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).decode("ascii").rstrip("=")
+
+
+def b64url_decode(value: str) -> bytes:
+    padding = "=" * (-len(value) % 4)
+    return base64.urlsafe_b64decode(value + padding)
+
+
+def decode_jwt(token: str) -> tuple[dict, dict]:
+    parts = token.split(".")
+    if len(parts) != 3:
+        raise DemoError("token is not a compact JWT/JWS")
+    try:
+        header = json.loads(b64url_decode(parts[0]).decode("utf-8"))
+        payload = json.loads(b64url_decode(parts[1]).decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
+        raise DemoError(f"could not decode JWT: {error}") from error
+    if not isinstance(header, dict) or not isinstance(payload, dict):
+        raise DemoError("JWT header or payload is not a JSON object")
+    return header, payload
+
+
+def print_size_table(
+    access_token: str, proposal_json: dict, proposal_wire: str, pic_token: str
+) -> None:
+    pic_header, pic_payload = decode_jwt(pic_token)
+    pic_root = pic_payload.get("pic", {}).get("root")
+    if not isinstance(pic_root, str):
+        raise DemoError("PIC Token JWT payload has no pic.root")
+
+    rows = [
+        (
+            "Keycloak access token JWT",
+            len(access_token),
+            len(access_token.encode("utf-8")),
+        ),
+        (
+            "Initial proposal JSON",
+            len(compact_json(proposal_json)),
+            len(compact_json(proposal_json).encode("utf-8")),
+        ),
+        (
+            "continuity_proposal parameter",
+            len(proposal_wire),
+            len(proposal_wire.encode("utf-8")),
+        ),
+        ("PIC Token JWT 0", len(pic_token), len(pic_token.encode("utf-8"))),
+        ("PIC Token JWT header JSON", 0, len(compact_json(pic_header).encode("utf-8"))),
+        (
+            "PIC Token JWT payload JSON",
+            0,
+            len(compact_json(pic_payload).encode("utf-8")),
+        ),
+        ("pic.root Continuity COSE b64url", len(pic_root), len(pic_root.encode("utf-8"))),
+        ("pic.root Continuity COSE bytes", 0, len(b64url_decode(pic_root))),
+    ]
+
+    print("    component                              chars    bytes")
+    print("    -----------------------------------  -------  -------")
+    for name, chars, bytes_len in rows:
+        chars_text = "-" if chars == 0 else str(chars)
+        print(f"    {name:<35} {chars_text:>7} {bytes_len:>7}")
+
+
+def print_size(name: str, chars: int, bytes_len: int) -> None:
+    print(f"    {paint(name + ':', 'cyan')} {chars} chars, {bytes_len} bytes")
 
 
 def color_is_enabled() -> bool:
@@ -225,7 +468,7 @@ def print_flow_map() -> None:
     )
     print("  +----------------+    access token      +------------------------+")
     print("          |")
-    print("          +---- discovery check --------> +------------------------+")
+    print("          +---- token exchange ---------> +------------------------+")
     print(
         f"          |                               | "
         f"{flow_cell('PIC-X localhost:17556', 22, 'bold')} |"
@@ -238,13 +481,13 @@ def print_flow_map() -> None:
         f"{flow_cell('Trust Lab public API', 22, 'bold')} |"
     )
     print(f"                                          | {flow_cell('localhost:17080', 22)} |")
-    print(f"                                          | {flow_cell('no auth yet', 22)} |")
+    print(f"                                          | {flow_cell('PoR SD-JWT fixture', 22)} |")
     print("                                          +------------------------+")
     print()
-    print(f"  {paint('target flow', 'yellow')}")
-    print("  Keycloak token -> pic_context_of_authority exchange")
-    print("     -> node A -> node B -> node C")
-    print("     each node emits Proof of Relationship + Proof of Continuity")
+    print(f"  {paint('next target', 'yellow')}")
+    print("  PIC Token JWT 0 -> workload candidate with SD-JWT PoR")
+    print("     -> PIC-X validates PoR, transition, non-expansion")
+    print("     -> realm-signed PIC Token JWT N+1")
 
 
 def flow_cell(text: str, width: int, color: str = "") -> str:

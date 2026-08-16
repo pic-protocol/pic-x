@@ -86,6 +86,60 @@ realms:
       publish_ahead: 5m
       rotate_every: 30m
       retain: 12h
+    exchange_profiles:
+      - id: acme-keycloak-oauth-to-pic
+        source:
+          token_type: oauth-access-token
+          format: jwt
+          issuer: http://localhost:18080/realms/acme-idp
+          audience: account
+          validation:
+            allowed_algorithms:
+              - RS256
+            require_expiration: true
+            require_token_type: JWT
+        claims:
+          identity_context:
+            type:
+              value: user
+            id:
+              from: sub
+            roles:
+              from: realm_access.roles
+              type: set
+            securityDomain:
+              value: acme
+          scopes:
+            from: pic_scopes
+            type: set
+        privileges:
+          source: scopes
+          rules:
+            - name: resource-instance
+              priority: 10
+              pattern: '^(?<resourceType>[a-z][a-z0-9_-]*):(?<operation>[a-z][a-z0-9_-]*):(?<resourceId>[a-zA-Z0-9_-]+)$'
+              emit:
+                scope: '${raw}'
+                operation: '${operation}'
+                resource_type: '${resourceType}'
+                resource_id: '${resourceId}'
+            - name: resource-collection
+              priority: 1
+              pattern: '^(?<resourceType>[a-z][a-z0-9_-]*):(?<operation>[a-z][a-z0-9_-]*)$'
+              emit:
+                scope: '${raw}'
+                operation: '${operation}'
+                resource_type: '${resourceType}'
+                resource_id: '*'
+        on_unmatched_scope: reject
+    attesters:
+      - id: acme-por-attester
+        issuer: http://localhost:17080/attesters/acme-por-attester
+        jwks_uri: http://localhost:17080/attesters/acme-por-attester/jwks.json
+        proof_types:
+          - sd-jwt
+        formats:
+          - sd-jwt
     operations:
       audit:
         retention: 30d
@@ -95,3 +149,53 @@ realms:
       publish_ahead: 5m
       rotate_every: 1h
       retain: 1d
+    exchange_profiles:
+      - id: globex-oauth-to-pic
+        source:
+          token_type: oauth-access-token
+          format: jwt
+          issuer: https://idp.globex.example.com
+          audience: pic-x
+          validation:
+            allowed_algorithms:
+              - ES256
+            require_expiration: true
+            require_token_type: at+jwt
+        claims:
+          identity_context:
+            type:
+              value: user
+            id:
+              from: sub
+          scopes:
+            from: scope
+            encoding: space-delimited
+            type: set
+        privileges:
+          source: scopes
+          rules:
+            - name: resource-instance
+              priority: 10
+              pattern: '^(?<resourceType>[a-z][a-z0-9_-]*):(?<operation>[a-z][a-z0-9_-]*):(?<resourceId>[a-zA-Z0-9_-]+)$'
+              emit:
+                scope: '${raw}'
+                operation: '${operation}'
+                resource_type: '${resourceType}'
+                resource_id: '${resourceId}'
+            - name: resource-collection
+              priority: 1
+              pattern: '^(?<resourceType>[a-z][a-z0-9_-]*):(?<operation>[a-z][a-z0-9_-]*)$'
+              emit:
+                scope: '${raw}'
+                operation: '${operation}'
+                resource_type: '${resourceType}'
+                resource_id: '*'
+        on_unmatched_scope: reject
+    attesters:
+      - id: globex-por-attester
+        issuer: https://attestation.globex.example.com
+        jwks_uri: https://attestation.globex.example.com/jwks.json
+        proof_types:
+          - sd-jwt
+        formats:
+          - sd-jwt

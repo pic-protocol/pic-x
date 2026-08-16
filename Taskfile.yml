@@ -286,6 +286,8 @@ tasks:
 
       See docs/keycloak.md for credentials and lab commands.
     cmds:
+      - mkdir -p .volume/trust-lab
+      - chmod a+rwX .volume .volume/trust-lab
       - docker compose -f docker-compose.lab.yml up --build -d
 
   lab-down:
