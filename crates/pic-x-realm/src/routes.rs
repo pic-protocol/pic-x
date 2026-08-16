@@ -145,7 +145,6 @@ struct Discovery {
     revocation_endpoint: String,
     jwks_uri: String,
     attestations_endpoint: String,
-    trust_anchors_endpoint: String,
     grant_types_supported: &'static [&'static str],
     subject_token_types_supported: &'static [&'static str],
     issued_token_types_supported: &'static [&'static str],
@@ -346,9 +345,13 @@ pub(crate) async fn server_configuration(State(server): State<Server>) -> impl I
 /// The issuer discovery a client integrates a realm against.
 ///
 /// The `issuer`, `token_endpoint` and `jwks_uri` are the realm's own; everything else is the PIC
-/// profile 0.2 capability set this build implements, fixed for now. Revocation and trust-anchor
-/// endpoints are advertised for the profile surface but remain future handlers; attestation issuers
-/// are listed at `/attestations`, and token initialization is served by `POST /token`.
+/// profile 0.2 capability set this build implements, fixed for now.
+///
+/// Trust Anchors are **not** advertised: this build configures none and serves none, and a
+/// discovery document that names an endpoint nobody can use is worse than one that stays quiet —
+/// a client would integrate against a 404. The field returns when there is something behind it.
+/// `revocation_endpoint` is the one advertised-but-unserved exception, kept because the profile
+/// surface defines it; see the deployment notes.
 pub(crate) async fn realm_configuration(State(realm): State<RealmMeta>) -> impl IntoResponse {
     // A typed document rather than a `json!` value: `json!` builds an ordered map and serialises its
     // members alphabetically, which scrambles a document whose order is meaningful. A struct
@@ -361,7 +364,6 @@ pub(crate) async fn realm_configuration(State(realm): State<RealmMeta>) -> impl 
         revocation_endpoint: endpoint_like(&realm.token_endpoint, "/revoke"),
         jwks_uri: realm.jwks_uri.clone(),
         attestations_endpoint: endpoint_like(&realm.token_endpoint, "/attestations"),
-        trust_anchors_endpoint: endpoint_like(&realm.token_endpoint, "/trust-anchors"),
 
         grant_types_supported: &["urn:ietf:params:oauth:grant-type:token-exchange"],
 
