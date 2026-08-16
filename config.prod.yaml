@@ -145,6 +145,9 @@ operations:
 # server refuses to start without it. See docs/realms.md.
 realms:
   - name: acme
+    # How long the PIC Tokens this realm issues stay valid. Stated per realm because the
+    # lifetime of issued authority is a deployment decision, not something to default.
+    token_lifetime: 1h
     issuer: https://acme.example.com
     listed: true
     # Each realm states its own token-signing `keys` explicitly — signing policy is security, never
@@ -162,6 +165,9 @@ realms:
       audit:
         retention: 365d
   - name: globex
+    # How long the PIC Tokens this realm issues stay valid. Stated per realm because the
+    # lifetime of issued authority is a deployment decision, not something to default.
+    token_lifetime: 1h
     issuer: https://globex.example.com
     listed: true
     keys:

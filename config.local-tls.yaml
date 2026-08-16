@@ -83,6 +83,9 @@ operations:
 # first start.
 realms:
   - name: acme
+    # How long the PIC Tokens this realm issues stay valid. Stated per realm because the
+    # lifetime of issued authority is a deployment decision, not something to default.
+    token_lifetime: 1h
     listed: true
     # Each realm states its own token-signing `keys` (signing policy is not inherited). acme rotates
     # fast and keeps its trail longer; globex takes plainer values. Lower the maintenance_interval to
@@ -95,6 +98,9 @@ realms:
       audit:
         retention: 30d
   - name: globex
+    # How long the PIC Tokens this realm issues stay valid. Stated per realm because the
+    # lifetime of issued authority is a deployment decision, not something to default.
+    token_lifetime: 1h
     listed: true
     keys:
       publish_ahead: 5m

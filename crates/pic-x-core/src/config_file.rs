@@ -102,6 +102,9 @@ pub struct ConfigFile {
 #[serde(deny_unknown_fields)]
 struct RealmSection {
     name: String,
+    /// How long the PIC Tokens this realm issues stay valid, e.g. `1h`, `30m`.
+    #[serde(default, alias = "tokenLifetime")]
+    token_lifetime: Option<String>,
     #[serde(default)]
     issuer: Option<String>,
     /// Whether this realm appears in the server's public catalogue. Absent means no.
@@ -740,6 +743,7 @@ impl ConfigFile {
         self.realms
             .iter()
             .map(|realm| RealmInput {
+                token_lifetime: realm.token_lifetime.clone(),
                 name: realm.name.clone(),
                 issuer: realm.issuer.clone(),
                 listed: realm.listed.clone(),

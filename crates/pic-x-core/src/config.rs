@@ -610,6 +610,16 @@ impl Config {
             require_token(input.token_keys_publish_ahead, "publish_ahead")?;
         let token_keys_rotate_every = require_token(input.token_keys_rotate_every, "rotate_every")?;
         let token_keys_retain = require_token(input.token_keys_retain, "retain")?;
+        // The lifetime of the authority a realm hands out is not something to default quietly: a
+        // realm that issues tokens states it, or the deployment does not start.
+        let token_lifetime = match input.token_lifetime {
+            Some(value) => parse_duration(&value)
+                .with_context(|| format!("the realm `{name}` has an invalid `token_lifetime`"))?,
+            None if !token_keys_enabled => Duration::ZERO,
+            None => bail!(
+                "the realm `{name}` issues tokens but declares no `token_lifetime`: how long issued                  authority stays valid is a deployment decision, and this build does not default                  one. Set the realm's `token_lifetime`, or `keys.enabled: false` if it issues                  nothing"
+            ),
+        };
 
         Ok(RealmConfig {
             mount_path,
@@ -619,6 +629,7 @@ impl Config {
             token_keys_publish_ahead,
             token_keys_rotate_every,
             token_keys_retain,
+            token_lifetime,
             // The operations ring inherits the shared `operations` block unless the realm overrides it.
             operations_keys_enabled: inherit_bool(
                 input.operations_keys_enabled,

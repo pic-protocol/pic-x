@@ -95,6 +95,9 @@
 #   - name: acme
 #     issuer: https://acme.example.com
 #     listed: true
+#     # How long the PIC Tokens this realm issues stay valid. Stated per realm because the
+#     # lifetime of issued authority is a deployment decision, not something to default.
+#     token_lifetime: 1h
 #     keys:
 #       publish_ahead: 1h
 #       rotate_every: 90d

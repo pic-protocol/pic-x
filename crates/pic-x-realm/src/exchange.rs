@@ -48,10 +48,9 @@ use crate::por::{SdJwtPorValidator, expected_algorithms_for_jwk, public_key_from
 
 const GRANT_TOKEN_EXCHANGE: &str = "urn:ietf:params:oauth:grant-type:token-exchange";
 const TOKEN_TYPE_N_A: &str = "N_A";
-/// How long a settled token issued by an advancement is valid. The checkpoint it carries is
-/// accepted for as long as the realm key that signed it stays published, so this bounds the token,
-/// not the lineage.
-const DEFAULT_TOKEN_LIFETIME: i64 = 3_600;
+/// The longest lifetime an Initial Continuity Proposal may ask for, in seconds. The realm's
+/// configured value still caps it; this only keeps an absurd request from being arithmetic.
+const MAX_REQUESTED_LIFETIME: i64 = 365 * 24 * 3_600;
 
 /// Runtime state for one realm token endpoint.
 #[derive(Clone)]
@@ -247,6 +246,18 @@ impl TokenEndpoint {
         })?;
         let signer = RealmTokenSigner::new(keys)?;
         let now = unix_now()?;
+        // The realm states the default; the proposal may ask for less, never more. Authority that
+        // outlived what the deployment allows would be a lifetime chosen by the caller.
+        let requested = proposal_lifetime(proposal_value)?;
+        let lifetime = match requested {
+            Some(asked) => asked.min(self.realm.token_lifetime().as_secs() as i64),
+            None => self.realm.token_lifetime().as_secs() as i64,
+        };
+        let expiry = match jwt.claim_i64("exp") {
+            // A PIC token must not outlive the OAuth authority it was derived from.
+            Some(source_expiry) => source_expiry.min(now + lifetime),
+            None => now + lifetime,
+        };
         let context = SettlementContext {
             iss: self
                 .realm
@@ -256,7 +267,7 @@ impl TokenEndpoint {
             sub: jwt.claim_string("sub"),
             aud: None,
             iat: Some(now),
-            exp: jwt.claim_i64("exp"),
+            exp: Some(expiry),
             jti: Some(lineage_id.clone()),
         };
         let issued = issue_settled(checkpoint, &signer, &context).map_err(|error| {
@@ -332,7 +343,7 @@ impl TokenEndpoint {
             sub: None,
             aud: None,
             iat: Some(now),
-            exp: Some(now + DEFAULT_TOKEN_LIFETIME),
+            exp: Some(now + self.realm.token_lifetime().as_secs() as i64),
             jti: Some(lineage_id.clone()),
         };
 
@@ -1122,6 +1133,36 @@ fn unix_now() -> Result<i64, ExchangeError> {
         .map_err(|error| {
             ExchangeError::server_error(format!("system clock is before Unix epoch: {error}"))
         })
+}
+
+/// The lifetime an Initial Continuity Proposal asks for, when it asks for one.
+///
+/// The articles allow a proposal to carry "additional initialization material defined by its
+/// proposal type", which is what this reads. The protocol crate tolerates the extra member, so the
+/// proposal is parsed twice: once by the crate for the parts it defines, once here for this.
+fn proposal_lifetime(encoded: &str) -> Result<Option<i64>, ExchangeError> {
+    let bytes = URL_SAFE_NO_PAD.decode(encoded).map_err(|error| {
+        ExchangeError::invalid_request(format!("continuity_proposal is not base64url: {error}"))
+    })?;
+    let document: Value = serde_json::from_slice(&bytes).map_err(|error| {
+        ExchangeError::invalid_request(format!("continuity_proposal is not JSON: {error}"))
+    })?;
+
+    let Some(value) = document.get("tokenLifetimeSeconds") else {
+        return Ok(None);
+    };
+    let seconds = value.as_i64().filter(|seconds| *seconds > 0).ok_or_else(|| {
+        ExchangeError::invalid_request(
+            "`tokenLifetimeSeconds` must be a positive whole number of seconds",
+        )
+    })?;
+    if seconds > MAX_REQUESTED_LIFETIME {
+        return Err(ExchangeError::invalid_request(
+            "`tokenLifetimeSeconds` is longer than a year",
+        ));
+    }
+
+    Ok(Some(seconds))
 }
 
 fn new_lineage_id() -> Result<String, ExchangeError> {

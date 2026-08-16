@@ -23,6 +23,12 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+/// The lifetime a runtime realm falls back to when nothing set one.
+///
+/// Configuration requires the value explicitly for a realm that issues tokens; this exists so a
+/// realm assembled in a test or an embedding build is never left with a zero-length token.
+const DEFAULT_TOKEN_LIFETIME: Duration = Duration::from_secs(3_600);
+
 use crate::audit::{AuditDestination, AuditSink};
 use crate::keys::KeyManager;
 use crate::pseudonym::Pseudonymizer;
@@ -170,6 +176,8 @@ pub struct RealmInput {
     pub audit_pseudonym_key_version: Option<String>,
     pub secrets_provider: Option<String>,
     pub secrets_env_prefix: Option<String>,
+    /// How long a PIC Token this realm issues is valid, when the caller asks for nothing else.
+    pub token_lifetime: Option<String>,
     pub exchange_profiles: Vec<ExchangeProfileConfig>,
     pub trusted_attesters: Vec<TrustedAttesterConfig>,
 }
@@ -192,6 +200,8 @@ pub struct RealmConfig {
     pub(crate) token_keys_publish_ahead: Duration,
     pub(crate) token_keys_rotate_every: Duration,
     pub(crate) token_keys_retain: Duration,
+    /// The default lifetime of a PIC Token this realm issues.
+    pub(crate) token_lifetime: Duration,
     // The operations ring — the one that seals this realm's trail.
     pub(crate) operations_keys_enabled: bool,
     pub(crate) operations_keys_publish_ahead: Duration,
@@ -245,6 +255,14 @@ impl RealmConfig {
     }
 
     /// How long a retired token key of this realm stays published.
+    /// How long a PIC Token this realm issues is valid unless the caller asks for less.
+    ///
+    /// Stated per realm rather than defaulted globally: the lifetime of issued authority is a
+    /// deployment decision, and a build that guesses it is a build that guesses wrong somewhere.
+    pub fn token_lifetime(&self) -> Duration {
+        self.token_lifetime
+    }
+
     pub fn token_keys_retain(&self) -> Duration {
         self.token_keys_retain
     }
@@ -313,6 +331,7 @@ impl RealmConfig {
     pub fn trusted_attesters(&self) -> &[TrustedAttesterConfig] {
         &self.trusted_attesters
     }
+
 }
 
 /// One issuer: everything a realm signs, records and is reached at.
@@ -331,6 +350,8 @@ pub struct Realm {
     pseudonymizer: Option<Arc<dyn Pseudonymizer>>,
     exchange_profiles: Vec<ExchangeProfileConfig>,
     trusted_attesters: Vec<TrustedAttesterConfig>,
+    /// How long the PIC Tokens this realm issues stay valid.
+    token_lifetime: Duration,
 }
 
 impl Realm {
@@ -366,7 +387,15 @@ impl Realm {
             pseudonymizer,
             exchange_profiles: Vec::new(),
             trusted_attesters: Vec::new(),
+            token_lifetime: DEFAULT_TOKEN_LIFETIME,
         }
+    }
+
+    /// Sets how long the PIC Tokens this realm issues stay valid.
+    pub fn with_token_lifetime(mut self, lifetime: Duration) -> Self {
+        self.token_lifetime = lifetime;
+
+        self
     }
 
     /// Attaches the Exchange Profiles loaded for this realm.
@@ -446,6 +475,11 @@ impl Realm {
     /// The trusted PoR attestation issuers this realm advertises.
     pub fn trusted_attesters(&self) -> &[TrustedAttesterConfig] {
         &self.trusted_attesters
+    }
+
+    /// How long the PIC Tokens this realm issues stay valid, unless the exchange asks for less.
+    pub fn token_lifetime(&self) -> Duration {
+        self.token_lifetime
     }
 
     /// Returns the absolute URL a client should use for `path` within this realm.
