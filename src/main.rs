@@ -11,7 +11,7 @@
 use std::process::ExitCode;
 use std::sync::Arc;
 
-use anyhow::Context;
+use anyhow::{Context, anyhow};
 use pic_x_admin::AdminService;
 use pic_x_core::{AuditDestination, AuditSink, JwkSet, KeyManager, Metrics};
 use pic_x_core::{BuildSettings, ProductIdentity};
@@ -20,7 +20,7 @@ use pic_x_core::{Pseudonymizer, Realm, RealmConfig};
 use pic_x_realm::WellKnownService;
 use pic_x_server::{App, DefaultServerHost};
 use pic_x_std::audit::{FileAuditSink, TracingAuditSink};
-use pic_x_std::keys::{DirectoryKeyManager, KeyPolicy, KeyService};
+use pic_x_std::keys::{DirectoryKeyManager, KeyPolicy, KeyService, RingAlgorithm};
 use pic_x_std::metrics::Registry;
 use pic_x_std::pseudonym::HmacPseudonymizer;
 use pic_x_std::secrets::{DirectorySecretStore, EnvironmentSecretStore};
@@ -291,11 +291,15 @@ fn build_realm(config: &Config, realm: &RealmConfig) -> anyhow::Result<Realm> {
     // The realm's token-signing ring, at `realms/<name>/keys`, published at its `jwks_uri`. Unlike
     // the operations ring, a token key's public half dies with its private one (`verify_retain` =
     // `retain`): a token older than `retain` has expired, so nothing needs to verify it afterwards.
-    // It reuses the same Ed25519 ring as everything else here; the wire algorithm the discovery
-    // advertises is `EdDSA` to match. (When real issuance lands, a profile that mandates ES256 gets
-    // ES256 added to the ring then.)
+    // The ring signs with what the realm was configured for, and the discovery document publishes
+    // the same value — one decision, not two that can drift. ES256 is what a deployment keeping its
+    // keys in an HSM or a managed KMS will ask for, since P-256 is supported there and Ed25519
+    // usually is not.
     let token_keys: Option<Arc<dyn KeyManager>> = if realm.token_keys_enabled() {
-        Some(Arc::new(DirectoryKeyManager::new(
+        let algorithm = RingAlgorithm::parse(realm.token_signing_algorithm())
+            .map_err(|error| anyhow!("the realm `{name}` cannot sign: {error}"))?;
+
+        Some(Arc::new(DirectoryKeyManager::with_algorithm(
             config.realm_token_keys_directory(name),
             KeyPolicy {
                 publish_ahead: realm.token_keys_publish_ahead(),
@@ -303,6 +307,7 @@ fn build_realm(config: &Config, realm: &RealmConfig) -> anyhow::Result<Realm> {
                 retain: realm.token_keys_retain(),
                 verify_retain: realm.token_keys_retain(),
             },
+            algorithm,
         )))
     } else {
         None
@@ -378,6 +383,7 @@ fn build_realm(config: &Config, realm: &RealmConfig) -> anyhow::Result<Realm> {
         pseudonymizer,
     )
     .with_token_lifetime(realm.token_lifetime())
+    .with_token_signing_algorithm(realm.token_signing_algorithm())
     .with_exchange_profiles(realm.exchange_profiles().iter().cloned())
     .with_trusted_attesters(realm.trusted_attesters().iter().cloned()))
 }

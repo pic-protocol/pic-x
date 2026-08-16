@@ -42,6 +42,9 @@ realms:
     # How long the PIC Tokens this realm issues stay valid. Stated per realm because the
     # lifetime of issued authority is a deployment decision, not something to default.
     token_lifetime: 1h
+    # The lab signs with ES256, the algorithm a deployment keeping its keys in an HSM or a managed
+    # KMS will ask for. Set `EdDSA` for the faster software default.
+    token_signing_algorithm: ES256
     listed: true
     keys:
       publish_ahead: 5m

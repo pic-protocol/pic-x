@@ -105,6 +105,9 @@ struct RealmSection {
     /// How long the PIC Tokens this realm issues stay valid, e.g. `1h`, `30m`.
     #[serde(default, alias = "tokenLifetime")]
     token_lifetime: Option<String>,
+    /// Which algorithm this realm signs with: `EdDSA` (default) or `ES256`.
+    #[serde(default, alias = "tokenSigningAlgorithm")]
+    token_signing_algorithm: Option<String>,
     #[serde(default)]
     issuer: Option<String>,
     /// Whether this realm appears in the server's public catalogue. Absent means no.
@@ -744,6 +747,7 @@ impl ConfigFile {
             .iter()
             .map(|realm| RealmInput {
                 token_lifetime: realm.token_lifetime.clone(),
+                token_signing_algorithm: realm.token_signing_algorithm.clone(),
                 name: realm.name.clone(),
                 issuer: realm.issuer.clone(),
                 listed: realm.listed.clone(),

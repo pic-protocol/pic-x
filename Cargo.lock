@@ -1155,6 +1155,7 @@ name = "pic-x-std"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64",
  "hmac",
  "pic-x-core",
  "rcgen",

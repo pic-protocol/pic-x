@@ -41,7 +41,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use ring::rand::SystemRandom;
-use ring::signature::{Ed25519KeyPair, KeyPair};
+use ring::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair, Ed25519KeyPair, KeyPair};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
@@ -50,11 +50,106 @@ use pic_x_core::{Jwk, JwkSet, KeyError, KeyId, KeyManager, KeyState, Maintenance
 
 pub use service::KeyService;
 
-/// The curve every key on this ring is on.
+/// The curve an Edwards key on this ring is on.
 const CURVE: &str = "Ed25519";
 
-/// The algorithm a signature made by this ring names.
+/// The algorithm an Edwards signature names.
 const ALGORITHM: &str = "EdDSA";
+
+/// The curve a NIST key on this ring is on.
+const P256_CURVE: &str = "P-256";
+
+/// The algorithm a P-256 signature names.
+const P256_ALGORITHM: &str = "ES256";
+
+/// Which signature algorithm a ring produces.
+///
+/// Both are offered because the choice is rarely about cryptography: Ed25519 is the better default,
+/// and ES256 is what hardware answers to. A deployment that keeps its keys in an HSM or a managed
+/// KMS usually finds P-256 supported everywhere and Ed25519 nowhere, so a realm that cannot choose
+/// is a realm that cannot use its own key custody.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum RingAlgorithm {
+    /// EdDSA over Ed25519.
+    #[default]
+    #[serde(rename = "EdDSA")]
+    Ed25519,
+    /// ECDSA over P-256 with SHA-256.
+    #[serde(rename = "ES256")]
+    Es256,
+}
+
+impl RingAlgorithm {
+    /// The JOSE `alg` a signature by this ring names.
+    pub fn jose(self) -> &'static str {
+        match self {
+            Self::Ed25519 => ALGORITHM,
+            Self::Es256 => P256_ALGORITHM,
+        }
+    }
+
+    /// The curve keys of this ring are on.
+    pub fn curve(self) -> &'static str {
+        match self {
+            Self::Ed25519 => CURVE,
+            Self::Es256 => P256_CURVE,
+        }
+    }
+
+    /// Reads the algorithm a configuration named.
+    pub fn parse(value: &str) -> std::result::Result<Self, String> {
+        match value {
+            "EdDSA" | "Ed25519" => Ok(Self::Ed25519),
+            "ES256" | "P-256" => Ok(Self::Es256),
+            other => Err(format!(
+                "unsupported signing algorithm `{other}`: this build signs with EdDSA or ES256"
+            )),
+        }
+    }
+}
+
+/// A private key on the ring, of whichever kind the ring signs with.
+enum SigningPair {
+    Ed25519(Ed25519KeyPair),
+    Es256(Box<EcdsaKeyPair>),
+}
+
+impl SigningPair {
+    /// Reads a key back from its PKCS#8 document.
+    fn from_pkcs8(algorithm: RingAlgorithm, pkcs8: &[u8]) -> Result<Self> {
+        match algorithm {
+            RingAlgorithm::Ed25519 => Ed25519KeyPair::from_pkcs8(pkcs8)
+                .map(Self::Ed25519)
+                .map_err(|error| KeyError::backend(format!("reading a key: {error}"))),
+            RingAlgorithm::Es256 => EcdsaKeyPair::from_pkcs8(
+                &ECDSA_P256_SHA256_FIXED_SIGNING,
+                pkcs8,
+                &SystemRandom::new(),
+            )
+            .map(|pair| Self::Es256(Box::new(pair)))
+            .map_err(|error| KeyError::backend(format!("reading a key: {error}"))),
+        }
+    }
+
+    /// The public half, in the encoding its curve publishes.
+    fn public_key(&self) -> &[u8] {
+        match self {
+            Self::Ed25519(pair) => pair.public_key().as_ref(),
+            Self::Es256(pair) => pair.public_key().as_ref(),
+        }
+    }
+
+    fn sign(&self, payload: &[u8]) -> Result<Vec<u8>> {
+        match self {
+            Self::Ed25519(pair) => Ok(pair.sign(payload).as_ref().to_vec()),
+            // ECDSA needs entropy per signature; a failure here is the random source, not the key.
+            Self::Es256(pair) => pair
+                .sign(&SystemRandom::new(), payload)
+                .map(|signature| signature.as_ref().to_vec())
+                .map_err(|error| KeyError::backend(format!("signing: {error}"))),
+        }
+    }
+}
 
 /// The PEM label PKCS#8 private keys are written under.
 const PEM_LABEL: &str = "PRIVATE KEY";
@@ -110,6 +205,10 @@ impl Clock for SystemClock {
 struct Entry {
     kid: String,
     state: KeyState,
+    /// Which algorithm this key signs with. Absent means the Edwards key this ring used to hold
+    /// before it could hold anything else, so an existing ring keeps working untouched.
+    #[serde(default)]
+    algorithm: RingAlgorithm,
     /// The public half, kept here so that publishing the key set never opens a private key.
     public_key: String,
     created_at: u64,
@@ -122,7 +221,15 @@ struct Entry {
 impl Entry {
     /// Returns this key in the form a client fetches it.
     fn to_jwk(&self) -> Jwk {
-        Jwk::okp(&self.kid, CURVE, ALGORITHM, &self.public_key)
+        match self.algorithm {
+            RingAlgorithm::Ed25519 => Jwk::okp(&self.kid, CURVE, ALGORITHM, &self.public_key),
+            RingAlgorithm::Es256 => {
+                // A P-256 public key is published as its two coordinates, not as the SEC1 point
+                // the key pair hands back.
+                let (x, y) = split_p256_point(&self.public_key);
+                Jwk::ec(&self.kid, P256_CURVE, P256_ALGORITHM, x, y)
+            }
+        }
     }
 }
 
@@ -148,13 +255,26 @@ pub struct DirectoryKeyManager {
     /// Serialises maintenance, so two passes never both decide to publish a successor.
     maintaining: Mutex<()>,
     /// Parsed private keys, kept so signing does not re-read and re-parse a file per signature.
-    signers: Mutex<BTreeMap<String, Arc<Ed25519KeyPair>>>,
+    algorithm: RingAlgorithm,
+    signers: Mutex<BTreeMap<String, Arc<SigningPair>>>,
 }
 
 impl DirectoryKeyManager {
     /// Builds a manager over the keys in `directory`.
     pub fn new(directory: impl Into<PathBuf>, policy: KeyPolicy) -> Self {
         Self::with_clock(directory, policy, Box::new(SystemClock))
+    }
+
+    /// Builds a manager that signs with `algorithm` rather than the default.
+    pub fn with_algorithm(
+        directory: impl Into<PathBuf>,
+        policy: KeyPolicy,
+        algorithm: RingAlgorithm,
+    ) -> Self {
+        Self {
+            algorithm,
+            ..Self::with_clock(directory, policy, Box::new(SystemClock))
+        }
     }
 
     /// Builds a manager that reads the time from somewhere other than the system.
@@ -168,8 +288,14 @@ impl DirectoryKeyManager {
             policy,
             clock,
             maintaining: Mutex::new(()),
+            algorithm: RingAlgorithm::default(),
             signers: Mutex::new(BTreeMap::new()),
         }
+    }
+
+    /// The algorithm this ring signs with.
+    pub fn algorithm(&self) -> RingAlgorithm {
+        self.algorithm
     }
 
     /// Returns the directory the ring lives in.
@@ -215,14 +341,20 @@ impl DirectoryKeyManager {
         })?;
         restrict(&self.directory, 0o700)?;
 
-        let document = Ed25519KeyPair::generate_pkcs8(&SystemRandom::new())
-            .map_err(|error| KeyError::backend(format!("generating a key: {error}")))?;
+        let random = SystemRandom::new();
+        let document = match self.algorithm {
+            RingAlgorithm::Ed25519 => Ed25519KeyPair::generate_pkcs8(&random)
+                .map_err(|error| KeyError::backend(format!("generating a key: {error}")))?,
+            RingAlgorithm::Es256 => {
+                EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &random)
+                    .map_err(|error| KeyError::backend(format!("generating a key: {error}")))?
+            }
+        };
         let pkcs8 = Zeroizing::new(document.as_ref().to_vec());
 
-        let pair = Ed25519KeyPair::from_pkcs8(&pkcs8)
-            .map_err(|error| KeyError::backend(format!("reading back a generated key: {error}")))?;
-        let public_key = encoding::base64url(pair.public_key().as_ref());
-        let kid = thumbprint(&public_key);
+        let pair = SigningPair::from_pkcs8(self.algorithm, &pkcs8)?;
+        let public_key = encoding::base64url(pair.public_key());
+        let kid = thumbprint(self.algorithm, &public_key);
 
         let path = self.key_path(&kid);
         fs::write(&path, encoding::pem(PEM_LABEL, &pkcs8).as_bytes())
@@ -231,6 +363,7 @@ impl DirectoryKeyManager {
 
         Ok(Entry {
             kid,
+            algorithm: self.algorithm,
             state: if signing {
                 KeyState::Active
             } else {
@@ -244,7 +377,7 @@ impl DirectoryKeyManager {
     }
 
     /// Returns the parsed private key for `kid`, reading it the first time it is asked for.
-    fn signer(&self, kid: &str) -> Result<Arc<Ed25519KeyPair>> {
+    fn signer(&self, kid: &str) -> Result<Arc<SigningPair>> {
         let mut signers = self
             .signers
             .lock()
@@ -267,10 +400,16 @@ impl DirectoryKeyManager {
             KeyError::backend(format!("{} is not a PEM private key", path.display()))
         })?);
 
-        let pair =
-            Arc::new(Ed25519KeyPair::from_pkcs8(&pkcs8).map_err(|error| {
-                KeyError::backend(format!("reading {}: {error}", path.display()))
-            })?);
+        // The entry says what kind of key this is: a ring that changed algorithm still verifies and
+        // signs with the keys it made before the change, until they age out.
+        let algorithm = self
+            .read_ring()?
+            .keys
+            .into_iter()
+            .find(|entry| entry.kid == kid)
+            .map(|entry| entry.algorithm)
+            .unwrap_or(self.algorithm);
+        let pair = Arc::new(SigningPair::from_pkcs8(algorithm, &pkcs8)?);
 
         signers.insert(kid.to_owned(), Arc::clone(&pair));
 
@@ -320,12 +459,12 @@ impl KeyManager for DirectoryKeyManager {
     fn sign(&self, payload: &[u8]) -> Result<Signature> {
         let key_id = self.active_key_id()?;
         let signer = self.signer(key_id.as_str())?;
+        let algorithm = match signer.as_ref() {
+            SigningPair::Ed25519(_) => ALGORITHM,
+            SigningPair::Es256(_) => P256_ALGORITHM,
+        };
 
-        Ok(Signature::new(
-            key_id,
-            ALGORITHM,
-            signer.sign(payload).as_ref().to_vec(),
-        ))
+        Ok(Signature::new(key_id, algorithm, signer.sign(payload)?))
     }
 
     fn maintain(&self) -> Result<Maintenance> {
@@ -542,13 +681,40 @@ pub fn verify_signature(jwk: &Jwk, payload: &[u8], signature: &[u8]) -> bool {
 /// The name is derived from the key rather than assigned to it, so two deployments never disagree
 /// about what a key is called and a client can check that the `kid` it was given belongs to the key
 /// it was given.
-fn thumbprint(public_key: &str) -> String {
-    // RFC 7638 §3: the required members, no whitespace, lexicographic order. For an OKP key that is
-    // exactly crv, kty, x.
-    let canonical = format!(r#"{{"crv":"{CURVE}","kty":"OKP","x":"{public_key}"}}"#);
+fn thumbprint(algorithm: RingAlgorithm, public_key: &str) -> String {
+    // RFC 7638 §3: the required members, no whitespace, lexicographic order. Which members are
+    // required depends on the key type — crv/kty/x for OKP, crv/kty/x/y for EC.
+    let canonical = match algorithm {
+        RingAlgorithm::Ed25519 => {
+            format!(r#"{{"crv":"{CURVE}","kty":"OKP","x":"{public_key}"}}"#)
+        }
+        RingAlgorithm::Es256 => {
+            let (x, y) = split_p256_point(public_key);
+            format!(r#"{{"crv":"{P256_CURVE}","kty":"EC","x":"{x}","y":"{y}"}}"#)
+        }
+    };
     let digest = ring::digest::digest(&ring::digest::SHA256, canonical.as_bytes());
 
     encoding::base64url(digest.as_ref())
+}
+
+/// Splits a SEC1 uncompressed P-256 point into the two coordinates a JWK publishes.
+///
+/// The key pair hands back `0x04 || x || y`; a JWK carries `x` and `y` separately. A point that is
+/// not that shape yields empty coordinates rather than panicking: it would have to be a corrupt
+/// ring file, and a key that cannot be described is one no verifier will match.
+fn split_p256_point(public_key: &str) -> (String, String) {
+    let Some(point) = encoding::from_base64url(public_key) else {
+        return (String::new(), String::new());
+    };
+    if point.len() != 65 || point[0] != 0x04 {
+        return (String::new(), String::new());
+    }
+
+    (
+        encoding::base64url(&point[1..33]),
+        encoding::base64url(&point[33..65]),
+    )
 }
 
 /// Narrows permissions where the platform has them.
@@ -574,11 +740,17 @@ mod tests {
     #[test]
     fn test_the_name_of_a_key_is_derived_from_the_key() {
         // RFC 7638 leaves nothing to choose, so the same public key must always get the same name.
-        let first = thumbprint("11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo");
-        let second = thumbprint("11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo");
+        let first = thumbprint(
+            RingAlgorithm::Ed25519,
+            "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo",
+        );
+        let second = thumbprint(
+            RingAlgorithm::Ed25519,
+            "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo",
+        );
 
         assert_eq!(first, second);
-        assert_ne!(first, thumbprint("AAAA"));
+        assert_ne!(first, thumbprint(RingAlgorithm::Ed25519, "AAAA"));
         // base64url of a SHA-256, unpadded.
         assert_eq!(first.len(), 43);
     }
@@ -588,6 +760,7 @@ mod tests {
         let ring = Ring {
             version: 1,
             keys: vec![Entry {
+                algorithm: RingAlgorithm::Ed25519,
                 kid: "k1".to_owned(),
                 state: KeyState::Active,
                 public_key: "AAAA".to_owned(),

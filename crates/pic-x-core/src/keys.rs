@@ -150,6 +150,25 @@ impl Jwk {
             usage: "sig".to_owned(),
         }
     }
+
+    /// An elliptic-curve public key, the shape a NIST curve is published in.
+    pub fn ec(
+        kid: impl Into<String>,
+        curve: &str,
+        algorithm: &str,
+        x: impl Into<String>,
+        y: impl Into<String>,
+    ) -> Self {
+        Self {
+            kid: kid.into(),
+            kty: "EC".to_owned(),
+            crv: Some(curve.to_owned()),
+            x: x.into(),
+            y: Some(y.into()),
+            alg: algorithm.to_owned(),
+            usage: "sig".to_owned(),
+        }
+    }
 }
 
 /// The document served at the key-set endpoint.

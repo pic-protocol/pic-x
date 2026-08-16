@@ -156,6 +156,7 @@ impl WellKnownService {
                             issuer: realm.issuer().map(ToOwned::to_owned),
                             token_endpoint: realm.url("/token"),
                             jwks_uri: realm.url("/keys"),
+                            signing_algorithm: realm.token_signing_algorithm().to_owned(),
                         }),
                 )
                 .merge(

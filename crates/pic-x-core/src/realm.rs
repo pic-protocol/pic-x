@@ -29,6 +29,9 @@ use std::time::Duration;
 /// realm assembled in a test or an embedding build is never left with a zero-length token.
 const DEFAULT_TOKEN_LIFETIME: Duration = Duration::from_secs(3_600);
 
+/// The algorithm a realm signs with when configuration names none.
+const DEFAULT_SIGNING_ALGORITHM: &str = "EdDSA";
+
 use crate::audit::{AuditDestination, AuditSink};
 use crate::keys::KeyManager;
 use crate::pseudonym::Pseudonymizer;
@@ -178,6 +181,8 @@ pub struct RealmInput {
     pub secrets_env_prefix: Option<String>,
     /// How long a PIC Token this realm issues is valid, when the caller asks for nothing else.
     pub token_lifetime: Option<String>,
+    /// Which algorithm this realm signs its tokens and COSE artifacts with.
+    pub token_signing_algorithm: Option<String>,
     pub exchange_profiles: Vec<ExchangeProfileConfig>,
     pub trusted_attesters: Vec<TrustedAttesterConfig>,
 }
@@ -202,6 +207,8 @@ pub struct RealmConfig {
     pub(crate) token_keys_retain: Duration,
     /// The default lifetime of a PIC Token this realm issues.
     pub(crate) token_lifetime: Duration,
+    /// The JOSE algorithm this realm signs with, e.g. `EdDSA` or `ES256`.
+    pub(crate) token_signing_algorithm: String,
     // The operations ring — the one that seals this realm's trail.
     pub(crate) operations_keys_enabled: bool,
     pub(crate) operations_keys_publish_ahead: Duration,
@@ -261,6 +268,11 @@ impl RealmConfig {
     /// deployment decision, and a build that guesses it is a build that guesses wrong somewhere.
     pub fn token_lifetime(&self) -> Duration {
         self.token_lifetime
+    }
+
+    /// The JOSE algorithm this realm signs with.
+    pub fn token_signing_algorithm(&self) -> &str {
+        &self.token_signing_algorithm
     }
 
     pub fn token_keys_retain(&self) -> Duration {
@@ -351,6 +363,8 @@ pub struct Realm {
     trusted_attesters: Vec<TrustedAttesterConfig>,
     /// How long the PIC Tokens this realm issues stay valid.
     token_lifetime: Duration,
+    /// The JOSE algorithm this realm signs with.
+    token_signing_algorithm: String,
 }
 
 impl Realm {
@@ -387,12 +401,20 @@ impl Realm {
             exchange_profiles: Vec::new(),
             trusted_attesters: Vec::new(),
             token_lifetime: DEFAULT_TOKEN_LIFETIME,
+            token_signing_algorithm: DEFAULT_SIGNING_ALGORITHM.to_owned(),
         }
     }
 
     /// Sets how long the PIC Tokens this realm issues stay valid.
     pub fn with_token_lifetime(mut self, lifetime: Duration) -> Self {
         self.token_lifetime = lifetime;
+
+        self
+    }
+
+    /// Sets the JOSE algorithm this realm signs with.
+    pub fn with_token_signing_algorithm(mut self, algorithm: impl Into<String>) -> Self {
+        self.token_signing_algorithm = algorithm.into();
 
         self
     }
@@ -479,6 +501,14 @@ impl Realm {
     /// How long the PIC Tokens this realm issues stay valid, unless the exchange asks for less.
     pub fn token_lifetime(&self) -> Duration {
         self.token_lifetime
+    }
+
+    /// The JOSE algorithm this realm signs its tokens and COSE artifacts with.
+    ///
+    /// The discovery document publishes exactly this value, so what a client is told and what the
+    /// realm does are one thing rather than two that can drift apart.
+    pub fn token_signing_algorithm(&self) -> &str {
+        &self.token_signing_algorithm
     }
 
     /// Returns the absolute URL a client should use for `path` within this realm.

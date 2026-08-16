@@ -100,6 +100,9 @@ pub(crate) struct RealmMeta {
     pub(crate) issuer: Option<String>,
     pub(crate) token_endpoint: String,
     pub(crate) jwks_uri: String,
+    /// What this realm signs with. Published rather than assumed, so the document and the
+    /// behaviour cannot drift apart.
+    pub(crate) signing_algorithm: String,
 }
 
 /// The attestation issuers a realm accepts for Profile 0.2 Proof-of-Relationship evidence.
@@ -161,7 +164,7 @@ struct Discovery {
 #[derive(Serialize)]
 struct PicContextOfAuthority {
     formats_supported: &'static [&'static str],
-    signing_alg_values_supported: &'static [&'static str],
+    signing_alg_values_supported: Vec<String>,
 }
 
 /// The PIC continuity-proposal parameters block of the discovery document.
@@ -175,14 +178,14 @@ struct PicContinuityProposals {
 #[derive(Serialize)]
 struct PicContinuityTransition {
     formats_supported: &'static [&'static str],
-    signing_alg_values_supported: &'static [&'static str],
+    signing_alg_values_supported: Vec<String>,
 }
 
 /// The PIC continuity-container capabilities block of the discovery document.
 #[derive(Serialize)]
 struct PicContinuity {
     formats_supported: &'static [&'static str],
-    signing_alg_values_supported: &'static [&'static str],
+    signing_alg_values_supported: Vec<String>,
     continuity_modes_supported: &'static [&'static str],
 }
 
@@ -191,7 +194,7 @@ struct PicContinuity {
 struct PicToken {
     token_type: &'static str,
     formats_supported: &'static [&'static str],
-    signing_alg_values_supported: &'static [&'static str],
+    signing_alg_values_supported: Vec<String>,
 }
 
 /// One link a landing page offers: a label and the path it points at.
@@ -351,6 +354,7 @@ pub(crate) async fn server_configuration(State(server): State<Server>) -> impl I
 /// quiet — a client would integrate against a 404, and a deployment could believe it can revoke.
 /// Both fields return when there is something behind them.
 pub(crate) async fn realm_configuration(State(realm): State<RealmMeta>) -> impl IntoResponse {
+    let signing = vec![realm.signing_algorithm.clone()];
     // A typed document rather than a `json!` value: `json!` builds an ordered map and serialises its
     // members alphabetically, which scrambles a document whose order is meaningful. A struct
     // serialises its fields in the order they are declared, so this is the shape a reader sees.
@@ -379,7 +383,7 @@ pub(crate) async fn realm_configuration(State(realm): State<RealmMeta>) -> impl 
 
         pic_context_of_authority: PicContextOfAuthority {
             formats_supported: &[pic::continuity::FORMAT_PIC_PCA_COSE],
-            signing_alg_values_supported: &["EdDSA"],
+            signing_alg_values_supported: signing.clone(),
         },
 
         pic_continuity_proposals: PicContinuityProposals {
@@ -389,19 +393,19 @@ pub(crate) async fn realm_configuration(State(realm): State<RealmMeta>) -> impl 
 
         pic_continuity_transition: PicContinuityTransition {
             formats_supported: &[pic::continuity::FORMAT_PIC_TRANSITION_COSE],
-            signing_alg_values_supported: &["EdDSA"],
+            signing_alg_values_supported: signing.clone(),
         },
 
         pic_continuity: PicContinuity {
             formats_supported: &[pic::continuity::FORMAT_PIC_CONTINUITY_COSE],
-            signing_alg_values_supported: &["EdDSA"],
+            signing_alg_values_supported: signing.clone(),
             continuity_modes_supported: &["centralized-continuity"],
         },
 
         pic_token: PicToken {
             token_type: pic::continuity::TOKEN_TYPE_PIC,
             formats_supported: &[pic::continuity::FORMAT_PIC_TOKEN_JWT],
-            signing_alg_values_supported: &["EdDSA"],
+            signing_alg_values_supported: signing,
         },
     })
 }

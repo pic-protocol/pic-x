@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use pic_x_core::{KeyManager, KeyState};
-use pic_x_std::keys::{Clock, DirectoryKeyManager, KeyPolicy};
+use pic_x_std::keys::{Clock, DirectoryKeyManager, KeyPolicy, RingAlgorithm};
 
 /// The instant every clock in one test reads, so the test can move it.
 #[derive(Default)]
@@ -433,5 +433,88 @@ fn test_two_deployments_never_produce_the_same_key() {
         first.active_key_id().expect("a key"),
         second.active_key_id().expect("a key"),
         "two rings produced the same key, which means the key is not random"
+    );
+}
+
+/// A ring that signs with ES256 must produce signatures a verifier can check against the key set
+/// it publishes — the point of offering the algorithm is hardware custody, and hardware is no use
+/// if the published key does not match what signed.
+#[test]
+fn a_p256_ring_signs_and_publishes_a_matching_key() {
+    use base64::Engine;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+
+    let keys = DirectoryKeyManager::with_algorithm(
+        ring("p256-ring"),
+        KeyPolicy {
+            publish_ahead: Duration::from_secs(0),
+            ..policy()
+        },
+        RingAlgorithm::Es256,
+    );
+    keys.maintain().expect("the ring is created");
+
+    let signature = keys.sign(b"payload to sign").expect("the ring signs");
+    assert_eq!(signature.algorithm(), "ES256");
+
+    let published = keys.public_keys().expect("the key set is published");
+    let jwk = published
+        .iter()
+        .find(|jwk| jwk.kid == signature.key_id().as_str())
+        .expect("the signing key is published");
+    assert_eq!(jwk.kty, "EC");
+    assert_eq!(jwk.crv.as_deref(), Some("P-256"));
+    assert_eq!(jwk.alg, "ES256");
+
+    // Rebuild the SEC1 point from the published coordinates and verify what the ring signed.
+    let x = URL_SAFE_NO_PAD.decode(&jwk.x).expect("x decodes");
+    let y = URL_SAFE_NO_PAD
+        .decode(jwk.y.as_deref().expect("an EC key publishes y"))
+        .expect("y decodes");
+    let mut point = vec![0x04];
+    point.extend_from_slice(&x);
+    point.extend_from_slice(&y);
+
+    ring::signature::UnparsedPublicKey::new(&ring::signature::ECDSA_P256_SHA256_FIXED, &point)
+        .verify(b"payload to sign", signature.bytes())
+        .expect("the published key verifies the signature it signed");
+}
+
+/// The default stays Edwards, and a ring file written before algorithms were a choice still loads.
+#[test]
+fn the_default_ring_is_edwards_and_older_rings_still_load() {
+    let directory = ring("edwards-default");
+    let keys = DirectoryKeyManager::new(
+        directory.clone(),
+        KeyPolicy {
+            publish_ahead: Duration::from_secs(0),
+            ..policy()
+        },
+    );
+    keys.maintain().expect("the ring is created");
+    assert_eq!(
+        keys.sign(b"payload").expect("it signs").algorithm(),
+        "EdDSA"
+    );
+
+    // Strip the algorithm the way a file from an earlier build looks.
+    let ring_file = directory.join("ring.json");
+    let text = fs::read_to_string(&ring_file).expect("the ring file reads");
+    fs::write(&ring_file, text.replace(r#""algorithm":"EdDSA","#, ""))
+        .expect("the ring file is rewritten");
+
+    let reopened = DirectoryKeyManager::new(
+        directory,
+        KeyPolicy {
+            publish_ahead: Duration::from_secs(0),
+            ..policy()
+        },
+    );
+    assert_eq!(
+        reopened
+            .sign(b"payload")
+            .expect("it still signs")
+            .algorithm(),
+        "EdDSA"
     );
 }

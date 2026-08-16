@@ -244,7 +244,7 @@ impl TokenEndpoint {
                 "the selected realm has no token-signing key ring",
             )
         })?;
-        let signer = RealmTokenSigner::new(keys)?;
+        let signer = RealmTokenSigner::new(keys, self.realm.token_signing_algorithm())?;
         let now = unix_now()?;
         // The realm states the default; the proposal may ask for less, never more. Authority that
         // outlived what the deployment allows would be a lifetime chosen by the caller.
@@ -310,7 +310,8 @@ impl TokenEndpoint {
                 "the selected realm has no token-signing key ring",
             )
         })?;
-        let signer = RealmTokenSigner::new(Arc::clone(&keys))?;
+        let signer =
+            RealmTokenSigner::new(Arc::clone(&keys), self.realm.token_signing_algorithm())?;
 
         let por = SdJwtPorValidator {
             attesters: self.realm.trusted_attesters(),
@@ -1180,10 +1181,22 @@ fn new_lineage_id() -> Result<String, ExchangeError> {
 struct RealmTokenSigner {
     keys: Arc<dyn KeyManager>,
     kid: String,
+    /// What the realm is configured to sign with; the ring must agree.
+    algorithm: SigningAlgorithm,
+    jose: String,
 }
 
 impl RealmTokenSigner {
-    fn new(keys: Arc<dyn KeyManager>) -> Result<Self, ExchangeError> {
+    fn new(keys: Arc<dyn KeyManager>, jose: &str) -> Result<Self, ExchangeError> {
+        let algorithm = match jose {
+            "EdDSA" => SigningAlgorithm::EdDSA,
+            "ES256" => SigningAlgorithm::ES256,
+            other => {
+                return Err(ExchangeError::server_error(format!(
+                    "the realm is configured to sign with `{other}`, which this build cannot produce"
+                )));
+            }
+        };
         let kid = keys
             .active_key_id()
             .map_err(|error| {
@@ -1192,7 +1205,13 @@ impl RealmTokenSigner {
                 ))
             })?
             .to_string();
-        Ok(Self { keys, kid })
+
+        Ok(Self {
+            keys,
+            kid,
+            algorithm,
+            jose: jose.to_owned(),
+        })
     }
 }
 
@@ -1202,11 +1221,11 @@ impl ArtifactSigner for RealmTokenSigner {
     }
 
     fn cose_algorithm(&self) -> SigningAlgorithm {
-        SigningAlgorithm::EdDSA
+        self.algorithm
     }
 
     fn jws_algorithm(&self) -> &str {
-        "EdDSA"
+        &self.jose
     }
 
     fn sign(&self, data: &[u8]) -> Result<Vec<u8>, CoseError> {

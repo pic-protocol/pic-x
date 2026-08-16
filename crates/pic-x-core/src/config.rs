@@ -621,7 +621,21 @@ impl Config {
             ),
         };
 
+        // Only the algorithms this build can actually sign with are accepted, and the check happens
+        // at startup: a realm that names one it cannot produce would otherwise fail at the first
+        // token it is asked for.
+        let token_signing_algorithm = match input.token_signing_algorithm.as_deref() {
+            None => "EdDSA".to_owned(),
+            Some("EdDSA") => "EdDSA".to_owned(),
+            Some("ES256") => "ES256".to_owned(),
+            Some(other) => bail!(
+                "the realm `{name}` names the signing algorithm `{other}`, which this build cannot \
+produce: use `EdDSA` or `ES256`"
+            ),
+        };
+
         Ok(RealmConfig {
+            token_signing_algorithm,
             mount_path,
             issuer,
             listed,

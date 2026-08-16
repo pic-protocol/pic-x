@@ -685,3 +685,33 @@ async fn test_an_unknown_path_is_not_found() {
         StatusCode::NOT_FOUND
     );
 }
+
+#[tokio::test]
+async fn a_realm_publishes_the_algorithm_it_actually_signs_with() {
+    // The discovery document is a projection of configuration, not a constant: a realm configured
+    // for ES256 says ES256 everywhere it says anything about signing.
+    let realms = Realms::new([
+        issuing_realm("acme", "https://acme.example.com").with_token_signing_algorithm("ES256")
+    ]);
+    let service = WellKnownService::new();
+    let (status, document) = ask_full(
+        &service,
+        &config_with(&[]),
+        &realms,
+        "/realms/acme/.well-known/pic-x-configuration",
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        !document.contains("EdDSA"),
+        "a realm signing with ES256 must not advertise EdDSA: {document}"
+    );
+    assert_eq!(
+        document
+            .matches(r#""signing_alg_values_supported":["ES256"]"#)
+            .count(),
+        4,
+        "every PIC capability block should name the realm algorithm: {document}"
+    );
+}
