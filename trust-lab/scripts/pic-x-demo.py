@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 import base64
+import hashlib
 import re
 import shlex
 import sys
@@ -89,6 +90,19 @@ TIMINGS: dict[str, float] = {}
 # OAuth-to-PIC initialization; each future advancement (PCA 0 -> PCA 1, ...) appends one entry and
 # the summary table grows with it.
 EXCHANGES: list[dict] = []
+DISCLOSED_CONTRACT_CLAIMS = {"corporation", "department"}
+WORKLOAD_CLAIMS = {
+    "corporation": "ACME",
+    "department": "sensitive-documents",
+    "workload_role": "pipeline-worker",
+    "service": "document-pipeline",
+    "clearance": "sensitive",
+    "reader_region": "eu-west-1",
+    "deployment_environment": "local-lab",
+    "build_id": "pic-x-demo",
+    "host_class": "container",
+    "internal_cluster": "compose-lab",
+}
 
 
 def record_exchange(
@@ -125,7 +139,7 @@ def main() -> int:
     print()
     interactive_panel(
         "Guide Mode",
-        "Each step shows the current object, the command that will use it, and the result.",
+        "Each step shows the real request, response, process command, or artifact at the point it moves.",
     )
     interactive_pause("check that the local lab services are reachable")
 
@@ -212,15 +226,6 @@ def main() -> int:
                 "This request validates the OAuth JWT, materializes PCA 0, and signs PIC Token JWT 0.",
             )
             print_json_block("continuity initialization proposal", proposal_json)
-            print_form_curl(
-                "PIC-X initial token exchange curl",
-                f"{PIC_X_URL}/realms/{PIC_X_REALM}/token",
-                initial_exchange_form(token, proposal_wire),
-                {
-                    "subject_token": "OAUTH_ACCESS_TOKEN",
-                    "continuity_proposal": "CONTINUITY_PROPOSAL",
-                },
-            )
             interactive_pause(
                 "call PIC-X and initialize the continuity lineage"
             )
@@ -313,7 +318,7 @@ def wait_for_json(name: str, url: str) -> dict:
 
     while True:
         try:
-            return get_json(url)
+            return get_json(url, name)
         except DemoError as error:
             last_error = str(error)
 
@@ -325,35 +330,23 @@ def wait_for_json(name: str, url: str) -> dict:
     raise DemoError(f"{name} did not answer at {url}: {last_error}")
 
 
-def get_json(url: str) -> dict:
+def get_json(url: str, label: str | None = None) -> dict:
     request = urllib.request.Request(url, headers={"Accept": "application/json"})
-    with open_url(request) as response:
-        body = response.read().decode("utf-8")
-
-    try:
-        value = json.loads(body)
-    except json.JSONDecodeError as error:
-        raise DemoError(f"{url} did not return JSON: {error}") from error
-
-    if not isinstance(value, dict):
-        raise DemoError(f"{url} returned JSON, but not an object")
-
-    return value
+    return request_json(label or url, request, response_mode="summary")
 
 
 def request_access_token() -> str:
     token_endpoint = (
         f"{KEYCLOAK_URL}/realms/{KEYCLOAK_REALM}/protocol/openid-connect/token"
     )
-    body = urllib.parse.urlencode(
-        {
-            "grant_type": "password",
-            "client_id": KEYCLOAK_CLIENT_ID,
-            "client_secret": KEYCLOAK_CLIENT_SECRET,
-            "username": KEYCLOAK_USERNAME,
-            "password": KEYCLOAK_PASSWORD,
-        }
-    ).encode("utf-8")
+    form = {
+        "grant_type": "password",
+        "client_id": KEYCLOAK_CLIENT_ID,
+        "client_secret": KEYCLOAK_CLIENT_SECRET,
+        "username": KEYCLOAK_USERNAME,
+        "password": KEYCLOAK_PASSWORD,
+    }
+    body = urllib.parse.urlencode(form).encode("utf-8")
     request = urllib.request.Request(
         token_endpoint,
         data=body,
@@ -364,8 +357,11 @@ def request_access_token() -> str:
         method="POST",
     )
 
-    with open_url(request) as response:
-        payload = json.loads(response.read().decode("utf-8"))
+    payload = request_json(
+        "Keycloak password grant",
+        request,
+        http_body("application/x-www-form-urlencoded", body, {"form": form}),
+    )
 
     token = payload.get("access_token")
     if not isinstance(token, str) or not token:
@@ -376,9 +372,8 @@ def request_access_token() -> str:
 
 def exchange_initial_token(access_token: str, proposal_wire: str) -> dict:
     token_endpoint = f"{PIC_X_URL}/realms/{PIC_X_REALM}/token"
-    body = urllib.parse.urlencode(initial_exchange_form(access_token, proposal_wire)).encode(
-        "utf-8"
-    )
+    form = initial_exchange_form(access_token, proposal_wire)
+    body = urllib.parse.urlencode(form).encode("utf-8")
     request = urllib.request.Request(
         token_endpoint,
         data=body,
@@ -389,12 +384,11 @@ def exchange_initial_token(access_token: str, proposal_wire: str) -> dict:
         method="POST",
     )
 
-    with open_url(request) as response:
-        payload = json.loads(response.read().decode("utf-8"))
-
-    if not isinstance(payload, dict):
-        raise DemoError("PIC-X token endpoint did not return a JSON object")
-    return payload
+    return request_json(
+        "PIC-X initial token exchange",
+        request,
+        http_body("application/x-www-form-urlencoded", body, {"form": form}),
+    )
 
 
 def initial_exchange_form(access_token: str, proposal_wire: str) -> dict:
@@ -489,6 +483,171 @@ def print_por_artifact(artifact: dict) -> None:
     )
 
 
+def http_body(media_type: str, raw: bytes, decoded: dict) -> dict:
+    body = {
+        "media_type": media_type,
+        "bytes": len(raw),
+        "sha256": hashlib.sha256(raw).hexdigest(),
+        "wire": raw.decode("utf-8", errors="replace"),
+    }
+    body.update(decoded)
+    return body
+
+
+def request_json(
+    label: str,
+    request: urllib.request.Request,
+    request_body: dict | None = None,
+    response_mode: str = "full",
+) -> dict:
+    print_http_request(label, request, request_body)
+    with open_url(request) as response:
+        body_text = response.read().decode("utf-8")
+        print_http_response(label, response, body_text, response_mode)
+
+    try:
+        value = json.loads(body_text)
+    except json.JSONDecodeError as error:
+        raise DemoError(f"{request.full_url} did not return JSON: {error}") from error
+
+    if not isinstance(value, dict):
+        raise DemoError(f"{request.full_url} returned JSON, but not an object")
+
+    return value
+
+
+def print_http_request(
+    label: str,
+    request: urllib.request.Request,
+    request_body: dict | None,
+) -> None:
+    if not INTERACTIVE:
+        return
+    interactive_panel(
+        f"HTTP request: {label}",
+        "Captured immediately before the client opens the connection.",
+    )
+    packet = {
+        "method": request.get_method(),
+        "url": request.full_url,
+        "headers": {key: value for key, value in request.header_items()},
+    }
+    if request_body is not None:
+        packet["body"] = request_body
+    print_json_block("request packet", packet)
+
+
+def print_http_response(label: str, response, body_text: str, response_mode: str) -> None:
+    if not INTERACTIVE:
+        return
+    interactive_panel(
+        f"HTTP response: {label}",
+        "Captured after the server answered and before the demo parses the body.",
+    )
+    packet = {
+        "url": response.geturl(),
+        "status": response.status,
+        "reason": response.reason,
+        "headers": {key: value for key, value in response.headers.items()},
+        "body_bytes": len(body_text.encode("utf-8")),
+        "body_sha256": hashlib.sha256(body_text.encode("utf-8")).hexdigest(),
+    }
+    try:
+        value = json.loads(body_text)
+    except json.JSONDecodeError:
+        if response_mode == "summary":
+            packet["text_preview"] = body_text[:800]
+            packet["text_truncated"] = len(body_text) > 800
+        else:
+            packet["text"] = body_text
+    else:
+        if response_mode == "summary":
+            packet["json_summary"] = json_summary(value)
+        else:
+            packet["json"] = value
+    print_json_block("response packet", packet)
+
+
+def json_summary(value) -> dict:
+    if isinstance(value, dict):
+        keys = sorted(str(key) for key in value.keys())
+        selected_keys = [
+            "issuer",
+            "jwks_uri",
+            "token_endpoint",
+            "credentials_endpoint",
+            "presentation_endpoint",
+            "profile",
+            "formats_supported",
+            "proof_types_supported",
+            "product",
+            "version",
+            "service",
+            "status",
+            "message",
+        ]
+        selected = {key: value[key] for key in selected_keys if key in value}
+        return {
+            "type": "object",
+            "key_count": len(keys),
+            "keys": keys[:40],
+            "keys_truncated": len(keys) > 40,
+            "selected": selected,
+        }
+    if isinstance(value, list):
+        return {
+            "type": "array",
+            "items": len(value),
+            "first_item": value[0] if value else None,
+        }
+    return {"type": type(value).__name__, "value": value}
+
+
+def print_process_request(label: str, command: list[str]) -> None:
+    if not INTERACTIVE:
+        return
+    interactive_panel(
+        f"Process command: {label}",
+        "Captured before the local workload helper starts.",
+    )
+    print_json_block(
+        "process command",
+        {
+            "cwd": str(Path.cwd()),
+            "argv": command,
+            "shell": " ".join(shlex.quote(part) for part in command),
+        },
+    )
+
+
+def print_process_response(label: str, exit_code: int, stdout: str, stderr: str) -> None:
+    if not INTERACTIVE:
+        return
+    interactive_panel(
+        f"Process response: {label}",
+        "Captured after the local workload helper exits.",
+    )
+    print_json_block(
+        "process response",
+        {
+            "exit_code": exit_code,
+            "stdout_bytes": len(stdout.encode("utf-8")),
+            "stderr_bytes": len(stderr.encode("utf-8")),
+            "stderr": stderr,
+        },
+    )
+
+
+def print_process_json(label: str, value) -> None:
+    if not INTERACTIVE:
+        return
+    interactive_panel(
+        f"Process output JSON: {label}",
+        "This is the parsed stdout that the next step consumes.",
+    )
+    print_json_block("process output", value)
+
+
 def open_url(request: urllib.request.Request):
     try:
         return urllib.request.urlopen(request, timeout=3)
@@ -571,6 +730,7 @@ def workload(*arguments: str) -> dict:
         "--",
         *arguments,
     ]
+    print_process_request("workload helper", command)
     try:
         finished = subprocess.run(command, capture_output=True, text=True, timeout=300)
     except FileNotFoundError as error:
@@ -578,36 +738,67 @@ def workload(*arguments: str) -> dict:
     except subprocess.TimeoutExpired as error:
         raise DemoError("the workload helper timed out") from error
 
+    print_process_response("workload helper", finished.returncode, finished.stdout, finished.stderr)
+
     if finished.returncode != 0:
         raise DemoError(f"the workload helper failed: {finished.stderr.strip()}")
 
     try:
-        return json.loads(finished.stdout)
+        result = json.loads(finished.stdout)
     except json.JSONDecodeError as error:
         raise DemoError(f"the workload helper did not print JSON: {error}") from error
+    print_process_json("workload helper", result)
+    return result
 
 
-def request_credential(jwk: dict, claims: dict) -> str:
+def request_credential(jwk: dict, claims: dict, selected_claims: set[str]) -> dict:
     """Asks the lab attester for a Proof of Relationship bound to this workload's key."""
-    body = json.dumps({"cnf_jwk": jwk, "claims": claims, "validity_seconds": 900}).encode()
+    payload = {"cnf_jwk": jwk, "claims": claims, "validity_seconds": 900}
+    body = json.dumps(payload).encode()
     request = urllib.request.Request(
         f"{TRUST_LAB_URL}/attesters/{TRUST_LAB_ATTESTER_ID}/credentials",
         data=body,
         headers={"Accept": "application/json", "Content-Type": "application/json"},
         method="POST",
     )
-    with open_url(request) as response:
-        credential = json.loads(response.read().decode("utf-8"))
+    credential = request_json(
+        "Trust Lab credential issuance",
+        request,
+        http_body("application/json", body, {"json": payload}),
+    )
 
     issued = credential.get("disclosures", [])
     if not issued:
         raise DemoError("the attester issued a credential with no disclosures")
 
-    # The workload is the Holder: it presents only what this hop needs. Here that is both claims,
-    # which is what the walkthrough's execution contract is about.
-    selected = [item["disclosure"] for item in issued]
+    selected = [
+        item
+        for item in issued
+        if isinstance(item, dict) and item.get("claim") in selected_claims
+    ]
+    if len(selected) != len(selected_claims):
+        found = {str(item.get("claim")) for item in selected}
+        missing = ", ".join(sorted(selected_claims - found))
+        raise DemoError(f"the attester did not issue required disclosure(s): {missing}")
 
-    return credential["issuer_signed_jwt"] + "".join("~" + d for d in selected) + "~"
+    selected_names = [str(item["claim"]) for item in selected]
+    hidden_names = [
+        str(item["claim"])
+        for item in issued
+        if isinstance(item, dict) and item.get("claim") not in selected_claims
+    ]
+    presentation = (
+        credential["issuer_signed_jwt"]
+        + "".join("~" + item["disclosure"] for item in selected)
+        + "~"
+    )
+
+    return {
+        "presentation": presentation,
+        "issued_claims": len(issued),
+        "selected_claims": selected_names,
+        "hidden_claims": hidden_names,
+    }
 
 
 def pca_of(pic_token: str) -> str:
@@ -627,7 +818,8 @@ def pca_of(pic_token: str) -> str:
 def advance_once(pic_token: str, hop: int, remove_invariant: int, claims: dict) -> str:
     """One workload hop: get a key, get a PoR for it, sign a candidate, have PIC-X settle it."""
     keys = workload("keygen")
-    presentation = request_credential(keys["jwk"], claims)
+    credential = request_credential(keys["jwk"], claims, DISCLOSED_CONTRACT_CLAIMS)
+    presentation = credential["presentation"]
     candidate = workload(
         "candidate",
         "--pca",
@@ -652,12 +844,6 @@ def advance_once(pic_token: str, hop: int, remove_invariant: int, claims: dict) 
             "PIC-X validates PoR, signatures, transition position, challenge continuity, "
             "non-expansion, and execution-contract conformance.",
         )
-        print_form_curl(
-            f"PIC-X advancement {hop - 1} -> {hop} curl",
-            f"{PIC_X_URL}/realms/{PIC_X_REALM}/token",
-            advancement_exchange_form(candidate["token"]),
-            {"subject_token": "CANDIDATE_PIC_TOKEN"},
-        )
         interactive_pause(f"send the candidate and materialize PCA {hop}")
 
     label = f"PIC-X advancement {hop - 1} -> {hop}"
@@ -666,6 +852,7 @@ def advance_once(pic_token: str, hop: int, remove_invariant: int, claims: dict) 
         lambda: post_form(
             f"{PIC_X_URL}/realms/{PIC_X_REALM}/token",
             advancement_exchange_form(candidate["token"]),
+            label,
         ),
     )
     next_token = settled.get("access_token")
@@ -682,7 +869,12 @@ def advance_once(pic_token: str, hop: int, remove_invariant: int, claims: dict) 
     )
 
     print_kv(f"hop {hop}", f"worker removes invariant index {remove_invariant}")
-    print_kv("  PoR presentation", f"{len(presentation)} bytes, issued for this workload key")
+    print_kv(
+        "  PoR presentation",
+        f"{len(presentation)} bytes, issued {credential['issued_claims']} SD claims, "
+        f"disclosed {', '.join(credential['selected_claims'])}, "
+        f"hidden {len(credential['hidden_claims'])}",
+    )
     print_kv(
         "  candidate",
         f"{len(candidate['token'])} bytes"
@@ -704,7 +896,7 @@ def advance_once(pic_token: str, hop: int, remove_invariant: int, claims: dict) 
 
 def run_advancements(pic_token: str) -> list:
     """The walkthrough's two hops: read then save, each consuming the authority it used."""
-    claims = {"corporation": "ACME", "department": "sensitive-documents"}
+    claims = WORKLOAD_CLAIMS
     tokens = []
 
     # PCA 0 holds { documents:read:document-42, storage:save }. Worker 1 reads and drops the read
@@ -765,18 +957,22 @@ def print_checkpoint_focus(label: str, pic_token: str) -> None:
     print_json_block(f"{label} execution_contract", jsonable(execution_contract))
 
 
-def post_form(url: str, form: dict) -> dict:
+def post_form(url: str, form: dict, label: str | None = None) -> dict:
+    body = urllib.parse.urlencode(form).encode("utf-8")
     request = urllib.request.Request(
         url,
-        data=urllib.parse.urlencode(form).encode("utf-8"),
+        data=body,
         headers={
             "Accept": "application/json",
             "Content-Type": "application/x-www-form-urlencoded",
         },
         method="POST",
     )
-    with open_url(request) as response:
-        return json.loads(response.read().decode("utf-8"))
+    return request_json(
+        label or f"POST {url}",
+        request,
+        http_body("application/x-www-form-urlencoded", body, {"form": form}),
+    )
 
 
 def run_oauth_token_exchange(access_token: str) -> None:
@@ -799,18 +995,12 @@ def run_oauth_token_exchange(access_token: str) -> None:
             "Command: Keycloak OAuth Token Exchange",
             "This is only a timing comparison against the IdP's own RFC 8693 exchange.",
         )
-        print_form_curl(
-            "Keycloak OAuth token exchange curl",
-            endpoint,
-            form,
-            {"subject_token": "OAUTH_ACCESS_TOKEN"},
-        )
         interactive_pause("run the Keycloak OAuth token-exchange comparison")
 
     try:
         exchanged = timed(
             "Keycloak OAuth token exchange -> access token",
-            lambda: post_form(endpoint, form),
+            lambda: post_form(endpoint, form, "Keycloak OAuth token exchange"),
         )
     except DemoError as error:
         TIMINGS.pop("Keycloak OAuth token exchange -> access token", None)
@@ -1267,7 +1457,7 @@ def print_flow_map() -> None:
         f"{flow_cell('Trust Lab public API', 22, 'bold')} |"
     )
     print(f"                                          | {flow_cell('localhost:17080', 22)} |")
-    print(f"                                          | {flow_cell('PoR SD-JWT fixture', 22)} |")
+    print(f"                                          | {flow_cell('SD-JWT PoR issuer', 22)} |")
     print("                                          +------------------------+")
     print()
     print(f"  {paint('next target', 'yellow')}")
@@ -1318,41 +1508,6 @@ def interactive_pause(next_action: str) -> None:
     print()
 
 
-def print_form_curl(
-    title: str, url: str, form: dict, variables: dict[str, str] | None = None
-) -> None:
-    variables = variables or {}
-    print(f"    {paint(title + ':', 'bold')}")
-    print(f"    {paint('Form parameters:', 'cyan')}")
-    for key, value in form.items():
-        value_text = str(value)
-        if key in variables:
-            rendered = f"${variables[key]} ({len(value_text)} chars)"
-        else:
-            rendered = value_text
-        print(f"      {key:<24} {rendered}")
-
-    if variables:
-        print(f"    {paint('Shell placeholders:', 'cyan')}")
-        for key, variable in variables.items():
-            print(f"      {variable}=<value printed above for {key}>")
-
-    lines = [
-        f"curl -fsS -X POST {shlex.quote(url)}",
-        "-H 'Accept: application/json'",
-        "-H 'Content-Type: application/x-www-form-urlencoded'",
-    ]
-    for key, value in form.items():
-        if key in variables:
-            lines.append(f'--data-urlencode "{key}=${variables[key]}"')
-        else:
-            lines.append(f"--data-urlencode {shlex.quote(f'{key}={value}')}")
-
-    for index, line in enumerate(lines):
-        suffix = " \\" if index < len(lines) - 1 else ""
-        print(f"      {line}{suffix}")
-
-
 def print_token(label: str, token: str) -> None:
     if PRINT_VALUES:
         print_kv(label, paint(token, "cyan"))
@@ -1367,6 +1522,70 @@ def print_jwt_details(label: str, token: str) -> None:
     header, payload = decode_jwt(token)
     print_json_block(f"{label} header", header)
     print_json_block(f"{label} payload", payload)
+
+
+def print_sd_jwt_presentation(label: str, presentation: str) -> None:
+    if not PRINT_VALUES:
+        return
+    segments = presentation.split("~")
+    issuer_signed = segments[0]
+    disclosures = [segment for segment in segments[1:] if segment]
+    header, payload = decode_jwt(issuer_signed)
+    committed = set(payload.get("_sd", []))
+
+    decoded_disclosures = []
+    for disclosure in disclosures:
+        computed = b64url(hashlib.sha256(disclosure.encode("utf-8")).digest())
+        try:
+            parts = json.loads(b64url_decode(disclosure).decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError) as error:
+            decoded_disclosures.append(
+                {
+                    "error": str(error),
+                    "digest": computed,
+                    "digest_committed": computed in committed,
+                }
+            )
+            continue
+
+        if not isinstance(parts, list) or len(parts) != 3:
+            decoded_disclosures.append(
+                {
+                    "error": "not a [salt, name, value] disclosure",
+                    "digest": computed,
+                    "digest_committed": computed in committed,
+                }
+            )
+            continue
+
+        salt, name, value = parts
+        salt_bytes = None
+        if isinstance(salt, str):
+            try:
+                salt_bytes = len(b64url_decode(salt))
+            except Exception:
+                salt_bytes = None
+        decoded_disclosures.append(
+            {
+                "claim": name,
+                "value": value,
+                "salt_bytes": salt_bytes,
+                "digest": computed,
+                "digest_committed": computed in committed,
+            }
+        )
+
+    print_json_block(f"{label} issuer-signed header", header)
+    print_json_block(f"{label} issuer-signed payload", payload)
+    print_json_block(
+        f"{label} disclosure summary",
+        {
+            "committed_hashes_in__sd": len(committed),
+            "presented_disclosures": len(disclosures),
+            "withheld_disclosures": max(len(committed) - len(disclosures), 0),
+            "decoded_disclosures": decoded_disclosures,
+        },
+    )
 
 
 def print_pic_token_details(label: str, token: str) -> None:
@@ -1404,10 +1623,19 @@ def print_pic_token_details(label: str, token: str) -> None:
             transition_parts, _ = cose_sign1_parts(transition_bytes)
             transition_payload = transition_parts[2][0]
             transition_fields, _ = cbor_map_fields(transition_payload)
+            transition = {name: jsonable(value) for name, value, _ in transition_fields}
             print_json_block(
                 f"{label} PIC Transition payload {index}",
-                {name: jsonable(value) for name, value, _ in transition_fields},
+                transition,
             )
+            por = field_value(transition_fields, "proof_of_relationship")
+            if isinstance(por, dict) and por.get("type") == "sd-jwt":
+                evidence = por.get("evidence")
+                if isinstance(evidence, bytes):
+                    print_sd_jwt_presentation(
+                        f"{label} SD-JWT PoR evidence {index}",
+                        evidence.decode("utf-8"),
+                    )
 
 
 def jsonable(value):

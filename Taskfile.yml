@@ -398,12 +398,12 @@ tasks:
       - '{{.PYTHON}} trust-lab/scripts/pic-x-demo.py --print-tokens'
 
   lab-demo-interactive:
-    desc: Run the local lab walkthrough step by step with pauses and curl commands.
+    desc: Run the local lab walkthrough step by step with HTTP packet traces.
     silent: true
     summary: |
       Run the didactic lab walkthrough in guided mode. It pauses before each exchange, prints the
-      OAuth access token, PIC Token JWTs, Continuity/PCA payloads, execution contract, and the curl
-      commands used for the exchanges.
+      OAuth access token, PIC Token JWTs, Continuity/PCA payloads, execution contract, the real HTTP
+      requests and responses, and the local workload process outputs used by the exchanges.
 
       Start the lab first with `task lab-up`.
 
