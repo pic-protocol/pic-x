@@ -157,6 +157,10 @@ impl WellKnownService {
                             token_endpoint: realm.url("/token"),
                             jwks_uri: realm.url("/keys"),
                             signing_algorithm: realm.token_signing_algorithm().to_owned(),
+                            workload_algorithms: crate::por::WORKLOAD_COSE_ALGORITHMS
+                                .iter()
+                                .map(|algorithm| (*algorithm).to_owned())
+                                .collect(),
                         }),
                 )
                 .merge(

@@ -103,6 +103,8 @@ pub(crate) struct RealmMeta {
     /// What this realm signs with. Published rather than assumed, so the document and the
     /// behaviour cannot drift apart.
     pub(crate) signing_algorithm: String,
+    /// What this realm accepts on workload-signed artifacts.
+    pub(crate) workload_algorithms: Vec<String>,
 }
 
 /// The attestation issuers a realm accepts for Profile 0.2 Proof-of-Relationship evidence.
@@ -354,7 +356,26 @@ pub(crate) async fn server_configuration(State(server): State<Server>) -> impl I
 /// quiet — a client would integrate against a 404, and a deployment could believe it can revoke.
 /// Both fields return when there is something behind them.
 pub(crate) async fn realm_configuration(State(realm): State<RealmMeta>) -> impl IntoResponse {
-    let signing = vec![realm.signing_algorithm.clone()];
+    // Each capability block names the algorithms of *its* signer, and the signers differ:
+    //
+    //   * a PIC PCA COSE is only ever realm-signed;
+    //   * a PIC Continuity Transition COSE is only ever workload-signed;
+    //   * a Continuity COSE and a PIC Token JWT come in both roles — settled from the realm,
+    //     candidate from the workload — so both sets apply.
+    //
+    // Publishing the realm's algorithm everywhere would tell a workload to sign a Transition with a
+    // key it does not have, and hide the algorithms this realm would actually accept.
+    let realm_signed = vec![realm.signing_algorithm.clone()];
+    let workload_signed = realm.workload_algorithms.clone();
+    let either = {
+        let mut both = realm_signed.clone();
+        for algorithm in &workload_signed {
+            if !both.contains(algorithm) {
+                both.push(algorithm.clone());
+            }
+        }
+        both
+    };
     // A typed document rather than a `json!` value: `json!` builds an ordered map and serialises its
     // members alphabetically, which scrambles a document whose order is meaningful. A struct
     // serialises its fields in the order they are declared, so this is the shape a reader sees.
@@ -383,7 +404,7 @@ pub(crate) async fn realm_configuration(State(realm): State<RealmMeta>) -> impl 
 
         pic_context_of_authority: PicContextOfAuthority {
             formats_supported: &[pic::continuity::FORMAT_PIC_PCA_COSE],
-            signing_alg_values_supported: signing.clone(),
+            signing_alg_values_supported: realm_signed,
         },
 
         pic_continuity_proposals: PicContinuityProposals {
@@ -393,19 +414,19 @@ pub(crate) async fn realm_configuration(State(realm): State<RealmMeta>) -> impl 
 
         pic_continuity_transition: PicContinuityTransition {
             formats_supported: &[pic::continuity::FORMAT_PIC_TRANSITION_COSE],
-            signing_alg_values_supported: signing.clone(),
+            signing_alg_values_supported: workload_signed,
         },
 
         pic_continuity: PicContinuity {
             formats_supported: &[pic::continuity::FORMAT_PIC_CONTINUITY_COSE],
-            signing_alg_values_supported: signing.clone(),
+            signing_alg_values_supported: either.clone(),
             continuity_modes_supported: &["centralized-continuity"],
         },
 
         pic_token: PicToken {
             token_type: pic::continuity::TOKEN_TYPE_PIC,
             formats_supported: &[pic::continuity::FORMAT_PIC_TOKEN_JWT],
-            signing_alg_values_supported: signing,
+            signing_alg_values_supported: either,
         },
     })
 }

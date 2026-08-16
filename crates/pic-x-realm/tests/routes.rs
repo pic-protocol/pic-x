@@ -687,9 +687,9 @@ async fn test_an_unknown_path_is_not_found() {
 }
 
 #[tokio::test]
-async fn a_realm_publishes_the_algorithm_it_actually_signs_with() {
-    // The discovery document is a projection of configuration, not a constant: a realm configured
-    // for ES256 says ES256 everywhere it says anything about signing.
+async fn a_realm_publishes_the_algorithms_of_each_signer() {
+    // The discovery document is a projection of configuration, not a constant — and each capability
+    // block names the algorithms of *its own* signer, which is not always the realm.
     let realms = Realms::new([
         issuing_realm("acme", "https://acme.example.com").with_token_signing_algorithm("ES256")
     ]);
@@ -703,15 +703,28 @@ async fn a_realm_publishes_the_algorithm_it_actually_signs_with() {
     .await;
 
     assert_eq!(status, StatusCode::OK);
-    assert!(
-        !document.contains("EdDSA"),
-        "a realm signing with ES256 must not advertise EdDSA: {document}"
-    );
+    let published: serde_json::Value =
+        serde_json::from_str(&document).expect("the discovery document is JSON");
+
+    // A PCA is only ever realm-signed, so it names the realm's algorithm alone.
     assert_eq!(
-        document
-            .matches(r#""signing_alg_values_supported":["ES256"]"#)
-            .count(),
-        4,
-        "every PIC capability block should name the realm algorithm: {document}"
+        published["pic_context_of_authority"]["signing_alg_values_supported"],
+        serde_json::json!(["ES256"]),
+        "{document}"
     );
+    // A Transition is only ever workload-signed: naming the realm's algorithm here would tell a
+    // workload to sign with a key it does not have, and would hide what this realm accepts.
+    assert_eq!(
+        published["pic_continuity_transition"]["signing_alg_values_supported"],
+        serde_json::json!(["EdDSA", "ES256"]),
+        "{document}"
+    );
+    // A Continuity COSE and a PIC Token come in both roles, so both sets apply.
+    for both in ["pic_continuity", "pic_token"] {
+        assert_eq!(
+            published[both]["signing_alg_values_supported"],
+            serde_json::json!(["ES256", "EdDSA"]),
+            "{both}: {document}"
+        );
+    }
 }
