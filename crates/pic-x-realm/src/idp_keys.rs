@@ -6,8 +6,10 @@
 //! and an identity provider that rotates its signing key needs no action here.
 //!
 //! Two properties match the attester cache, for the same reasons: **reads never fetch**, because
-//! verification happens on the request path, and **a stale set beats no set**, because an identity
-//! provider's outage must not turn every access token into a forgery.
+//! verification happens on the request path, and **a stale set beats a failed refresh**, because an
+//! identity provider's outage must not turn every access token into a forgery. A successful refresh
+//! with an empty JWKS is different: it is the provider saying no keys are currently valid, and it
+//! replaces whatever had been cached before.
 //!
 //! What differs is the consequence of having no set at all. Here an exchange is **refused**: a
 //! token whose signature was never checked is not something a realm may derive authority from.
@@ -174,6 +176,7 @@ mod tests {
         issuer: String,
         asked: Mutex<Vec<String>>,
         broken: Mutex<bool>,
+        key_set: Mutex<String>,
     }
 
     impl StubIdp {
@@ -182,7 +185,12 @@ mod tests {
                 issuer: issuer.to_owned(),
                 asked: Mutex::new(Vec::new()),
                 broken: Mutex::new(false),
+                key_set: Mutex::new(KEY_SET.to_owned()),
             })
+        }
+
+        fn serve_key_set(&self, body: &str) {
+            *self.key_set.lock().unwrap() = body.to_owned();
         }
     }
 
@@ -202,7 +210,7 @@ mod tests {
                     .into_bytes());
                 }
 
-                Ok(KEY_SET.as_bytes().to_vec())
+                Ok(self.key_set.lock().unwrap().as_bytes().to_vec())
             })
         }
     }
@@ -289,5 +297,18 @@ mod tests {
         cache.refresh(idp.as_ref()).await;
 
         assert_eq!(cache.keys_for("corporate-oauth-to-pic").unwrap(), first);
+    }
+
+    #[tokio::test]
+    async fn a_published_empty_key_set_clears_previously_accepted_keys() {
+        let idp = StubIdp::new("https://idp.example.com");
+        let cache = IdpKeyCache::new(vec![profile("https://idp.example.com")]);
+        cache.refresh(idp.as_ref()).await;
+        assert_eq!(cache.keys_for("corporate-oauth-to-pic").unwrap().len(), 1);
+
+        idp.serve_key_set(r#"{"keys":[]}"#);
+        cache.refresh(idp.as_ref()).await;
+
+        assert!(cache.keys_for("corporate-oauth-to-pic").unwrap().is_empty());
     }
 }

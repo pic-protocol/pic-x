@@ -16,12 +16,14 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use pic::continuity::artifacts::PicPcaPayload;
+use pic::continuity::artifacts::token::decode_token;
+use pic::continuity::artifacts::{PicContinuityCose, PicPcaPayload, PicTransitionCose};
 use pic::continuity::authority::attenuation::ReferenceProfile;
 use pic::continuity::authority::{
     AuthorityValue, IndexedAuthorityMap, Invariant, LogicalAuthority,
 };
 use pic::continuity::cose::{CoseError, SigningAlgorithm};
+use pic::continuity::por::PorValidator;
 use pic::continuity::proposal::InitialContinuityProposal;
 use pic::continuity::trust::{ArtifactSigner, ArtifactVerifier};
 use pic::continuity::verifier::{SettlementAuthority, SettlementContext, issue_settled};
@@ -42,8 +44,7 @@ use crate::attester_keys::AttesterKeyCache;
 use crate::checkpoints::{NoRevocationConfigured, RealmSignedCheckpoints};
 use crate::conformance::ContractConformance;
 use crate::idp_keys::IdpKeyCache;
-use crate::por::SdJwtPorValidator;
-use crate::por::public_key_from_jwk;
+use crate::por::{SdJwtPorValidator, expected_algorithms_for_jwk, public_key_from_jwk};
 
 const GRANT_TOKEN_EXCHANGE: &str = "urn:ietf:params:oauth:grant-type:token-exchange";
 const TOKEN_TYPE_N_A: &str = "N_A";
@@ -302,6 +303,7 @@ impl TokenEndpoint {
             now,
             accepted: Default::default(),
         };
+        preflight_candidate_key_metadata(candidate_token, &por)?;
         // A checkpoint is this realm's when this realm's signature verifies over it — no store,
         // so a restart or a second replica changes nothing.
         let trusted = RealmSignedCheckpoints {
@@ -531,6 +533,137 @@ impl TokenEndpoint {
                     "the exchange was not recorded, so no token was issued: {error}"
                 ))
             })
+    }
+}
+
+fn preflight_candidate_key_metadata(
+    candidate_token: &str,
+    por: &SdJwtPorValidator<'_>,
+) -> Result<(), ExchangeError> {
+    let decoded = decode_token(candidate_token).map_err(|error| {
+        ExchangeError::invalid_grant(format!(
+            "the candidate PIC Token JWT cannot be decoded: {error}"
+        ))
+    })?;
+    let continuity_bytes = decoded.claims.root_bytes().map_err(|error| {
+        ExchangeError::invalid_grant(format!(
+            "the candidate PIC Token JWT root cannot be decoded: {error}"
+        ))
+    })?;
+    let continuity_cose = PicContinuityCose::from_bytes(&continuity_bytes).map_err(|error| {
+        ExchangeError::invalid_grant(format!(
+            "the candidate Continuity COSE cannot be decoded: {error}"
+        ))
+    })?;
+    let continuity = continuity_cose.payload_unverified().map_err(|error| {
+        ExchangeError::invalid_grant(format!(
+            "the candidate Continuity COSE payload cannot be decoded: {error}"
+        ))
+    })?;
+    let transition_bytes = continuity.candidate_transition().map_err(|error| {
+        ExchangeError::invalid_grant(format!(
+            "the candidate Continuity does not carry exactly one transition: {error}"
+        ))
+    })?;
+    let transition_cose = PicTransitionCose::from_bytes(transition_bytes).map_err(|error| {
+        ExchangeError::invalid_grant(format!(
+            "the candidate Transition COSE cannot be decoded: {error}"
+        ))
+    })?;
+    let transition = transition_cose.payload_unverified().map_err(|error| {
+        ExchangeError::invalid_grant(format!(
+            "the candidate Transition COSE payload cannot be decoded: {error}"
+        ))
+    })?;
+
+    if transition.proof_of_relationship.por_type != por.accepted_type() {
+        return Err(ExchangeError::invalid_grant(format!(
+            "proof_of_relationship.type must be `{}`",
+            por.accepted_type()
+        )));
+    }
+
+    let (_, processed) = por
+        .validate_evidence(&transition.proof_of_relationship)
+        .map_err(|error| {
+            ExchangeError::invalid_grant(format!("the Proof of Relationship was rejected: {error}"))
+        })?;
+    let jwk = processed
+        .claims
+        .get("cnf")
+        .and_then(|cnf| cnf.get("jwk"))
+        .ok_or_else(|| {
+            ExchangeError::invalid_grant(
+                "the accepted Proof of Relationship did not expose `cnf.jwk`",
+            )
+        })?;
+    let expected = expected_algorithms_for_jwk(jwk).map_err(|error| {
+        ExchangeError::invalid_grant(format!(
+            "the Proof of Relationship `cnf.jwk` is unusable: {error}"
+        ))
+    })?;
+
+    if decoded.alg != expected.jose {
+        return Err(ExchangeError::invalid_grant(format!(
+            "candidate PIC Token JWT algorithm `{}` does not match Proof of Relationship key \
+             algorithm `{}`",
+            decoded.alg, expected.jose
+        )));
+    }
+    let Some(cose_algorithm) = expected.cose else {
+        return Err(ExchangeError::invalid_grant(
+            "the Proof of Relationship workload key cannot verify PIC COSE signatures",
+        ));
+    };
+
+    require_cose_algorithm(
+        "candidate Continuity",
+        continuity_cose.algorithm(),
+        cose_algorithm,
+    )?;
+    require_cose_algorithm(
+        "candidate Transition",
+        transition_cose.algorithm(),
+        cose_algorithm,
+    )?;
+    require_matching_cose_kid(continuity_cose.kid(), transition_cose.kid())?;
+
+    Ok(())
+}
+
+fn require_cose_algorithm(
+    label: &str,
+    actual: Option<SigningAlgorithm>,
+    expected: SigningAlgorithm,
+) -> Result<(), ExchangeError> {
+    match actual {
+        Some(actual) if actual == expected => Ok(()),
+        Some(actual) => Err(ExchangeError::invalid_grant(format!(
+            "{label} COSE algorithm `{actual}` does not match Proof of Relationship key algorithm \
+             `{expected}`"
+        ))),
+        None => Err(ExchangeError::invalid_grant(format!(
+            "{label} COSE has no supported signing algorithm"
+        ))),
+    }
+}
+
+fn require_matching_cose_kid(
+    continuity_kid: Option<String>,
+    transition_kid: Option<String>,
+) -> Result<(), ExchangeError> {
+    match (continuity_kid, transition_kid) {
+        (Some(continuity), Some(transition)) if continuity == transition => Ok(()),
+        (Some(continuity), Some(transition)) => Err(ExchangeError::invalid_grant(format!(
+            "candidate Continuity COSE kid `{continuity}` does not match Transition COSE kid \
+             `{transition}`"
+        ))),
+        (None, _) => Err(ExchangeError::invalid_grant(
+            "candidate Continuity COSE has no `kid`",
+        )),
+        (_, None) => Err(ExchangeError::invalid_grant(
+            "candidate Transition COSE has no `kid`",
+        )),
     }
 }
 

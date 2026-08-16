@@ -171,6 +171,19 @@ impl Attester {
         format!("{jwt}~{disclosure}~")
     }
 
+    /// A presentation that satisfies only part of the execution contract.
+    fn presentation_corporation_only(&self, workload_public_key: &[u8]) -> String {
+        let disclosure = b64(
+            serde_json::json!(["f0UUCvMSycSUXaVfuiDWAA", "corporation", "ACME"])
+                .to_string()
+                .as_bytes(),
+        );
+        let digests = vec![b64(digest(&SHA256, disclosure.as_bytes()).as_ref())];
+        let jwt = self.sign_credential(workload_public_key, &digests);
+
+        format!("{jwt}~{disclosure}~")
+    }
+
     /// The same as [`presentation`](Self::presentation), with the disclosed values chosen here.
     fn presentation_for(
         &self,
@@ -479,10 +492,16 @@ async fn post_token(router: &axum::Router, body: String) -> (StatusCode, serde_j
 
 fn initialization_body(access_token: &str) -> String {
     let proposal = pic::continuity::proposal::InitialContinuityProposal::new(
-        [(
-            "corporation".to_owned(),
-            pic::continuity::authority::AuthorityValue::One("ACME".to_owned()),
-        )]
+        [
+            (
+                "corporation".to_owned(),
+                pic::continuity::authority::AuthorityValue::One("ACME".to_owned()),
+            ),
+            (
+                "department".to_owned(),
+                pic::continuity::authority::AuthorityValue::One("sensitive-documents".to_owned()),
+            ),
+        ]
         .into_iter()
         .collect(),
     )
@@ -504,6 +523,22 @@ fn advancement_body(candidate: &str) -> String {
          &subject_token={candidate}\
          &subject_token_type=https://pic-protocol.org/definitions/token-types/pic\
          &requested_token_type=https://pic-protocol.org/definitions/token-types/pic"
+    )
+}
+
+fn rewrite_token_algorithm(token: &str, algorithm: &str) -> String {
+    let segments: Vec<&str> = token.split('.').collect();
+    assert_eq!(segments.len(), 3, "the token is compact JWS");
+    let mut header: serde_json::Value =
+        serde_json::from_slice(&URL_SAFE_NO_PAD.decode(segments[0]).expect("header"))
+            .expect("header JSON");
+    header["alg"] = serde_json::Value::String(algorithm.to_owned());
+
+    format!(
+        "{}.{}.{}",
+        b64(&serde_json::to_vec(&header).expect("header encodes")),
+        segments[1],
+        segments[2]
     )
 }
 
@@ -618,7 +653,7 @@ async fn a_workload_advances_the_lineage_and_the_removed_authority_is_gone() {
     // The accepted transition's challenge became the new checkpoint's.
     assert_eq!(pca1.challenge.next_challenge, vec![0x5a; 32]);
     // The execution contract carried forward untouched.
-    assert_eq!(pca1.context_of_authority.execution_contract.len(), 1);
+    assert_eq!(pca1.context_of_authority.execution_contract.len(), 2);
 }
 
 #[tokio::test]
@@ -698,6 +733,45 @@ async fn a_candidate_signed_by_a_key_the_por_does_not_bind_is_rejected() {
             .as_str()
             .expect("a description")
             .contains("signature"),
+        "unexpected rejection: {body}"
+    );
+}
+
+#[tokio::test]
+async fn a_candidate_whose_token_algorithm_disagrees_with_the_por_key_is_rejected() {
+    let lab = lab().await;
+    let (_, body) = post_token(
+        &lab.router,
+        initialization_body(&lab.provider.access_token()),
+    )
+    .await;
+    let token0 = body["access_token"].as_str().expect("token 0").to_owned();
+    let (pca0_bytes, _) = checkpoint_of(&token0);
+
+    let workload_pair = ed25519_dalek::SigningKey::from_bytes(&[0x23; 32]);
+    let presentation = lab
+        .attester
+        .presentation(workload_pair.verifying_key().as_bytes());
+    let candidate = build_candidate(
+        &pca0_bytes,
+        CandidateRequest {
+            next_challenge: vec![0x5a; 32],
+            proof_of_relationship: Some(ProofOfRelationship::sd_jwt(&presentation)),
+            ..Default::default()
+        },
+        &Ed25519Signer::new(workload_pair, "spiffe://acme/workload-1"),
+        None,
+    )
+    .expect("the candidate builds");
+    let wrong_algorithm = rewrite_token_algorithm(&candidate.token, "ES256");
+
+    let (status, body) = post_token(&lab.router, advancement_body(&wrong_algorithm)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error_description"]
+            .as_str()
+            .expect("a description")
+            .contains("algorithm"),
         "unexpected rejection: {body}"
     );
 }
@@ -849,6 +923,45 @@ async fn a_presentation_that_discloses_nothing_the_contract_constrains_is_reject
             ..Default::default()
         },
         &Ed25519Signer::new(workload_pair, "spiffe://acme/quiet"),
+        None,
+    )
+    .expect("the candidate builds");
+
+    let (status, body) = post_token(&lab.router, advancement_body(&candidate.token)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error_description"]
+            .as_str()
+            .expect("a description")
+            .contains("conformance"),
+        "unexpected rejection: {body}"
+    );
+}
+
+#[tokio::test]
+async fn a_presentation_that_discloses_only_part_of_the_contract_is_rejected() {
+    let lab = lab().await;
+    let (_, body) = post_token(
+        &lab.router,
+        initialization_body(&lab.provider.access_token()),
+    )
+    .await;
+    let token0 = body["access_token"].as_str().expect("token 0").to_owned();
+    let (pca0_bytes, _) = checkpoint_of(&token0);
+
+    // `corporation` agrees, but `department` is also in the execution contract and must be proven.
+    let workload_pair = ed25519_dalek::SigningKey::from_bytes(&[0x67; 32]);
+    let presentation = lab
+        .attester
+        .presentation_corporation_only(workload_pair.verifying_key().as_bytes());
+    let candidate = build_candidate(
+        &pca0_bytes,
+        CandidateRequest {
+            next_challenge: vec![0x5a; 32],
+            proof_of_relationship: Some(ProofOfRelationship::sd_jwt(&presentation)),
+            ..Default::default()
+        },
+        &Ed25519Signer::new(workload_pair, "spiffe://acme/partial"),
         None,
     )
     .expect("the candidate builds");

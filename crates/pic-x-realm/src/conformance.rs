@@ -9,15 +9,13 @@
 //! This realm requires it. The claims the Holder disclosed are matched against the
 //! `execution_contract` of the checkpoint being advanced:
 //!
-//! * every contract entry the presentation speaks about must **agree** — a disclosed
-//!   `department: marketing` against a contract demanding `sensitive-documents` is a rejection;
-//! * the presentation must speak about **at least one** contract entry — a credential that
-//!   discloses nothing the contract constrains proves nothing about conformance, and accepting it
-//!   would make selective disclosure decorative.
+//! * every contract entry must be **disclosed** by the presentation; and
+//! * every disclosed value must **agree** with the contract — a disclosed `department: marketing`
+//!   against a contract demanding `sensitive-documents` is a rejection.
 //!
-//! Contract entries the presentation says nothing about are not treated as violations: a contract
-//! carries execution constraints that are not workload attributes at all (`purpose`, `currency` in
-//! the reference examples), and demanding a claim for each would make those contracts unusable.
+//! A credential that proves only one constrained attribute does not prove conformance to the whole
+//! execution contract. If a checkpoint constrains `corporation` and `department`, the Proof of
+//! Relationship has to materialize both.
 
 use pic::continuity::artifacts::{PicPcaPayload, PicTransitionPayload};
 use pic::continuity::authority::indexed::{IndexedAuthorityMap, TupleValue};
@@ -35,6 +33,8 @@ pub(crate) struct ContractConformance<'a> {
 /// Why a transition failed conformance, for the record and the caller.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Mismatch {
+    /// A contract entry was not disclosed at all.
+    Missing { key: String, required: String },
     /// A disclosed claim contradicts a contract entry.
     Contradicts {
         key: String,
@@ -51,16 +51,14 @@ impl ContractConformance<'_> {
         claims: &serde_json::Map<String, Value>,
         contract: &IndexedAuthorityMap,
     ) -> Result<(), Mismatch> {
-        let mut spoken_about = 0_usize;
-
         for (key, value) in contract.execution_contract.values() {
             match value {
-                // `key = value`: the claim, when disclosed, must carry that exact value.
+                // `key = value`: the claim must be disclosed and carry that exact value.
                 TupleValue::Text(required) => {
-                    let Some(disclosed) = claims.get(key) else {
-                        continue;
-                    };
-                    spoken_about += 1;
+                    let disclosed = claims.get(key).ok_or_else(|| Mismatch::Missing {
+                        key: key.clone(),
+                        required: required.clone(),
+                    })?;
                     if !matches_text(disclosed, required) {
                         return Err(Mismatch::Contradicts {
                             key: key.clone(),
@@ -69,16 +67,19 @@ impl ContractConformance<'_> {
                         });
                     }
                 }
-                // `key:member = true`: the denormalized form of a collection membership. The claim
-                // is the part before the colon, and it must contain the member.
+                // `key:member = true`: the denormalized form of a collection membership. The
+                // disclosed claim is the part before the colon, and it must contain the member.
                 TupleValue::Membership(_) => {
                     let Some((name, member)) = key.split_once(':') else {
-                        continue;
+                        return Err(Mismatch::Missing {
+                            key: key.clone(),
+                            required: "membership".to_owned(),
+                        });
                     };
-                    let Some(disclosed) = claims.get(name) else {
-                        continue;
-                    };
-                    spoken_about += 1;
+                    let disclosed = claims.get(name).ok_or_else(|| Mismatch::Missing {
+                        key: name.to_owned(),
+                        required: member.to_owned(),
+                    })?;
                     if !contains_member(disclosed, member) {
                         return Err(Mismatch::Contradicts {
                             key: name.to_owned(),
@@ -88,10 +89,6 @@ impl ContractConformance<'_> {
                     }
                 }
             }
-        }
-
-        if spoken_about == 0 {
-            return Err(Mismatch::SaysNothing);
         }
 
         Ok(())
@@ -143,6 +140,11 @@ fn render(value: &Value) -> String {
 impl std::fmt::Display for Mismatch {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Mismatch::Missing { key, required } => write!(
+                formatter,
+                "the execution contract requires `{key}` = `{required}`, but the Proof of \
+                 Relationship did not disclose `{key}`"
+            ),
             Mismatch::Contradicts {
                 key,
                 required,
@@ -242,20 +244,25 @@ mod tests {
         // Attested, well-formed, and silent about everything the lineage constrains: accepting it
         // would make the disclosure decorative.
         let por = disclosing(&[("workload_role", Value::String("document-reader".into()))]);
-        assert_eq!(check(&por, &walkthrough()), Err(Mismatch::SaysNothing));
+        assert_eq!(
+            check(&por, &walkthrough()),
+            Err(Mismatch::Missing {
+                key: "corporation".into(),
+                required: "ACME".into(),
+            })
+        );
     }
 
     #[test]
-    fn agreeing_on_one_entry_is_enough_when_the_others_are_not_workload_attributes() {
-        // The token/artifact article's contract: purpose and currency are execution constraints,
-        // not attributes any workload credential would carry.
-        let execution = contract(&[
-            ("purpose", AuthorityValue::One("payment-approval".into())),
-            ("currency", AuthorityValue::One("EUR".into())),
-            ("corporation", AuthorityValue::One("ACME".into())),
-        ]);
+    fn agreeing_on_one_entry_is_not_enough() {
         let por = disclosing(&[("corporation", Value::String("ACME".into()))]);
-        assert_eq!(check(&por, &execution), Ok(()));
+        assert_eq!(
+            check(&por, &walkthrough()),
+            Err(Mismatch::Missing {
+                key: "department".into(),
+                required: "sensitive-documents".into(),
+            })
+        );
     }
 
     #[test]

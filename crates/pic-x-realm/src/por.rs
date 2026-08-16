@@ -29,6 +29,7 @@ use std::collections::BTreeSet;
 use std::sync::Mutex;
 
 use pic::continuity::artifacts::ProofOfRelationship;
+use pic::continuity::cose::SigningAlgorithm;
 use pic::continuity::error::RejectReason;
 use pic::continuity::por::PorValidator;
 use pic::continuity::trust::ArtifactVerifier;
@@ -77,6 +78,48 @@ pub(crate) struct ProcessedPor {
     pub(crate) issuer: String,
     /// The claims the Holder chose to disclose, plus the always-disclosed ones.
     pub(crate) claims: serde_json::Map<String, Value>,
+}
+
+/// The signature algorithms a JWK shape can legitimately stand behind.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ExpectedAlgorithms {
+    pub(crate) jose: &'static str,
+    pub(crate) cose: Option<SigningAlgorithm>,
+}
+
+/// Reads the allowed JOSE/COSE algorithms from a public JWK's key type and curve.
+pub(crate) fn expected_algorithms_for_jwk(jwk: &Value) -> Result<ExpectedAlgorithms, String> {
+    let expected = match jwk.get("kty").and_then(Value::as_str) {
+        Some("OKP") if jwk.get("crv").and_then(Value::as_str) == Some("Ed25519") => {
+            ExpectedAlgorithms {
+                jose: "EdDSA",
+                cose: Some(SigningAlgorithm::EdDSA),
+            }
+        }
+        Some("EC") if jwk.get("crv").and_then(Value::as_str) == Some("P-256") => {
+            ExpectedAlgorithms {
+                jose: "ES256",
+                cose: Some(SigningAlgorithm::ES256),
+            }
+        }
+        Some("RSA") => ExpectedAlgorithms {
+            jose: "RS256",
+            cose: None,
+        },
+        Some(other) => return Err(format!("unsupported JWK `kty` `{other}`")),
+        None => return Err("the JWK has no `kty`".to_owned()),
+    };
+
+    if let Some(published) = jwk.get("alg").and_then(Value::as_str)
+        && published != expected.jose
+    {
+        return Err(format!(
+            "JWK `alg` `{published}` does not match key material algorithm `{}`",
+            expected.jose
+        ));
+    }
+
+    Ok(expected)
 }
 
 impl PorValidator for SdJwtPorValidator<'_> {
@@ -275,16 +318,7 @@ fn verify_issuer_signature(
 /// `true` when the JOSE `alg` is the one this key can produce, so a token cannot ask for a weaker
 /// algorithm than the key was published for.
 fn algorithm_matches(algorithm: &str, jwk: &Value) -> bool {
-    match jwk.get("kty").and_then(Value::as_str) {
-        Some("OKP") => {
-            algorithm == "EdDSA" && jwk.get("crv").and_then(Value::as_str) == Some("Ed25519")
-        }
-        Some("EC") => {
-            algorithm == "ES256" && jwk.get("crv").and_then(Value::as_str) == Some("P-256")
-        }
-        Some("RSA") => algorithm == "RS256",
-        _ => false,
-    }
+    expected_algorithms_for_jwk(jwk).is_ok_and(|expected| expected.jose == algorithm)
 }
 
 fn jws_signature_parts(jws: &str) -> Result<(Vec<u8>, Vec<u8>), RejectReason> {
@@ -393,6 +427,9 @@ fn workload_key_from_cnf(payload: &Value) -> Result<Box<dyn ArtifactVerifier>, R
         .get("cnf")
         .and_then(|cnf| cnf.get("jwk"))
         .ok_or_else(|| reject("the SD-JWT does not bind a workload key through `cnf.jwk`"))?;
+
+    expected_algorithms_for_jwk(jwk)
+        .map_err(|error| RejectReason::PorRejected(format!("`cnf.jwk` is unusable: {error}")))?;
 
     let key = public_key_from_jwk(jwk)
         .map_err(|error| RejectReason::PorRejected(format!("`cnf.jwk` is unusable: {error}")))?;
@@ -880,6 +917,24 @@ mod tests {
             ))),
         );
         assert!(error.contains("cnf.jwk"));
+    }
+
+    #[test]
+    fn a_credential_whose_bound_key_declares_the_wrong_algorithm_is_rejected() {
+        let attester = Attester::new();
+        let keys = Keys(attester.key_set());
+        let mut credential = credential(&attester.config.issuer);
+        credential.payload["cnf"]["jwk"]["alg"] = json!("ES256");
+
+        let error = expect_rejection(
+            validator(&attester, &keys).validate_evidence(&por(presentation(
+                &attester,
+                &credential,
+                &[0, 1],
+            ))),
+        );
+        assert!(error.contains("cnf.jwk"));
+        assert!(error.contains("alg"));
     }
 
     #[test]

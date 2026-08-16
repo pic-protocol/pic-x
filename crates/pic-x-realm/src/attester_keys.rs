@@ -16,8 +16,12 @@
 //! * **a stale set beats no set** — when a refresh fails, the last fetched keys stay in use until
 //!   they age out, because answering "no keys" would turn an attester's transient outage into every
 //!   Proof of Relationship being rejected as a forgery;
-//! * **an empty set is never an answer** — a realm that has never reached its attester rejects, and
-//!   says why, rather than behaving as though the attester published nothing.
+//! * **a published removal is authoritative** — when a refresh succeeds with an empty key set, or
+//!   with no public signature-verification keys, the cache is replaced with that empty set so keys
+//!   the attester removed are no longer accepted.
+//!
+//! A realm that has never reached its attester still refuses the exchange and says why, rather than
+//! behaving as though the attester had published no keys.
 
 use std::collections::BTreeMap;
 #[cfg(test)]
@@ -168,10 +172,6 @@ pub(crate) fn parse_key_set(body: &[u8]) -> Result<Vec<Value>> {
         .cloned()
         .collect();
 
-    if usable.is_empty() {
-        bail!("the attester key set contains no usable signature-verification key");
-    }
-
     Ok(usable)
 }
 
@@ -240,12 +240,18 @@ mod tests {
     }
 
     #[test]
-    fn a_key_set_without_usable_keys_is_an_error() {
-        assert!(parse_key_set(br#"{"keys":[]}"#).is_err());
+    fn an_empty_or_filtered_key_set_is_authoritative() {
+        assert!(parse_key_set(br#"{"keys":[]}"#).unwrap().is_empty());
+        // A set that only carries private material is not usable, and therefore replaces the cache
+        // with no accepted verification keys.
+        assert!(
+            parse_key_set(br#"{"keys":[{"kty":"OKP","d":"secret","x":"a"}]}"#)
+                .unwrap()
+                .is_empty()
+        );
+
         assert!(parse_key_set(br#"{}"#).is_err());
         assert!(parse_key_set(b"not json").is_err());
-        // A set that only carries private material is not a set of verification keys.
-        assert!(parse_key_set(br#"{"keys":[{"kty":"OKP","d":"secret","x":"a"}]}"#).is_err());
     }
 
     #[tokio::test]
@@ -305,5 +311,18 @@ mod tests {
         *fetcher.body.lock().unwrap() = Ok(KEY_SET.replace("\"a\"", "\"b\"").into_bytes());
         cache.refresh(fetcher.as_ref()).await;
         assert_eq!(cache.keys_for("acme-por-attester").unwrap()[0]["kid"], "b");
+    }
+
+    #[tokio::test]
+    async fn a_published_empty_key_set_clears_previously_accepted_keys() {
+        let fetcher = StubFetcher::serving(KEY_SET);
+        let cache = AttesterKeyCache::new(vec![attester()]);
+        cache.refresh(fetcher.as_ref()).await;
+        assert_eq!(cache.keys_for("acme-por-attester").unwrap().len(), 1);
+
+        *fetcher.body.lock().unwrap() = Ok(br#"{"keys":[]}"#.to_vec());
+        cache.refresh(fetcher.as_ref()).await;
+
+        assert!(cache.keys_for("acme-por-attester").unwrap().is_empty());
     }
 }
