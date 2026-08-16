@@ -43,7 +43,21 @@
       "authorizationServicesEnabled": false,
       "redirectUris": [],
       "webOrigins": [],
+      "attributes": {
+        "standard.token.exchange.enabled": "true"
+      },
       "protocolMappers": [
+        {
+          "name": "pic-x-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.custom.audience": "pic-x",
+            "access.token.claim": "true",
+            "id.token.claim": "false"
+          }
+        },
         {
           "name": "pic-scopes",
           "protocol": "openid-connect",
@@ -60,6 +74,21 @@
           }
         }
       ]
+    },
+    {
+      "clientId": "pic-x",
+      "name": "PIC-X exchange target",
+      "description": "Audience client so the IdP can perform an RFC 8693 token exchange in the lab.",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "pic-x-client-secret",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "redirectUris": [],
+      "webOrigins": []
     }
   ],
   "users": [

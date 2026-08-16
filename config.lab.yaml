@@ -50,7 +50,7 @@ realms:
           token_type: oauth-access-token
           format: jwt
           issuer: http://localhost:18080/realms/acme-idp
-          audience: account
+          audience: pic-x
           validation:
             allowed_algorithms:
               - RS256
@@ -91,9 +91,12 @@ realms:
                 resource_id: '*'
         on_unmatched_scope: reject
     attesters:
+      # `issuer` is the identity the attester puts in the SD-JWT `iss`, as seen from the host;
+      # `jwks_uri` is where PIC-X fetches its keys from, and PIC-X runs inside the compose network,
+      # so it reaches the trust lab by service name rather than through the published host port.
       - id: acme-por-attester
         issuer: http://localhost:17080/attesters/acme-por-attester
-        jwks_uri: http://localhost:17080/attesters/acme-por-attester/jwks.json
+        jwks_uri: http://trust-lab:7080/attesters/acme-por-attester/jwks.json
         proof_types:
           - sd-jwt
         formats:

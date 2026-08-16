@@ -17,18 +17,19 @@ use axum::response::{IntoResponse, Response};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use pic::continuity::artifacts::PicPcaPayload;
+use pic::continuity::authority::attenuation::ReferenceProfile;
 use pic::continuity::authority::{
     AuthorityValue, IndexedAuthorityMap, Invariant, LogicalAuthority,
 };
 use pic::continuity::cose::{CoseError, SigningAlgorithm};
 use pic::continuity::proposal::InitialContinuityProposal;
-use pic::continuity::trust::ArtifactSigner;
-use pic::continuity::verifier::{SettlementContext, issue_settled};
+use pic::continuity::trust::{ArtifactSigner, DefaultPolicy};
+use pic::continuity::verifier::{SettlementAuthority, SettlementContext, issue_settled};
 use regex::{Captures, Regex};
 use ring::rand::{SecureRandom, SystemRandom};
 use serde::Serialize;
 use serde_json::Value;
-use tracing::warn;
+use tracing::{info, warn};
 
 use pic_x_core::{
     ClaimMapping, EXCHANGE_ON_UNMATCHED_SCOPE_REJECT, EXCHANGE_SOURCE_OAUTH_ACCESS_TOKEN,
@@ -36,15 +37,25 @@ use pic_x_core::{
 };
 
 use crate::COMPONENT;
+use crate::attester_keys::AttesterKeyCache;
+use crate::checkpoints::{CheckpointStore, CheckpointsAt, NoRevocationConfigured};
+use crate::por::SdJwtPorValidator;
 
 const GRANT_TOKEN_EXCHANGE: &str = "urn:ietf:params:oauth:grant-type:token-exchange";
 const TOKEN_TYPE_N_A: &str = "N_A";
+/// How long a checkpoint stays acceptable when nothing else bounds it. A settled token and the
+/// checkpoint it carries expire together, so a lineage cannot be advanced indefinitely.
+const DEFAULT_CHECKPOINT_LIFETIME: i64 = 3_600;
 
 /// Runtime state for one realm token endpoint.
 #[derive(Clone)]
 pub(crate) struct TokenEndpoint {
     pub(crate) realm: Realm,
     pub(crate) development_mode: bool,
+    /// The checkpoints this realm issued and still accepts as a basis for advancement.
+    pub(crate) checkpoints: Arc<CheckpointStore>,
+    /// The attester key sets backing Proof-of-Relationship validation.
+    pub(crate) attester_keys: Arc<AttesterKeyCache>,
 }
 
 /// RFC 8693 token-exchange response carrying a PIC Token JWT.
@@ -173,10 +184,7 @@ impl TokenEndpoint {
                         "Profile 0.2 PIC-to-PIC advancement omits continuity_proposal",
                     ));
                 }
-                Err(ExchangeError::unsupported_token_type(
-                    "PIC-to-PIC continuity advancement is not enabled until PoR, revocation and \
-                     trusted-checkpoint storage are configured",
-                ))
+                self.advance(subject_token)
             }
             value => Err(ExchangeError::unsupported_token_type(format!(
                 "unsupported subject_token_type `{value}`"
@@ -247,6 +255,108 @@ impl TokenEndpoint {
         let issued = issue_settled(checkpoint, &signer, &context).map_err(|error| {
             ExchangeError::server_error(format!("could not issue PIC Token JWT: {error}"))
         })?;
+
+        // Only now is this checkpoint a basis for advancement: recorded after it was signed, and
+        // only for as long as the token carrying it is valid.
+        self.checkpoints.insert(
+            issued.pca_bytes.clone(),
+            context.exp.unwrap_or(now + DEFAULT_CHECKPOINT_LIFETIME),
+            now,
+        );
+
+        Ok(Json(TokenExchangeResponse {
+            access_token: issued.token,
+            issued_token_type: pic::continuity::TOKEN_TYPE_PIC,
+            token_type: TOKEN_TYPE_N_A,
+        })
+        .into_response())
+    }
+
+    /// Profile 0.2 centralized advancement: validate a workload-signed candidate and, on success,
+    /// checkpoint it into the next realm-signed PIC Token JWT.
+    ///
+    /// Every check belongs to the protocol crate's settlement procedure; what this realm supplies is
+    /// the deployment boundary — which attesters it trusts, which checkpoints it accepts, its
+    /// revocation and policy, and its signing key.
+    fn advance(&self, candidate_token: &str) -> Result<Response, ExchangeError> {
+        let now = unix_now()?;
+        let keys = self.realm.token_keys().map(Arc::clone).ok_or_else(|| {
+            ExchangeError::temporarily_unavailable(
+                "the selected realm has no token-signing key ring",
+            )
+        })?;
+        let signer = RealmTokenSigner::new(keys)?;
+
+        let por = SdJwtPorValidator {
+            attesters: self.realm.trusted_attesters(),
+            keys: self.attester_keys.as_ref(),
+            now,
+            accepted: Default::default(),
+        };
+        let trusted = CheckpointsAt {
+            store: self.checkpoints.as_ref(),
+            now,
+        };
+        let authority = SettlementAuthority {
+            trusted: &trusted,
+            por: &por,
+            revocation: &NoRevocationConfigured,
+            policy: &DefaultPolicy,
+            order: &ReferenceProfile,
+            realm: &signer,
+        };
+
+        // The settled token inherits the lifetime of the checkpoint it advances, so a lineage
+        // cannot outlive the authority it started from by advancing repeatedly.
+        let context = SettlementContext {
+            iss: self
+                .realm
+                .issuer()
+                .map(ToOwned::to_owned)
+                .unwrap_or_else(|| self.realm.mount_path().to_owned()),
+            sub: None,
+            aud: None,
+            iat: Some(now),
+            exp: Some(now + DEFAULT_CHECKPOINT_LIFETIME),
+            jti: None,
+        };
+
+        let issued = authority
+            .settle(candidate_token, &context)
+            .map_err(|error| {
+                warn!(
+                    event.name = "token_exchange.advancement_rejected",
+                    component = COMPONENT,
+                    realm = self.realm.name(),
+                    error = %error,
+                    "a candidate PIC Token JWT was rejected"
+                );
+                // The reason is deliberately specific: every variant names a check the caller can fix,
+                // and none of them reveals realm state the caller did not already hold.
+                ExchangeError::invalid_grant(format!("the candidate was rejected: {error}"))
+            })?;
+
+        self.checkpoints.insert(
+            issued.pca_bytes.clone(),
+            context.exp.unwrap_or(now + DEFAULT_CHECKPOINT_LIFETIME),
+            now,
+        );
+
+        // An accepted advancement has to be attributable: which attester vouched for the workload,
+        // and how many claims it disclosed to do so. The values themselves stay out of the record —
+        // a disclosure is minimized on purpose, and re-emitting it here would undo that.
+        if let Some(accepted) = por.accepted() {
+            info!(
+                event.name = "token_exchange.advancement_settled",
+                component = COMPONENT,
+                realm = self.realm.name(),
+                attester = accepted.attester_id,
+                por_issuer = accepted.issuer,
+                disclosed_claims = accepted.claims.len(),
+                position = issued.checkpoint.position,
+                "a candidate PIC Token JWT was settled into the next checkpoint"
+            );
+        }
 
         Ok(Json(TokenExchangeResponse {
             access_token: issued.token,
@@ -496,7 +606,8 @@ fn map_invariants(
         })?;
         rules.push((rule.priority, rule, pattern));
     }
-    rules.sort_by(|left, right| right.0.cmp(&left.0));
+    // Highest priority first, so a specific rule consumes a scope before a generic one can.
+    rules.sort_by_key(|(priority, _, _)| std::cmp::Reverse(*priority));
 
     let mut invariants = BTreeSet::new();
     for scope in scopes {

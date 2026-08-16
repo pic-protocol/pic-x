@@ -22,7 +22,11 @@
 #![forbid(unsafe_code)]
 #![deny(clippy::all, clippy::unwrap_used, clippy::expect_used)]
 
+mod attester_keys;
+mod checkpoints;
 mod exchange;
+mod key_fetch;
+mod por;
 pub mod routes;
 pub mod service;
 

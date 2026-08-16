@@ -1,5 +1,6 @@
 //! The surface itself: what it mounts, what may wrap it, and how it starts and stops.
 
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result, anyhow};
@@ -8,12 +9,15 @@ use axum::routing::{get, post};
 use tracing::info;
 
 use pic_x_core::{
-    BoxFuture, Config, PIC_PROFILE, ProductIdentity, Realms, ServerContext, Service, ready,
+    BoxFuture, Config, PIC_PROFILE, ProductIdentity, Realm, Realms, ServerContext, Service, ready,
 };
 use pic_x_transport::Surface;
 
 use crate::COMPONENT;
+use crate::attester_keys::{AttesterKeyCache, REFRESH_EVERY};
+use crate::checkpoints::CheckpointStore;
 use crate::exchange::{TokenEndpoint, token};
+use crate::key_fetch::HttpKeySetFetcher;
 use crate::routes::{
     AttestationIssuer, Attestations, CatalogRealm, KeyRing, ProfileEntry, RealmLanding, RealmMeta,
     Server, attestations, jwks, realm_configuration, realm_root, root, server_configuration,
@@ -36,6 +40,11 @@ pub struct WellKnownService {
     providers: Vec<Box<dyn RouteProvider>>,
     layers: Vec<Box<dyn Fn(Router) -> Router + Send + Sync>>,
     running: Mutex<Option<Surface>>,
+    /// One attester key cache per realm, shared between the token endpoint that reads it and the
+    /// background task that refreshes it.
+    attester_keys: Mutex<BTreeMap<String, Arc<AttesterKeyCache>>>,
+    /// The refresh task, stopped with the surface.
+    refreshing: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl Default for WellKnownService {
@@ -51,6 +60,8 @@ impl WellKnownService {
             providers: Vec::new(),
             layers: Vec::new(),
             running: Mutex::new(None),
+            attester_keys: Mutex::new(BTreeMap::new()),
+            refreshing: Mutex::new(None),
         }
     }
 
@@ -170,6 +181,8 @@ impl WellKnownService {
                         .with_state(TokenEndpoint {
                             realm: realm.clone(),
                             development_mode: config.development_mode(),
+                            checkpoints: Arc::new(CheckpointStore::new()),
+                            attester_keys: self.attester_keys(realm),
                         }),
                 );
 
@@ -199,6 +212,68 @@ impl WellKnownService {
         }
     }
 
+    /// The attester key cache for one realm, created on first use.
+    ///
+    /// Shared deliberately: the token endpoint reads it on the request path and the background task
+    /// refreshes it, so both must see the same cache. A poisoned lock yields an unshared cache
+    /// rather than a panic — it will simply be refreshed by nobody, and the realm rejects Proof of
+    /// Relationship with "no key set has been fetched" instead of taking the process down.
+    fn attester_keys(&self, realm: &Realm) -> Arc<AttesterKeyCache> {
+        let fresh = || Arc::new(AttesterKeyCache::new(realm.trusted_attesters().to_vec()));
+
+        match self.attester_keys.lock() {
+            Ok(mut caches) => caches
+                .entry(realm.name().to_owned())
+                .or_insert_with(fresh)
+                .clone(),
+            Err(_) => fresh(),
+        }
+    }
+
+    /// Fetches every realm's attester key sets once, now.
+    ///
+    /// The background task does this on a timer; this is the same sweep on demand, for a caller
+    /// that needs the keys present before the first request — a test, or an operator who just
+    /// changed which attesters a realm trusts.
+    pub async fn refresh_attester_keys(&self) {
+        let caches: Vec<Arc<AttesterKeyCache>> = match self.attester_keys.lock() {
+            Ok(caches) => caches.values().cloned().collect(),
+            Err(_) => Vec::new(),
+        };
+
+        let fetcher = HttpKeySetFetcher::new();
+        for cache in caches {
+            cache.refresh(&fetcher).await;
+        }
+    }
+
+    /// Keeps every realm's attester key sets fresh, so an attester can rotate its signing key
+    /// without a restart. The first sweep runs immediately, because a realm that has fetched
+    /// nothing yet cannot validate any Proof of Relationship.
+    fn start_key_refresh(&self) {
+        let caches: Vec<Arc<AttesterKeyCache>> = match self.attester_keys.lock() {
+            Ok(caches) => caches.values().cloned().collect(),
+            Err(_) => Vec::new(),
+        };
+        if caches.iter().all(|cache| cache.attesters().is_empty()) {
+            return;
+        }
+
+        let handle = tokio::spawn(async move {
+            let fetcher = HttpKeySetFetcher::new();
+            loop {
+                for cache in &caches {
+                    cache.refresh(&fetcher).await;
+                }
+                tokio::time::sleep(REFRESH_EVERY).await;
+            }
+        });
+
+        if let Ok(mut refreshing) = self.refreshing.lock() {
+            *refreshing = Some(handle);
+        }
+    }
+
     /// Returns the names of the providers whose routes this surface is serving.
     pub fn providers(&self) -> impl Iterator<Item = &'static str> {
         self.providers.iter().map(|provider| provider.name())
@@ -223,17 +298,17 @@ impl Service for WellKnownService {
             };
 
             let secured = context.config().public_tls();
-            let surface = Surface::listener(
-                COMPONENT,
-                configured,
-                self.router(context.identity(), context.config(), context.realms()),
-            )
-            .tls(secured.as_ref())
-            .limits(context.config().limits())
-            .metrics(context.metrics().clone())
-            .start()
-            .await
-            .context("starting the public surface")?;
+            let router = self.router(context.identity(), context.config(), context.realms());
+            // After the router: the caches exist only once the realms have been walked.
+            self.start_key_refresh();
+
+            let surface = Surface::listener(COMPONENT, configured, router)
+                .tls(secured.as_ref())
+                .limits(context.config().limits())
+                .metrics(context.metrics().clone())
+                .start()
+                .await
+                .context("starting the public surface")?;
 
             let bound = surface.address();
             *self
@@ -256,6 +331,12 @@ impl Service for WellKnownService {
     }
 
     fn stop<'a>(&'a self, context: &'a ServerContext<'a>) -> BoxFuture<'a, Result<()>> {
+        if let Ok(mut refreshing) = self.refreshing.lock()
+            && let Some(handle) = refreshing.take()
+        {
+            handle.abort();
+        }
+
         let surface = match self.running.lock() {
             Ok(mut running) => running.take(),
             Err(_) => return ready(Err(anyhow!("the public surface lock is poisoned"))),

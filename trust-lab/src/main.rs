@@ -5,11 +5,14 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use axum::extract::{Path as AxumPath, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use ring::rand::SystemRandom;
+use ring::digest::{SHA256, digest};
+use ring::rand::{SecureRandom, SystemRandom};
 use ring::signature::{Ed25519KeyPair, KeyPair};
 use serde::{Deserialize, Serialize};
 
@@ -22,6 +25,17 @@ const DEFAULT_KEY_ID: &str = "lab-attester-ed25519-1";
 const PROOF_TYPE_SD_JWT: &str = "sd-jwt";
 const FORMAT_SD_JWT: &str = "sd-jwt";
 const PROFILE: &str = "https://pic-protocol.org/profiles/0.2";
+/// Salt entropy per disclosure. RFC 9901 asks for at least 128 bits.
+const SALT_BYTES: usize = 16;
+/// Bounds on an issuance request, so a lab service cannot be pushed into arbitrary work.
+const MAX_CLAIMS: usize = 64;
+const MAX_CLAIM_LENGTH: usize = 512;
+const DEFAULT_VALIDITY_SECONDS: u64 = 3_600;
+const MAX_VALIDITY_SECONDS: u64 = 86_400;
+/// This service issues credentials to anyone who asks, for any key, without authenticating the
+/// caller or checking that it holds the matching private key. That is the point of a lab fixture
+/// and the reason it must never stand in for a real attestation issuer.
+const FIXTURE_WARNING: &str = "local fixture for the PIC-X lab; not a production attestation issuer";
 
 #[derive(Debug, Serialize)]
 struct BaseResponse {
@@ -44,8 +58,11 @@ struct AttesterRuntime {
     issuer: String,
     jwks_uri: String,
     presentation_endpoint: String,
+    credentials_endpoint: String,
     configuration_endpoint: String,
     key: Jwk,
+    key_id: String,
+    signing_key: Arc<Ed25519KeyPair>,
     workers: BTreeMap<String, WorkerArtifact>,
 }
 
@@ -88,6 +105,50 @@ struct AttesterSummary {
     configuration_endpoint: String,
     jwks_uri: String,
     presentation_endpoint: String,
+    credentials_endpoint: String,
+}
+
+/// A request to issue a credential for a caller-supplied key and claim set.
+///
+/// This is what makes the lab attester usable beyond the two walkthrough fixtures: a workload
+/// generates its own key pair, asks for a credential bound to its public half, and receives every
+/// Disclosure so it — as the RFC 9901 Holder — decides which ones to present per hop.
+#[derive(Debug, Deserialize)]
+struct CredentialRequest {
+    /// The workload public key to bind, as an RFC 7517 JWK. It lands in `cnf.jwk`, which is the
+    /// claim PIC-X reads to obtain the key that must verify the three candidate signatures.
+    cnf_jwk: serde_json::Value,
+    /// Attributes to issue as selectively disclosable claims.
+    claims: BTreeMap<String, String>,
+    #[serde(default)]
+    validity_seconds: Option<u64>,
+}
+
+#[derive(Debug, Serialize)]
+struct CredentialResponse {
+    issuer: String,
+    proof_of_relationship_type: &'static str,
+    format: &'static str,
+    issuer_signed_jwt: String,
+    /// Every issued Disclosure, so the Holder can choose. Only the ones it joins into a
+    /// presentation ever reach a verifier.
+    disclosures: Vec<IssuedDisclosure>,
+    /// Convenience: the presentation carrying *all* Disclosures. A workload that wants selective
+    /// disclosure builds its own from the list above instead of sending this one.
+    presentation_all_disclosed: String,
+    expires_at: u64,
+    fixture: bool,
+    fixture_warning: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+struct IssuedDisclosure {
+    claim: String,
+    value: String,
+    /// The Base64url Disclosure string: this exact text is what a presentation carries.
+    disclosure: String,
+    /// Its SHA-256 digest, as committed in the credential's `_sd` array.
+    digest: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -95,6 +156,7 @@ struct AttesterConfiguration {
     issuer: String,
     jwks_uri: String,
     presentation_endpoint: String,
+    credentials_endpoint: String,
     proof_types_supported: [&'static str; 1],
     formats_supported: [&'static str; 1],
     profile: &'static str,
@@ -228,6 +290,10 @@ fn app(config: LabConfig) -> Result<Router, Box<dyn Error>> {
             "/attesters/{attester_id}/presentations",
             post(create_presentation),
         )
+        .route(
+            "/attesters/{attester_id}/credentials",
+            post(create_credential),
+        )
         .with_state(state))
 }
 
@@ -296,6 +362,7 @@ fn prepare_attester(
     let configuration_endpoint = format!("{issuer}/.well-known/attester-configuration");
     let jwks_uri = format!("{issuer}/jwks.json");
     let presentation_endpoint = format!("{issuer}/presentations");
+    let credentials_endpoint = format!("{issuer}/credentials");
     let attester_dir = artifact_dir.join("attesters").join(&id);
     fs::create_dir_all(&attester_dir)?;
 
@@ -329,8 +396,11 @@ fn prepare_attester(
         issuer,
         jwks_uri,
         presentation_endpoint,
+        credentials_endpoint,
         configuration_endpoint,
         key,
+        key_id,
+        signing_key: Arc::new(pair),
         workers: worker_artifacts,
     })
 }
@@ -439,11 +509,12 @@ async fn attester_configuration(
         issuer: attester.issuer.clone(),
         jwks_uri: attester.jwks_uri.clone(),
         presentation_endpoint: attester.presentation_endpoint.clone(),
+        credentials_endpoint: attester.credentials_endpoint.clone(),
         proof_types_supported: [PROOF_TYPE_SD_JWT],
         formats_supported: [FORMAT_SD_JWT],
         profile: PROFILE,
         fixture: true,
-        fixture_warning: "local fixture for the PIC-X lab; not a production attestation issuer",
+        fixture_warning: FIXTURE_WARNING,
         artifacts: attester
             .workers
             .values()
@@ -517,6 +588,7 @@ fn attester_summary(attester: &AttesterRuntime) -> AttesterSummary {
         configuration_endpoint: attester.configuration_endpoint.clone(),
         jwks_uri: attester.jwks_uri.clone(),
         presentation_endpoint: attester.presentation_endpoint.clone(),
+        credentials_endpoint: attester.credentials_endpoint.clone(),
     }
 }
 
@@ -533,6 +605,207 @@ fn require_attester<'a>(
             }),
         )
     })
+}
+
+/// Issues a credential bound to a caller-supplied key, with caller-supplied claims.
+///
+/// Every claim becomes a selectively disclosable Disclosure with its own fresh CSPRNG salt, and the
+/// credential commits only to the digests. The Disclosures go back to the caller, never into the
+/// issuer-signed JWT.
+async fn create_credential(
+    AxumPath(attester_id): AxumPath<String>,
+    State(state): State<LabState>,
+    Json(request): Json<CredentialRequest>,
+) -> ApiResult<CredentialResponse> {
+    let attester = require_attester(&state, &attester_id)?;
+    validate_credential_request(&request)?;
+
+    let issued = issue_disclosures(&request.claims).map_err(|error| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "issuance_failed",
+                error_description: error.to_string(),
+            }),
+        )
+    })?;
+
+    let issued_at = unix_now().map_err(|error| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "issuance_failed",
+                error_description: error.to_string(),
+            }),
+        )
+    })?;
+    let expires_at = issued_at
+        + request
+            .validity_seconds
+            .unwrap_or(DEFAULT_VALIDITY_SECONDS)
+            .min(MAX_VALIDITY_SECONDS);
+
+    // Sorted so that the order of the commitments says nothing about the order of the claims.
+    let mut digests: Vec<&str> = issued
+        .iter()
+        .map(|disclosure| disclosure.digest.as_str())
+        .collect();
+    digests.sort_unstable();
+
+    let payload = serde_json::json!({
+        "iss": attester.issuer,
+        "iat": issued_at,
+        "exp": expires_at,
+        "_sd_alg": "sha-256",
+        "_sd": digests,
+        "cnf": { "jwk": request.cnf_jwk },
+    });
+    let issuer_signed_jwt = sign_compact_jws(
+        &attester.key_id,
+        &attester.signing_key,
+        &payload,
+    )
+    .map_err(|error| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "issuance_failed",
+                error_description: error.to_string(),
+            }),
+        )
+    })?;
+
+    let mut presentation = issuer_signed_jwt.clone();
+    for disclosure in &issued {
+        presentation.push('~');
+        presentation.push_str(&disclosure.disclosure);
+    }
+    presentation.push('~');
+
+    Ok(Json(CredentialResponse {
+        issuer: attester.issuer.clone(),
+        proof_of_relationship_type: PROOF_TYPE_SD_JWT,
+        format: FORMAT_SD_JWT,
+        issuer_signed_jwt,
+        disclosures: issued,
+        presentation_all_disclosed: presentation,
+        expires_at,
+        fixture: true,
+        fixture_warning: FIXTURE_WARNING,
+    }))
+}
+
+/// Rejects a request the lab will not issue for: no claims, empty names or values, oversized input.
+fn validate_credential_request(
+    request: &CredentialRequest,
+) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
+    let reject = |description: String| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "invalid_request",
+                error_description: description,
+            }),
+        )
+    };
+
+    let jwk = request
+        .cnf_jwk
+        .as_object()
+        .ok_or_else(|| reject("`cnf_jwk` must be a JWK object".to_owned()))?;
+    match jwk.get("kty").and_then(serde_json::Value::as_str) {
+        Some("EC") | Some("OKP") => {}
+        Some(other) => return Err(reject(format!("unsupported `cnf_jwk.kty` `{other}`"))),
+        None => return Err(reject("`cnf_jwk` has no `kty`".to_owned())),
+    }
+    for required in ["crv", "x"] {
+        if !jwk.contains_key(required) {
+            return Err(reject(format!("`cnf_jwk` has no `{required}`")));
+        }
+    }
+    if jwk.get("kty").and_then(serde_json::Value::as_str) == Some("EC")
+        && !jwk.contains_key("y")
+    {
+        return Err(reject("an EC `cnf_jwk` has no `y`".to_owned()));
+    }
+    if jwk.contains_key("d") {
+        return Err(reject(
+            "`cnf_jwk` carries a private key component `d`; send the public key only".to_owned(),
+        ));
+    }
+
+    if request.claims.is_empty() {
+        return Err(reject("`claims` must carry at least one attribute".to_owned()));
+    }
+    if request.claims.len() > MAX_CLAIMS {
+        return Err(reject(format!("`claims` carries more than {MAX_CLAIMS} attributes")));
+    }
+    for (name, value) in &request.claims {
+        if name.is_empty() || value.is_empty() {
+            return Err(reject(
+                "claim names and values must be non-empty strings".to_owned(),
+            ));
+        }
+        if name.len() > MAX_CLAIM_LENGTH || value.len() > MAX_CLAIM_LENGTH {
+            return Err(reject(format!(
+                "claim `{name}` exceeds {MAX_CLAIM_LENGTH} characters"
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+/// Builds one Disclosure per claim: a fresh salt, the RFC 9901 `[salt, name, value]` array, its
+/// Base64url encoding, and the SHA-256 digest committed in `_sd`.
+fn issue_disclosures(
+    claims: &BTreeMap<String, String>,
+) -> Result<Vec<IssuedDisclosure>, Box<dyn Error>> {
+    let random = SystemRandom::new();
+    let mut issued = Vec::with_capacity(claims.len());
+
+    for (name, value) in claims {
+        let mut salt = [0_u8; SALT_BYTES];
+        random
+            .fill(&mut salt)
+            .map_err(|_| "generating a disclosure salt")?;
+        let contents = serde_json::to_string(&serde_json::json!([b64url(&salt), name, value]))?;
+        let disclosure = b64url(contents.as_bytes());
+        let digest_value = b64url(digest(&SHA256, disclosure.as_bytes()).as_ref());
+
+        issued.push(IssuedDisclosure {
+            claim: name.clone(),
+            value: value.clone(),
+            disclosure,
+            digest: digest_value,
+        });
+    }
+
+    Ok(issued)
+}
+
+fn sign_compact_jws(
+    key_id: &str,
+    pair: &Ed25519KeyPair,
+    payload: &serde_json::Value,
+) -> Result<String, Box<dyn Error>> {
+    let header = serde_json::json!({
+        "alg": "EdDSA",
+        "kid": key_id,
+        "typ": "vc+sd-jwt"
+    });
+    let signing_input = format!(
+        "{}.{}",
+        b64url(compact_json(&header)?.as_bytes()),
+        b64url(compact_json(payload)?.as_bytes())
+    );
+    let signature = pair.sign(signing_input.as_bytes());
+
+    Ok(format!("{}.{}", signing_input, b64url(signature.as_ref())))
+}
+
+fn unix_now() -> Result<u64, Box<dyn Error>> {
+    Ok(SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs())
 }
 
 fn sign_sd_jwt_credential(
@@ -651,6 +924,30 @@ fn b64url(input: &[u8]) -> String {
     }
 
     out
+}
+
+#[cfg(test)]
+fn b64url_decode(input: &str) -> Result<Vec<u8>, Box<dyn Error>> {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+
+    let mut accumulator: u32 = 0;
+    let mut bits = 0_u32;
+    let mut out = Vec::with_capacity(input.len() * 3 / 4);
+
+    for byte in input.bytes() {
+        let index = TABLE
+            .iter()
+            .position(|candidate| *candidate == byte)
+            .ok_or("value is not unpadded base64url")? as u32;
+        accumulator = (accumulator << 6) | index;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((accumulator >> bits) as u8);
+        }
+    }
+
+    Ok(out)
 }
 
 #[cfg(unix)]
@@ -829,6 +1126,126 @@ mod tests {
             let text = fs::read_to_string(presentation).expect("presentation reads");
             assert!(text.ends_with('~'));
             assert_eq!(text.split('~').count(), 4);
+        }
+    }
+
+    fn sample_request() -> CredentialRequest {
+        let mut claims = BTreeMap::new();
+        claims.insert("corporation".to_owned(), "ACME".to_owned());
+        claims.insert("department".to_owned(), "sensitive-documents".to_owned());
+
+        CredentialRequest {
+            cnf_jwk: serde_json::json!({
+                "kty": "OKP",
+                "crv": "Ed25519",
+                "kid": "worker-key",
+                "x": "AbZzIerBJYtaxamji_Z4jT3oAuhAw_p-IPnIHFQ_YsM"
+            }),
+            claims,
+            validity_seconds: None,
+        }
+    }
+
+    #[test]
+    fn each_issued_disclosure_commits_to_its_own_digest() {
+        let request = sample_request();
+        let issued = issue_disclosures(&request.claims).expect("disclosures are issued");
+
+        assert_eq!(issued.len(), 2);
+        for disclosure in &issued {
+            // The digest committed in `_sd` must be SHA-256 over the Disclosure string itself.
+            let expected = b64url(digest(&SHA256, disclosure.disclosure.as_bytes()).as_ref());
+            assert_eq!(disclosure.digest, expected);
+
+            // The Disclosure decodes to the RFC 9901 [salt, name, value] array.
+            let decoded = b64url_decode(&disclosure.disclosure).expect("disclosure decodes");
+            let parts: Vec<String> =
+                serde_json::from_slice(&decoded).expect("disclosure is a JSON array");
+            assert_eq!(parts.len(), 3);
+            assert_eq!(parts[1], disclosure.claim);
+            assert_eq!(parts[2], disclosure.value);
+            // At least 128 bits of salt, per RFC 9901.
+            assert!(b64url_decode(&parts[0]).expect("salt decodes").len() >= 16);
+        }
+    }
+
+    #[test]
+    fn salts_are_fresh_for_every_issuance() {
+        let request = sample_request();
+        let first = issue_disclosures(&request.claims).expect("first issuance");
+        let second = issue_disclosures(&request.claims).expect("second issuance");
+
+        // Same claims, different salts: reusing a salt would let a verifier correlate two
+        // credentials, and would make the digests collide across issuances.
+        for (left, right) in first.iter().zip(second.iter()) {
+            assert_eq!(left.claim, right.claim);
+            assert_ne!(left.disclosure, right.disclosure);
+            assert_ne!(left.digest, right.digest);
+        }
+    }
+
+    #[test]
+    fn a_credential_request_is_validated_before_anything_is_signed() {
+        let mut no_claims = sample_request();
+        no_claims.claims.clear();
+        assert!(validate_credential_request(&no_claims).is_err());
+
+        let mut empty_value = sample_request();
+        empty_value.claims.insert("clearance".to_owned(), String::new());
+        assert!(validate_credential_request(&empty_value).is_err());
+
+        let mut private_key = sample_request();
+        private_key.cnf_jwk["d"] = serde_json::json!("a-private-scalar");
+        assert!(validate_credential_request(&private_key).is_err());
+
+        let mut wrong_kty = sample_request();
+        wrong_kty.cnf_jwk = serde_json::json!({"kty": "RSA", "crv": "x", "x": "y"});
+        assert!(validate_credential_request(&wrong_kty).is_err());
+
+        let mut ec_without_y = sample_request();
+        ec_without_y.cnf_jwk = serde_json::json!({"kty": "EC", "crv": "P-256", "x": "abc"});
+        assert!(validate_credential_request(&ec_without_y).is_err());
+
+        assert!(validate_credential_request(&sample_request()).is_ok());
+    }
+
+    #[test]
+    fn an_issued_credential_verifies_and_hides_its_claim_values() {
+        let request = sample_request();
+        let issued = issue_disclosures(&request.claims).expect("disclosures are issued");
+        let mut digests: Vec<&str> = issued.iter().map(|d| d.digest.as_str()).collect();
+        digests.sort_unstable();
+
+        let pkcs8 = Ed25519KeyPair::generate_pkcs8(&SystemRandom::new()).expect("key generates");
+        let pair = Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).expect("key parses");
+        let payload = serde_json::json!({
+            "iss": "http://localhost/attesters/lab",
+            "_sd_alg": "sha-256",
+            "_sd": digests,
+            "cnf": { "jwk": request.cnf_jwk },
+        });
+        let jwt = sign_compact_jws("lab-key", &pair, &payload).expect("credential signs");
+
+        let segments: Vec<&str> = jwt.split('.').collect();
+        assert_eq!(segments.len(), 3);
+
+        // The signature verifies against the issuer public key.
+        let signing_input = format!("{}.{}", segments[0], segments[1]);
+        let signature = b64url_decode(segments[2]).expect("signature decodes");
+        ring::signature::UnparsedPublicKey::new(
+            &ring::signature::ED25519,
+            pair.public_key().as_ref(),
+        )
+        .verify(signing_input.as_bytes(), &signature)
+        .expect("the issuer signature verifies");
+
+        // The credential commits to digests only: no claim name or value is in the signed payload.
+        let signed = String::from_utf8(b64url_decode(segments[1]).expect("payload decodes"))
+            .expect("payload is UTF-8");
+        for disclosure in &issued {
+            assert!(!signed.contains(&disclosure.claim));
+            assert!(!signed.contains(&disclosure.value));
+            assert!(signed.contains(&disclosure.digest));
         }
     }
 

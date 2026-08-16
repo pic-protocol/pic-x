@@ -13,6 +13,10 @@ services:
     volumes:
       - ./config.lab.yaml:/etc/pic-x/config.lab.yaml:ro
       - pic-x-lab-data:/var/lib/pic-x
+    # The realm fetches its attester key set at startup; starting after the trust lab means the
+    # first sweep succeeds rather than waiting for the refresh interval.
+    depends_on:
+      - trust-lab
 
   keycloak:
     image: ${KEYCLOAK_IMAGE:-quay.io/keycloak/keycloak:26.7.0}
