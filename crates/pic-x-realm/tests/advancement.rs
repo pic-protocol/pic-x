@@ -1150,3 +1150,44 @@ async fn no_token_is_issued_when_the_audit_trail_cannot_be_written() {
     );
     assert!(body["access_token"].is_null(), "a token escaped: {body}");
 }
+
+#[tokio::test]
+async fn a_transition_that_repeats_the_challenge_it_answers_is_rejected() {
+    // Answering a challenge with the same value advances the lineage without moving its challenge
+    // state, so the successor would accept the very transition that produced it.
+    let lab = lab().await;
+    let (_, body) = post_token(
+        &lab.router,
+        initialization_body(&lab.provider.access_token()),
+    )
+    .await;
+    let token0 = body["access_token"].as_str().expect("token 0").to_owned();
+    let (pca0_bytes, pca0) = checkpoint_of(&token0);
+
+    let workload_pair = ed25519_dalek::SigningKey::from_bytes(&[0x5c; 32]);
+    let presentation = lab
+        .attester
+        .presentation(workload_pair.verifying_key().as_bytes());
+    let candidate = build_candidate(
+        &pca0_bytes,
+        CandidateRequest {
+            // The same bytes the checkpoint is waiting to be answered with.
+            next_challenge: pca0.challenge.next_challenge.clone(),
+            proof_of_relationship: Some(ProofOfRelationship::sd_jwt(&presentation)),
+            ..Default::default()
+        },
+        &Ed25519Signer::new(workload_pair, "spiffe://acme/replayer"),
+        None,
+    )
+    .expect("the candidate builds");
+
+    let (status, body) = post_token(&lab.router, advancement_body(&candidate.token)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error_description"]
+            .as_str()
+            .expect("a description")
+            .contains("repeats the challenge"),
+        "unexpected rejection: {body}"
+    );
+}

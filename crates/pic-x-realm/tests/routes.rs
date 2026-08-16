@@ -394,18 +394,19 @@ async fn test_a_realm_serves_its_own_discovery_and_keys_at_its_path() {
         document.contains(r#""token_endpoint":"https://acme.example.com/token""#),
         "{document}"
     );
-    for present in ["revocation_endpoint", "attestations_endpoint"] {
+    assert!(
+        document.contains("attestations_endpoint"),
+        "attestations_endpoint should be advertised: {document}"
+    );
+    // Nothing serves Trust Anchors or revocation in this build, so the document must not name an
+    // endpoint a client would integrate against and receive a 404 from — or, worse, a deployment
+    // would believe it has a way to revoke.
+    for absent in ["trust_anchors_endpoint", "revocation_endpoint"] {
         assert!(
-            document.contains(present),
-            "{present} should be advertised: {document}"
+            !document.contains(absent),
+            "{absent} is unserved and must not be advertised: {document}"
         );
     }
-    // Trust Anchors are not configurable in this build and nothing serves them, so the document
-    // must not name an endpoint a client would integrate against and receive a 404 from.
-    assert!(
-        !document.contains("trust_anchors_endpoint"),
-        "an unserved endpoint should not be advertised: {document}"
-    );
     assert!(
         document.contains("https://pic-protocol.org/profiles/0.2"),
         "{document}"

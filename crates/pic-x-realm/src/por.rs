@@ -61,12 +61,29 @@ pub(crate) struct SdJwtPorValidator<'a> {
     pub(crate) keys: &'a dyn AttesterKeySource,
     /// Now, in seconds since the Unix epoch, for the validity claims.
     pub(crate) now: i64,
-    /// What the accepted presentation disclosed.
+    /// What the accepted presentation disclosed, and the evidence it came from.
     ///
-    /// The `PorValidator` boundary hands back only a verifier, but an accepted advancement has to
-    /// be attributable — *which* attester vouched for the workload, and on the strength of which
-    /// disclosed claims. Recording it here is how the caller reads that back after settlement.
-    pub(crate) accepted: Mutex<Option<ProcessedPor>>,
+    /// This carries two jobs. The `PorValidator` boundary hands back only a verifier, but an
+    /// accepted advancement has to be attributable — *which* attester vouched for the workload, on
+    /// the strength of which disclosed claims — and this is how the caller reads that back.
+    ///
+    /// It also makes a second validation of the same presentation free. A settlement validates the
+    /// evidence twice: once to bind the candidate's algorithms to the PoR key before anything else
+    /// is trusted, and once inside the settlement procedure. Recomputing an issuer signature and
+    /// every disclosure digest for a second identical answer is work an unauthenticated caller
+    /// should not be able to ask for twice.
+    pub(crate) accepted: Mutex<Option<Accepted>>,
+}
+
+/// A presentation this validator already accepted.
+#[derive(Debug, Clone)]
+pub(crate) struct Accepted {
+    /// The exact evidence bytes, compared before the cached answer is reused.
+    evidence: Vec<u8>,
+    /// The key the credential bound, kept as a JWK so the verifier can be rebuilt cheaply.
+    jwk: Value,
+    /// What the presentation disclosed.
+    pub(crate) processed: ProcessedPor,
 }
 
 /// What a validated presentation disclosed, kept for policy and audit.
@@ -127,9 +144,21 @@ impl PorValidator for SdJwtPorValidator<'_> {
         &self,
         por: &ProofOfRelationship,
     ) -> Result<Box<dyn ArtifactVerifier>, RejectReason> {
-        let (verifier, processed) = self.validate_evidence(por)?;
+        // Reusing an answer is safe only for byte-identical evidence: anything else is a different
+        // presentation and gets the full procedure.
+        if let Some(cached) = self.cached_for(&por.evidence) {
+            // The cached JWK already passed every check when it was first accepted; rebuilding the
+            // verifier from it repeats the algorithm agreement rather than assuming it.
+            return rebuild_workload_key(&cached.jwk);
+        }
+
+        let (verifier, processed, jwk) = self.validate_evidence_with_key(por)?;
         if let Ok(mut accepted) = self.accepted.lock() {
-            *accepted = Some(processed);
+            *accepted = Some(Accepted {
+                evidence: por.evidence.clone(),
+                jwk,
+                processed,
+            });
         }
 
         Ok(verifier)
@@ -137,12 +166,42 @@ impl PorValidator for SdJwtPorValidator<'_> {
 }
 
 impl SdJwtPorValidator<'_> {
-    /// The presentation this validator last accepted, if any.
+    /// What this validator last accepted, if anything.
     pub(crate) fn accepted(&self) -> Option<ProcessedPor> {
         self.accepted
             .lock()
             .ok()
+            .and_then(|accepted| accepted.as_ref().map(|entry| entry.processed.clone()))
+    }
+
+    /// The cached answer for exactly these evidence bytes.
+    fn cached_for(&self, evidence: &[u8]) -> Option<Accepted> {
+        self.accepted
+            .lock()
+            .ok()
             .and_then(|accepted| accepted.clone())
+            .filter(|entry| entry.evidence == evidence)
+    }
+
+    /// Validates and records the presentation, so a later identical validation is free.
+    pub(crate) fn validate_and_remember(
+        &self,
+        por: &ProofOfRelationship,
+    ) -> Result<ProcessedPor, RejectReason> {
+        if let Some(cached) = self.cached_for(&por.evidence) {
+            return Ok(cached.processed);
+        }
+
+        let (_, processed, jwk) = self.validate_evidence_with_key(por)?;
+        if let Ok(mut accepted) = self.accepted.lock() {
+            *accepted = Some(Accepted {
+                evidence: por.evidence.clone(),
+                jwk,
+                processed: processed.clone(),
+            });
+        }
+
+        Ok(processed)
     }
 
     /// The full validation, also returning what the presentation disclosed.
@@ -150,6 +209,16 @@ impl SdJwtPorValidator<'_> {
         &self,
         por: &ProofOfRelationship,
     ) -> Result<(Box<dyn ArtifactVerifier>, ProcessedPor), RejectReason> {
+        let (verifier, processed, _) = self.validate_evidence_with_key(por)?;
+
+        Ok((verifier, processed))
+    }
+
+    /// The full validation, also handing back the bound key as a JWK.
+    fn validate_evidence_with_key(
+        &self,
+        por: &ProofOfRelationship,
+    ) -> Result<(Box<dyn ArtifactVerifier>, ProcessedPor, Value), RejectReason> {
         if por.evidence.len() > MAX_EVIDENCE_BYTES {
             return Err(reject("proof_of_relationship.evidence is too large"));
         }
@@ -197,6 +266,11 @@ impl SdJwtPorValidator<'_> {
         validate_validity_claims(&payload, self.now)?;
 
         let claims = process_disclosures(&payload, &disclosures)?;
+        let jwk = payload
+            .get("cnf")
+            .and_then(|cnf| cnf.get("jwk"))
+            .cloned()
+            .ok_or_else(|| reject("the SD-JWT does not bind a workload key through `cnf.jwk`"))?;
         let workload_key = workload_key_from_cnf(&payload)?;
 
         Ok((
@@ -206,6 +280,7 @@ impl SdJwtPorValidator<'_> {
                 issuer: issuer.to_owned(),
                 claims,
             },
+            jwk,
         ))
     }
 }
@@ -431,6 +506,16 @@ fn workload_key_from_cnf(payload: &Value) -> Result<Box<dyn ArtifactVerifier>, R
     expected_algorithms_for_jwk(jwk)
         .map_err(|error| RejectReason::PorRejected(format!("`cnf.jwk` is unusable: {error}")))?;
 
+    let key = public_key_from_jwk(jwk)
+        .map_err(|error| RejectReason::PorRejected(format!("`cnf.jwk` is unusable: {error}")))?;
+
+    Ok(Box::new(key))
+}
+
+/// Rebuilds a workload verifier from a JWK that was already accepted.
+fn rebuild_workload_key(jwk: &Value) -> Result<Box<dyn ArtifactVerifier>, RejectReason> {
+    expected_algorithms_for_jwk(jwk)
+        .map_err(|error| RejectReason::PorRejected(format!("`cnf.jwk` is unusable: {error}")))?;
     let key = public_key_from_jwk(jwk)
         .map_err(|error| RejectReason::PorRejected(format!("`cnf.jwk` is unusable: {error}")))?;
 
@@ -935,6 +1020,48 @@ mod tests {
         );
         assert!(error.contains("cnf.jwk"));
         assert!(error.contains("alg"));
+    }
+
+    #[test]
+    fn the_same_presentation_is_validated_once_and_reused() {
+        let attester = Attester::new();
+        let keys = Keys(attester.key_set());
+        let credential = credential(&attester.config.issuer);
+        let evidence = por(presentation(&attester, &credential, &[0, 1]));
+        let validator = validator(&attester, &keys);
+
+        // First pass: the full procedure runs and the answer is remembered.
+        let first = validator
+            .validate_and_remember(&evidence)
+            .expect("the presentation validates");
+        assert_eq!(first.attester_id, "acme-por-attester");
+
+        // Second pass through the `PorValidator` boundary: same key, no re-verification.
+        let verifier = PorValidator::validate(&validator, &evidence).expect("cached answer");
+        let signature = credential.workload.sign(b"candidate artifact bytes");
+        assert!(verifier.verify(b"candidate artifact bytes", signature.as_ref()));
+    }
+
+    #[test]
+    fn a_different_presentation_never_reuses_a_cached_answer() {
+        let attester = Attester::new();
+        let keys = Keys(attester.key_set());
+        let validator = validator(&attester, &keys);
+
+        let good = credential(&attester.config.issuer);
+        validator
+            .validate_and_remember(&por(presentation(&attester, &good, &[0, 1])))
+            .expect("the first presentation validates");
+
+        // A presentation from an issuer this realm does not trust must not inherit the previous
+        // acceptance: the cache is keyed on the exact evidence bytes.
+        let stranger = credential("https://attacker.example.com");
+        let error = expect_rejection(validator.validate_evidence(&por(presentation(
+            &attester,
+            &stranger,
+            &[0, 1],
+        ))));
+        assert!(error.contains("not a trusted attester"), "{error}");
     }
 
     #[test]

@@ -654,8 +654,8 @@ fn preflight_candidate_key_metadata(
         )));
     }
 
-    let (_, processed) = por
-        .validate_evidence(&transition.proof_of_relationship)
+    let processed = por
+        .validate_and_remember(&transition.proof_of_relationship)
         .map_err(|error| {
             ExchangeError::invalid_grant(format!("the Proof of Relationship was rejected: {error}"))
         })?;
@@ -698,6 +698,17 @@ fn preflight_candidate_key_metadata(
         cose_algorithm,
     )?;
     require_matching_cose_kid(continuity_cose.kid(), transition_cose.kid())?;
+
+    // A transition that answers a challenge with the same value it was given advances the lineage
+    // without moving its challenge state: the successor checkpoint would then accept the transition
+    // that produced it. The profile keeps challenges per-lineage rather than globally single-use —
+    // sibling branches from one checkpoint are intentional — so this is the freshness that can be
+    // required without breaking fan-out.
+    if transition.challenge.next_challenge == transition.challenge.previous_challenge {
+        return Err(ExchangeError::invalid_grant(
+            "the transition next_challenge repeats the challenge it answers",
+        ));
+    }
 
     if let Some(expected) = predecessor.lineage_id.as_deref() {
         match decoded.claims.jti.as_deref() {
