@@ -176,8 +176,9 @@ fn config_in(volume: &std::path::Path) -> PathBuf {
              keys:\n    enabled: true\n    publish_ahead: 1m\n    rotate_every: 10m\n    retain: 1h\n\
              realms:\n  \
              - name: acme\n    issuer: https://acme.example.com\n    listed: true\n    \
+             token_lifetime: 1h\n    \
              keys:\n      publish_ahead: 1m\n      rotate_every: 10m\n      retain: 1h\n  \
-             - name: beta\n    listed: false\n    \
+             - name: beta\n    listed: false\n    token_lifetime: 1h\n    \
              keys:\n      publish_ahead: 1m\n      rotate_every: 10m\n      retain: 1h\n",
             volume.display()
         ),

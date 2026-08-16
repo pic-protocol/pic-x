@@ -375,6 +375,7 @@ fn test_a_realm_issuer_is_held_to_the_same_https_rule_as_the_server() {
             token_keys_publish_ahead: Some("1h".to_owned()),
             token_keys_rotate_every: Some("30d".to_owned()),
             token_keys_retain: Some("400d".to_owned()),
+            token_lifetime: Some("1h".to_owned()),
             ..RealmInput::default()
         }])
         .expect("the realm resolves");
@@ -662,6 +663,7 @@ fn realm(name: &str) -> RealmInput {
         token_keys_publish_ahead: Some("1h".to_owned()),
         token_keys_rotate_every: Some("30d".to_owned()),
         token_keys_retain: Some("400d".to_owned()),
+        token_lifetime: Some("1h".to_owned()),
         ..RealmInput::default()
     }
 }
@@ -881,6 +883,7 @@ fn test_a_realm_inherits_the_servers_policy_and_overrides_only_what_it_states() 
             token_keys_publish_ahead: Some("1h".to_owned()),
             token_keys_rotate_every: Some("30d".to_owned()),
             token_keys_retain: Some("400d".to_owned()),
+            token_lifetime: Some("1h".to_owned()),
             ..RealmInput::default()
         },
         // globex states nothing about keys, so it inherits both.
@@ -920,6 +923,7 @@ fn test_a_realm_may_pseudonymise_from_the_environment_under_its_own_prefix() {
             token_keys_publish_ahead: Some("1h".to_owned()),
             token_keys_rotate_every: Some("30d".to_owned()),
             token_keys_retain: Some("400d".to_owned()),
+            token_lifetime: Some("1h".to_owned()),
             ..RealmInput::default()
         }])
         .expect("the realm resolves");
@@ -944,6 +948,7 @@ fn test_a_realm_that_pseudonymises_without_a_provider_is_refused() {
             token_keys_publish_ahead: Some("1h".to_owned()),
             token_keys_rotate_every: Some("30d".to_owned()),
             token_keys_retain: Some("400d".to_owned()),
+            token_lifetime: Some("1h".to_owned()),
             ..RealmInput::default()
         }])
         .expect("the realm resolves");
@@ -964,6 +969,7 @@ fn test_a_realm_rotation_that_would_strand_its_signatures_is_refused() {
             token_keys_publish_ahead: Some("1h".to_owned()),
             token_keys_rotate_every: Some("30d".to_owned()),
             token_keys_retain: Some("400d".to_owned()),
+            token_lifetime: Some("1h".to_owned()),
             ..RealmInput::default()
         }])
         .expect("the realm resolves");
@@ -1038,6 +1044,7 @@ fn test_listed_defaults_to_closed_and_is_opt_in() {
                 token_keys_publish_ahead: Some("1h".to_owned()),
                 token_keys_rotate_every: Some("30d".to_owned()),
                 token_keys_retain: Some("400d".to_owned()),
+                token_lifetime: Some("1h".to_owned()),
                 ..RealmInput::default()
             },
         ])

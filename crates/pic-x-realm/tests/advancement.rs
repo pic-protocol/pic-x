@@ -1191,3 +1191,71 @@ async fn a_transition_that_repeats_the_challenge_it_answers_is_rejected() {
         "unexpected rejection: {body}"
     );
 }
+
+#[tokio::test]
+async fn the_realm_lifetime_bounds_the_token_and_a_proposal_may_only_shorten_it() {
+    let lab = lab().await;
+
+    // The realm in this test is built with the default hour.
+    let (status, body) = post_token(
+        &lab.router,
+        initialization_body(&lab.provider.access_token()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let default_span = token_span(body["access_token"].as_str().expect("token"));
+    assert_eq!(default_span, 3_600);
+
+    // A proposal asking for less gets less.
+    let (status, body) = post_token(
+        &lab.router,
+        initialization_body_with_lifetime(&lab.provider.access_token(), Some(300)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        token_span(body["access_token"].as_str().expect("token")),
+        300
+    );
+
+    // A proposal asking for more is capped by the realm, not obeyed: the lifetime of issued
+    // authority is the deployment's decision, never the caller's.
+    let (status, body) = post_token(
+        &lab.router,
+        initialization_body_with_lifetime(&lab.provider.access_token(), Some(86_400)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        token_span(body["access_token"].as_str().expect("token")),
+        3_600
+    );
+}
+
+/// `exp - iat` of a settled token.
+fn token_span(token: &str) -> i64 {
+    let payload = token.split('.').nth(1).expect("payload");
+    let claims: serde_json::Value =
+        serde_json::from_slice(&URL_SAFE_NO_PAD.decode(payload).expect("base64url")).expect("JSON");
+
+    claims["exp"].as_i64().expect("exp") - claims["iat"].as_i64().expect("iat")
+}
+
+fn initialization_body_with_lifetime(access_token: &str, seconds: Option<i64>) -> String {
+    let mut proposal = serde_json::json!({
+        "type": "https://pic-protocol.org/definitions/proposal-types/continuity-initial",
+        "executionContract": { "corporation": "ACME" },
+    });
+    if let Some(seconds) = seconds {
+        proposal["tokenLifetimeSeconds"] = serde_json::json!(seconds);
+    }
+    let encoded = b64(proposal.to_string().as_bytes());
+
+    format!(
+        "grant_type=urn:ietf:params:oauth:grant-type:token-exchange\
+         &subject_token={access_token}\
+         &subject_token_type=urn:ietf:params:oauth:token-type:access_token\
+         &requested_token_type=https://pic-protocol.org/definitions/token-types/pic\
+         &continuity_proposal={encoded}"
+    )
+}

@@ -1151,11 +1151,14 @@ fn proposal_lifetime(encoded: &str) -> Result<Option<i64>, ExchangeError> {
     let Some(value) = document.get("tokenLifetimeSeconds") else {
         return Ok(None);
     };
-    let seconds = value.as_i64().filter(|seconds| *seconds > 0).ok_or_else(|| {
-        ExchangeError::invalid_request(
-            "`tokenLifetimeSeconds` must be a positive whole number of seconds",
-        )
-    })?;
+    let seconds = value
+        .as_i64()
+        .filter(|seconds| *seconds > 0)
+        .ok_or_else(|| {
+            ExchangeError::invalid_request(
+                "`tokenLifetimeSeconds` must be a positive whole number of seconds",
+            )
+        })?;
     if seconds > MAX_REQUESTED_LIFETIME {
         return Err(ExchangeError::invalid_request(
             "`tokenLifetimeSeconds` is longer than a year",

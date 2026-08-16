@@ -331,7 +331,6 @@ impl RealmConfig {
     pub fn trusted_attesters(&self) -> &[TrustedAttesterConfig] {
         &self.trusted_attesters
     }
-
 }
 
 /// One issuer: everything a realm signs, records and is reached at.

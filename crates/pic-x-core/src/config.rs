@@ -617,7 +617,7 @@ impl Config {
                 .with_context(|| format!("the realm `{name}` has an invalid `token_lifetime`"))?,
             None if !token_keys_enabled => Duration::ZERO,
             None => bail!(
-                "the realm `{name}` issues tokens but declares no `token_lifetime`: how long issued                  authority stays valid is a deployment decision, and this build does not default                  one. Set the realm's `token_lifetime`, or `keys.enabled: false` if it issues                  nothing"
+                "the realm `{name}` issues tokens but declares no `token_lifetime`: how long issued authority stays valid is a deployment decision, and this build does not default one. Set the realm's `token_lifetime`, or `keys.enabled: false` if it issues nothing"
             ),
         };
 

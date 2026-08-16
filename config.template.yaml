@@ -165,6 +165,7 @@
 #         retention: 365d
 #   - name: globex
 #     listed: true
+#     token_lifetime: 1h
 #     keys:
 #       publish_ahead: 1h
 #       rotate_every: 30d
