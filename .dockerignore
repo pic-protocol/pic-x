@@ -3,6 +3,11 @@ target/
 trust-lab/target/
 .git/
 .gitignore
+.tokensave/
+.volume/
+.volume-docker/
+.volume-docker-compose/
+.volume-docker-dev/
 
 # The image is built from source; the recipe itself is not an input.
 Dockerfile
