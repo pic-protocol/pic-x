@@ -833,6 +833,16 @@ impl App {
     /// told to ignore. What the banner says that matters — which build this is — is said by the build
     /// record instead, which every format gets.
     async fn serve(&self, config: &Config, config_file: &Path, out: &mut dyn Write) -> Result<()> {
+        // First, before anything that takes time. Preparing a volume generates keys and writes them
+        // down, and a stop signal that arrives while that is happening is a stop signal the process
+        // has to survive — the alternative is dying where it stands, halfway through writing the
+        // material it will be asked for on the next start. What this resolves to is awaited far
+        // below; that it is listening starts here.
+        let shutdown = match &self.shutdown_factory {
+            Some(factory) => factory(),
+            None => signal::process_shutdown(),
+        };
+
         if let Some(provisioner) = &self.provisioner {
             provisioner(config).with_context(|| {
                 format!("preparing the volume at {}", config.working_dir().display())
@@ -877,11 +887,6 @@ impl App {
         }
 
         logging::record_build(&self.identity, config, self.server.name());
-
-        let shutdown = match &self.shutdown_factory {
-            Some(factory) => factory(),
-            None => signal::process_shutdown(),
-        };
 
         // Registered for exactly as long as the server runs. An app may serve more than once in a
         // process — a test certainly does — and a handler left behind by the previous run would be

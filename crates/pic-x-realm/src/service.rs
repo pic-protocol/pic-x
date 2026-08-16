@@ -226,7 +226,12 @@ impl WellKnownService {
     /// rather than a panic — it will simply be refreshed by nobody, and the realm rejects Proof of
     /// Relationship with "no key set has been fetched" instead of taking the process down.
     fn attester_keys(&self, realm: &Realm) -> Arc<AttesterKeyCache> {
-        let fresh = || Arc::new(AttesterKeyCache::new(realm.trusted_attesters().to_vec()));
+        let fresh = || {
+            Arc::new(AttesterKeyCache::with_stale_for(
+                realm.trusted_attesters().to_vec(),
+                realm.key_cache_stale_for(),
+            ))
+        };
 
         match self.attester_keys.lock() {
             Ok(mut caches) => caches
@@ -239,7 +244,12 @@ impl WellKnownService {
 
     /// The identity-provider key cache for one realm, created on first use.
     fn idp_keys(&self, realm: &Realm) -> Arc<IdpKeyCache> {
-        let fresh = || Arc::new(IdpKeyCache::new(realm.exchange_profiles().to_vec()));
+        let fresh = || {
+            Arc::new(IdpKeyCache::with_stale_for(
+                realm.exchange_profiles().to_vec(),
+                realm.key_cache_stale_for(),
+            ))
+        };
 
         match self.idp_keys.lock() {
             Ok(mut caches) => caches

@@ -8,6 +8,7 @@
 //! candidate artifacts with the key that credential binds.
 
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -31,8 +32,9 @@ use pic_x_core::{
     BoxFuture, ClaimMapping, Config, EXCHANGE_ON_UNMATCHED_SCOPE_REJECT,
     EXCHANGE_SOURCE_FORMAT_JWT, EXCHANGE_SOURCE_OAUTH_ACCESS_TOKEN, ExchangeProfileClaims,
     ExchangeProfileConfig, ExchangeProfilePrivileges, ExchangeProfileSource,
-    ExchangeTokenValidation, Jwk, KeyId, KeyManager, Maintenance, PrivilegeEmit, PrivilegeRule,
-    ProductIdentity, Pseudonymizer, Realm, Realms, Signature, TrustedAttesterConfig,
+    ExchangeTokenValidation, InitialTokenExpiryPolicy, Jwk, KeyId, KeyManager, Maintenance,
+    PrivilegeEmit, PrivilegeRule, ProductIdentity, Pseudonymizer, Realm, Realms, Signature,
+    TrustedAttesterConfig,
 };
 use pic_x_realm::WellKnownService;
 
@@ -298,6 +300,10 @@ impl IdentityProvider {
 
     /// A signed access token carrying the scopes the Exchange Profile maps.
     fn access_token(&self) -> String {
+        self.access_token_with_exp(4_000_000_000_i64)
+    }
+
+    fn access_token_with_exp(&self, exp: i64) -> String {
         use ed25519_dalek::Signer;
 
         let header = serde_json::json!({"alg": "EdDSA", "typ": "JWT", "kid": "idp-key-1"});
@@ -306,7 +312,7 @@ impl IdentityProvider {
             "sub": "user-123",
             "aud": "pic-x",
             "iat": 1_786_700_400_i64,
-            "exp": 4_000_000_000_i64,
+            "exp": exp,
             "scope": "documents:read:document-42 storage:save",
         });
         let signing_input = format!(
@@ -464,6 +470,7 @@ fn realm_trusting_with_audit(
     jwks_uri: &str,
     idp_issuer: &str,
     audit: Arc<dyn pic_x_core::AuditSink>,
+    expiry_policy: InitialTokenExpiryPolicy,
 ) -> Realm {
     Realm::new(
         "acme",
@@ -475,6 +482,7 @@ fn realm_trusting_with_audit(
         audit,
         None,
     )
+    .with_initial_token_expiry_policy(expiry_policy)
     .with_exchange_profiles([exchange_profile(idp_issuer)])
     .with_trusted_attesters([TrustedAttesterConfig {
         id: "test-por-attester".to_owned(),
@@ -586,6 +594,12 @@ fn rewrite_token_jti_and_resign(token: &str, jti: Option<&str>, signer: &Ed25519
     sign_token(&decoded.claims, signer).expect("the token resigns")
 }
 
+fn rewrite_token_exp_and_resign(token: &str, exp: Option<i64>, signer: &Ed25519Signer) -> String {
+    let mut decoded = decode_token(token).expect("the token decodes");
+    decoded.claims.exp = exp;
+    sign_token(&decoded.claims, signer).expect("the token resigns")
+}
+
 /// The exact signed PIC PCA COSE bytes a settled token carries, and the checkpoint they decode to.
 fn checkpoint_of(token: &str) -> (Vec<u8>, PicPcaPayload) {
     let claims = jwt_payload(token);
@@ -614,6 +628,10 @@ struct Lab {
 }
 
 async fn lab() -> Lab {
+    lab_with_expiry_policy(InitialTokenExpiryPolicy::Later).await
+}
+
+async fn lab_with_expiry_policy(expiry_policy: InitialTokenExpiryPolicy) -> Lab {
     let attester = Attester::new();
     let provider = serve_identity_provider().await;
     let jwks_uri = serve_key_set(attester.key_set()).await;
@@ -622,6 +640,7 @@ async fn lab() -> Lab {
         &jwks_uri,
         &provider.issuer,
         audit.clone(),
+        expiry_policy,
     )]);
     let config = development_config();
 
@@ -661,6 +680,8 @@ async fn a_workload_advances_the_lineage_and_the_removed_authority_is_gone() {
         .to_owned();
     assert_eq!(pca0.position, 0);
     assert_eq!(pca0.lineage_id.as_deref(), Some(token0_jti.as_str()));
+    let token0_exp = jwt_payload(&token0)["exp"].as_i64().expect("token 0 exp");
+    assert_eq!(pca0.expires_at, Some(token0_exp));
     assert_eq!(pca0.context_of_authority.invariants.len(), 2);
     assert_eq!(
         pca0.context_of_authority.invariants[&0].0,
@@ -693,6 +714,10 @@ async fn a_workload_advances_the_lineage_and_the_removed_authority_is_gone() {
         None,
     )
     .expect("the candidate builds");
+    assert_eq!(
+        jwt_payload(&candidate.token)["exp"].as_i64(),
+        Some(token0_exp)
+    );
 
     let (status, body) = post_token(&lab.router, advancement_body(&candidate.token)).await;
     assert_eq!(status, StatusCode::OK, "advancement rejected: {body}");
@@ -706,6 +731,11 @@ async fn a_workload_advances_the_lineage_and_the_removed_authority_is_gone() {
     assert_eq!(pca1.position, 1);
     assert_eq!(token1_jti, token0_jti);
     assert_eq!(pca1.lineage_id.as_deref(), Some(token0_jti.as_str()));
+    assert_eq!(pca1.expires_at, Some(token0_exp));
+    assert_eq!(
+        jwt_payload(token1)["exp"].as_i64().expect("token 1 exp"),
+        token0_exp
+    );
     // The read authority is gone, storage:save survives and is re-indexed to 0.
     assert_eq!(pca1.context_of_authority.invariants.len(), 1);
     assert_eq!(pca1.context_of_authority.invariants[&0].0, "storage:save");
@@ -789,6 +819,55 @@ async fn a_candidate_jti_must_match_the_predecessor_lineage() {
             .iter()
             .any(|event| event.action == "pic.exchange.rejected"),
         "rejected advancement was not audited"
+    );
+}
+
+#[tokio::test]
+async fn a_candidate_exp_must_match_the_predecessor_expiration() {
+    let lab = lab().await;
+    let (_, body) = post_token(
+        &lab.router,
+        initialization_body(&lab.provider.access_token()),
+    )
+    .await;
+    let token0 = body["access_token"].as_str().expect("token 0").to_owned();
+    let (pca0_bytes, pca0) = checkpoint_of(&token0);
+
+    let workload_pair = ed25519_dalek::SigningKey::from_bytes(&[0x69; 32]);
+    let presentation = lab
+        .attester
+        .presentation(workload_pair.verifying_key().as_bytes());
+    let workload = Ed25519Signer::new(workload_pair, "spiffe://acme/wrong-exp");
+    let candidate = build_candidate(
+        &pca0_bytes,
+        CandidateRequest {
+            attenuations: Attenuations {
+                invariants: RemoveBitmap::from_indices(&[0]),
+                ..Default::default()
+            },
+            next_challenge: vec![0x5a; 32],
+            proof_of_relationship: Some(ProofOfRelationship::sd_jwt(&presentation)),
+            aud: Some("pic-x".to_owned()),
+            ..Default::default()
+        },
+        &workload,
+        None,
+    )
+    .expect("the candidate builds");
+    let rewritten = rewrite_token_exp_and_resign(
+        &candidate.token,
+        Some(pca0.expires_at.expect("pca expiration") + 1),
+        &workload,
+    );
+
+    let (status, body) = post_token(&lab.router, advancement_body(&rewritten)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error_description"]
+            .as_str()
+            .expect("a description")
+            .contains("exp"),
+        "unexpected rejection: {body}"
     );
 }
 
@@ -937,10 +1016,14 @@ async fn a_candidate_rooted_at_a_checkpoint_this_realm_never_issued_is_rejected(
     )
     .expect("the authority canonicalizes");
     let foreign = pic::continuity::verifier::issue_settled(
-        PicPcaPayload::new(0, map, vec![0x7b; 32]),
+        PicPcaPayload::new(0, map, vec![0x7b; 32])
+            .with_lineage_id("foreign-lineage")
+            .with_expires_at(4_000_000_000),
         &foreign_realm,
         &pic::continuity::verifier::SettlementContext {
             iss: "https://elsewhere.example.com".to_owned(),
+            exp: Some(4_000_000_000),
+            jti: Some("foreign-lineage".to_owned()),
             ..Default::default()
         },
     )
@@ -1193,23 +1276,42 @@ async fn a_transition_that_repeats_the_challenge_it_answers_is_rejected() {
 }
 
 #[tokio::test]
-async fn the_realm_lifetime_bounds_the_token_and_a_proposal_may_only_shorten_it() {
+async fn the_initial_expiry_policy_is_fixed_into_the_lineage() {
     let lab = lab().await;
+    let now = unix_now_for_test();
 
-    // The realm in this test is built with the default hour.
+    // Without an explicit proposal expiration, the larger of the OAuth exp and realm default wins.
     let (status, body) = post_token(
         &lab.router,
-        initialization_body(&lab.provider.access_token()),
+        initialization_body(&lab.provider.access_token_with_exp(now + 120)),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    let default_span = token_span(body["access_token"].as_str().expect("token"));
-    assert_eq!(default_span, 3_600);
+    let default_token = body["access_token"].as_str().expect("token");
+    assert!(token_exp(default_token) >= now + 3_600);
+    assert_eq!(
+        checkpoint_of(default_token).1.expires_at,
+        Some(token_exp(default_token))
+    );
 
-    // A proposal asking for less gets less.
     let (status, body) = post_token(
         &lab.router,
-        initialization_body_with_lifetime(&lab.provider.access_token(), Some(300)),
+        initialization_body(&lab.provider.access_token_with_exp(now + 7_200)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        token_exp(body["access_token"].as_str().expect("token")),
+        now + 7_200
+    );
+
+    // Proposal lifetime is initialization material and therefore wins over both.
+    let (status, body) = post_token(
+        &lab.router,
+        initialization_body_with_lifetime(
+            &lab.provider.access_token_with_exp(now + 7_200),
+            Some(300),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -1218,18 +1320,61 @@ async fn the_realm_lifetime_bounds_the_token_and_a_proposal_may_only_shorten_it(
         300
     );
 
-    // A proposal asking for more is capped by the realm, not obeyed: the lifetime of issued
-    // authority is the deployment's decision, never the caller's.
     let (status, body) = post_token(
         &lab.router,
-        initialization_body_with_lifetime(&lab.provider.access_token(), Some(86_400)),
+        initialization_body_with_lifetime(
+            &lab.provider.access_token_with_exp(now + 120),
+            Some(86_400),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(
         token_span(body["access_token"].as_str().expect("token")),
-        3_600
+        86_400
     );
+}
+
+#[tokio::test]
+async fn the_initial_expiry_policy_can_prefer_pic_or_oauth() {
+    let now = unix_now_for_test();
+
+    let pic_lab = lab_with_expiry_policy(InitialTokenExpiryPolicy::Pic).await;
+    let (status, body) = post_token(
+        &pic_lab.router,
+        initialization_body(&pic_lab.provider.access_token_with_exp(now + 7_200)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let pic_token = body["access_token"].as_str().expect("token");
+    assert!(token_exp(pic_token) >= now + 3_600);
+    assert!(
+        token_exp(pic_token) < now + 7_200,
+        "PIC policy should ignore the later OAuth exp"
+    );
+
+    let oauth_lab = lab_with_expiry_policy(InitialTokenExpiryPolicy::OAuth).await;
+    let (status, body) = post_token(
+        &oauth_lab.router,
+        initialization_body(&oauth_lab.provider.access_token_with_exp(now + 120)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        token_exp(body["access_token"].as_str().expect("token")),
+        now + 120
+    );
+}
+
+fn unix_now_for_test() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("test clock")
+        .as_secs() as i64
+}
+
+fn token_exp(token: &str) -> i64 {
+    jwt_payload(token)["exp"].as_i64().expect("token exp")
 }
 
 /// `exp - iat` of a settled token.

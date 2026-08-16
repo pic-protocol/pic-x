@@ -105,6 +105,12 @@ struct RealmSection {
     /// How long the PIC Tokens this realm issues stay valid, e.g. `1h`, `30m`.
     #[serde(default, alias = "tokenLifetime")]
     token_lifetime: Option<String>,
+    /// Which expiration wins at OAuth-to-PIC initialization: `later`, `pic`, or `oauth`.
+    #[serde(default, alias = "initialTokenExpiryPolicy")]
+    initial_token_expiry_policy: Option<String>,
+    /// How long cached IdP/attester JWKS remain usable after refresh starts failing.
+    #[serde(default, alias = "keyCacheStaleFor")]
+    key_cache_stale_for: Option<String>,
     /// Which algorithm this realm signs with: `EdDSA` (default) or `ES256`.
     #[serde(default, alias = "tokenSigningAlgorithm")]
     token_signing_algorithm: Option<String>,
@@ -747,6 +753,8 @@ impl ConfigFile {
             .iter()
             .map(|realm| RealmInput {
                 token_lifetime: realm.token_lifetime.clone(),
+                initial_token_expiry_policy: realm.initial_token_expiry_policy.clone(),
+                key_cache_stale_for: realm.key_cache_stale_for.clone(),
                 token_signing_algorithm: realm.token_signing_algorithm.clone(),
                 name: realm.name.clone(),
                 issuer: realm.issuer.clone(),
@@ -865,6 +873,20 @@ mod tests {
                 .all(|(key, _)| key == SETTING_PUBLIC_HTTP_ADDR)
         );
         assert!(settings_of("{}").is_empty());
+    }
+
+    #[test]
+    fn test_realm_key_cache_stale_window_is_read() {
+        let file = ConfigFile::parse(
+            "realms:\n  - name: acme\n    tokenLifetime: 1h\n    initialTokenExpiryPolicy: oauth\n    keyCacheStaleFor: 10m\n",
+        )
+        .expect("the file parses");
+
+        assert_eq!(
+            file.realms()[0].initial_token_expiry_policy.as_deref(),
+            Some("oauth")
+        );
+        assert_eq!(file.realms()[0].key_cache_stale_for.as_deref(), Some("10m"));
     }
 
     #[test]

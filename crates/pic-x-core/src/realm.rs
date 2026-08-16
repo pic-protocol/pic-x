@@ -29,6 +29,9 @@ use std::time::Duration;
 /// realm assembled in a test or an embedding build is never left with a zero-length token.
 const DEFAULT_TOKEN_LIFETIME: Duration = Duration::from_secs(3_600);
 
+/// How long a runtime realm serves cached upstream JWKS after refresh starts failing.
+const DEFAULT_KEY_CACHE_STALE_FOR: Duration = Duration::from_secs(3_600);
+
 /// The algorithm a realm signs with when configuration names none.
 const DEFAULT_SIGNING_ALGORITHM: &str = "EdDSA";
 
@@ -55,6 +58,28 @@ pub const EXCHANGE_SOURCE_FORMAT_JWT: &str = "jwt";
 
 /// The only unmatched-scope policy implemented by Profile 0.2 PIC-X exchange.
 pub const EXCHANGE_ON_UNMATCHED_SCOPE_REJECT: &str = "reject";
+
+/// How initial PIC Token expiration is chosen when the source token also has an expiration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InitialTokenExpiryPolicy {
+    /// Use whichever absolute expiration is later.
+    Later,
+    /// Use the realm's configured PIC Token lifetime.
+    Pic,
+    /// Use the OAuth source token expiration when it exists.
+    OAuth,
+}
+
+impl InitialTokenExpiryPolicy {
+    /// Stable configuration spelling.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Later => "later",
+            Self::Pic => "pic",
+            Self::OAuth => "oauth",
+        }
+    }
+}
 
 /// A realm-scoped Exchange Profile: validation and mapping rules for one upstream token source.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -181,6 +206,10 @@ pub struct RealmInput {
     pub secrets_env_prefix: Option<String>,
     /// How long a PIC Token this realm issues is valid, when the caller asks for nothing else.
     pub token_lifetime: Option<String>,
+    /// How initial PIC Token expiration is chosen against OAuth source expiration.
+    pub initial_token_expiry_policy: Option<String>,
+    /// How long to serve cached IdP/attester JWKS after refresh starts failing.
+    pub key_cache_stale_for: Option<String>,
     /// Which algorithm this realm signs its tokens and COSE artifacts with.
     pub token_signing_algorithm: Option<String>,
     pub exchange_profiles: Vec<ExchangeProfileConfig>,
@@ -207,6 +236,10 @@ pub struct RealmConfig {
     pub(crate) token_keys_retain: Duration,
     /// The default lifetime of a PIC Token this realm issues.
     pub(crate) token_lifetime: Duration,
+    /// How the initial PIC Token expiration is chosen during OAuth-to-PIC exchange.
+    pub(crate) initial_token_expiry_policy: InitialTokenExpiryPolicy,
+    /// How long cached IdP/attester JWKS stay usable after refresh starts failing.
+    pub(crate) key_cache_stale_for: Duration,
     /// The JOSE algorithm this realm signs with, e.g. `EdDSA` or `ES256`.
     pub(crate) token_signing_algorithm: String,
     // The operations ring — the one that seals this realm's trail.
@@ -268,6 +301,16 @@ impl RealmConfig {
     /// deployment decision, and a build that guesses it is a build that guesses wrong somewhere.
     pub fn token_lifetime(&self) -> Duration {
         self.token_lifetime
+    }
+
+    /// How the initial PIC Token expiration is chosen during OAuth-to-PIC exchange.
+    pub fn initial_token_expiry_policy(&self) -> InitialTokenExpiryPolicy {
+        self.initial_token_expiry_policy
+    }
+
+    /// How long cached upstream JWKS stay usable after refresh starts failing.
+    pub fn key_cache_stale_for(&self) -> Duration {
+        self.key_cache_stale_for
     }
 
     /// The JOSE algorithm this realm signs with.
@@ -363,6 +406,10 @@ pub struct Realm {
     trusted_attesters: Vec<TrustedAttesterConfig>,
     /// How long the PIC Tokens this realm issues stay valid.
     token_lifetime: Duration,
+    /// How the initial PIC Token expiration is chosen during OAuth-to-PIC exchange.
+    initial_token_expiry_policy: InitialTokenExpiryPolicy,
+    /// How long cached IdP/attester JWKS stay usable after refresh starts failing.
+    key_cache_stale_for: Duration,
     /// The JOSE algorithm this realm signs with.
     token_signing_algorithm: String,
 }
@@ -401,6 +448,8 @@ impl Realm {
             exchange_profiles: Vec::new(),
             trusted_attesters: Vec::new(),
             token_lifetime: DEFAULT_TOKEN_LIFETIME,
+            initial_token_expiry_policy: InitialTokenExpiryPolicy::Later,
+            key_cache_stale_for: DEFAULT_KEY_CACHE_STALE_FOR,
             token_signing_algorithm: DEFAULT_SIGNING_ALGORITHM.to_owned(),
         }
     }
@@ -408,6 +457,20 @@ impl Realm {
     /// Sets how long the PIC Tokens this realm issues stay valid.
     pub fn with_token_lifetime(mut self, lifetime: Duration) -> Self {
         self.token_lifetime = lifetime;
+
+        self
+    }
+
+    /// Sets how initial PIC Token expiration is chosen during OAuth-to-PIC exchange.
+    pub fn with_initial_token_expiry_policy(mut self, policy: InitialTokenExpiryPolicy) -> Self {
+        self.initial_token_expiry_policy = policy;
+
+        self
+    }
+
+    /// Sets how long cached upstream JWKS stay usable after refresh starts failing.
+    pub fn with_key_cache_stale_for(mut self, stale_for: Duration) -> Self {
+        self.key_cache_stale_for = stale_for;
 
         self
     }
@@ -501,6 +564,16 @@ impl Realm {
     /// How long the PIC Tokens this realm issues stay valid, unless the exchange asks for less.
     pub fn token_lifetime(&self) -> Duration {
         self.token_lifetime
+    }
+
+    /// How the initial PIC Token expiration is chosen during OAuth-to-PIC exchange.
+    pub fn initial_token_expiry_policy(&self) -> InitialTokenExpiryPolicy {
+        self.initial_token_expiry_policy
+    }
+
+    /// How long cached upstream JWKS stay usable after refresh starts failing.
+    pub fn key_cache_stale_for(&self) -> Duration {
+        self.key_cache_stale_for
     }
 
     /// The JOSE algorithm this realm signs its tokens and COSE artifacts with.

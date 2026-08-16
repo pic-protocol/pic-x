@@ -39,6 +39,7 @@ pub(crate) const REFRESH_EVERY: Duration = Duration::from_secs(300);
 /// How soon it retries while some configured source has never answered.
 pub(crate) const RETRY_UNTIL_READY: Duration = Duration::from_secs(3);
 /// How long a key set that cannot be refreshed keeps being served.
+#[cfg(test)]
 const SERVE_STALE_FOR: Duration = Duration::from_secs(3_600);
 
 /// The verification keys currently accepted for an attester.
@@ -56,18 +57,29 @@ pub(crate) trait KeySetFetcher: Send + Sync {
 /// The attester key sets this realm holds, and when each was last fetched.
 pub(crate) struct AttesterKeyCache {
     attesters: Vec<TrustedAttesterConfig>,
+    serve_stale_for: Duration,
     entries: Mutex<BTreeMap<String, CacheEntry>>,
 }
 
 struct CacheEntry {
     keys: Vec<Value>,
     fetched_at: Instant,
+    failed_since: Option<Instant>,
 }
 
 impl AttesterKeyCache {
+    #[cfg(test)]
     pub(crate) fn new(attesters: Vec<TrustedAttesterConfig>) -> Self {
+        Self::with_stale_for(attesters, SERVE_STALE_FOR)
+    }
+
+    pub(crate) fn with_stale_for(
+        attesters: Vec<TrustedAttesterConfig>,
+        serve_stale_for: Duration,
+    ) -> Self {
         Self {
             attesters,
+            serve_stale_for,
             entries: Mutex::new(BTreeMap::new()),
         }
     }
@@ -100,11 +112,18 @@ impl AttesterKeyCache {
                             CacheEntry {
                                 keys,
                                 fetched_at: Instant::now(),
+                                failed_since: None,
                             },
                         );
                     }
                 }
                 Err(error) => {
+                    if let Ok(mut entries) = self.entries.lock()
+                        && let Some(entry) = entries.get_mut(&attester.id)
+                        && entry.failed_since.is_none()
+                    {
+                        entry.failed_since = Some(Instant::now());
+                    }
                     tracing::warn!(
                         event.name = "attester.key_set_refresh_failed",
                         component = crate::COMPONENT,
@@ -137,13 +156,17 @@ impl AttesterKeySource for AttesterKeyCache {
             anyhow!("no key set has been fetched yet for the attester `{attester_id}`")
         })?;
 
-        let age = entry.fetched_at.elapsed();
-        if age > SERVE_STALE_FOR {
-            bail!(
-                "the cached key set for the attester `{attester_id}` is {}s old and no refresh has \
-                 succeeded",
-                age.as_secs()
-            );
+        if let Some(failed_since) = entry.failed_since {
+            let failure_age = failed_since.elapsed();
+            if failure_age > self.serve_stale_for {
+                let last_success_age = entry.fetched_at.elapsed();
+                bail!(
+                    "the cached key set for the attester `{attester_id}` has been stale for {}s \
+                     after refresh failures; the last successful fetch was {}s ago",
+                    failure_age.as_secs(),
+                    last_success_age.as_secs()
+                );
+            }
         }
 
         Ok(entry.keys.clone())
@@ -226,10 +249,10 @@ mod tests {
         {"kid":"enc","kty":"OKP","crv":"X25519","use":"enc","x":"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo"}
     ]}"#;
 
-    fn age_entry(cache: &AttesterKeyCache, by: Duration) {
+    fn age_failed_refresh(cache: &AttesterKeyCache, by: Duration) {
         let mut entries = cache.entries.lock().unwrap();
         let entry = entries.get_mut("acme-por-attester").unwrap();
-        entry.fetched_at = Instant::now() - by;
+        entry.failed_since = Some(Instant::now() - by);
     }
 
     #[test]
@@ -292,12 +315,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_key_set_older_than_the_stale_window_stops_being_served() {
+    async fn a_key_set_stale_after_failed_refresh_stops_being_served() {
         let fetcher = StubFetcher::serving(KEY_SET);
         let cache = AttesterKeyCache::new(vec![attester()]);
         cache.refresh(fetcher.as_ref()).await;
 
-        age_entry(&cache, SERVE_STALE_FOR + Duration::from_secs(1));
+        fetcher.breaks();
+        cache.refresh(fetcher.as_ref()).await;
+        age_failed_refresh(&cache, SERVE_STALE_FOR + Duration::from_secs(1));
+        assert!(cache.keys_for("acme-por-attester").is_err());
+    }
+
+    #[tokio::test]
+    async fn stale_window_can_fail_closed_after_a_refresh_failure() {
+        let fetcher = StubFetcher::serving(KEY_SET);
+        let cache = AttesterKeyCache::with_stale_for(vec![attester()], Duration::ZERO);
+        cache.refresh(fetcher.as_ref()).await;
+        assert!(cache.keys_for("acme-por-attester").is_ok());
+
+        fetcher.breaks();
+        cache.refresh(fetcher.as_ref()).await;
+
         assert!(cache.keys_for("acme-por-attester").is_err());
     }
 

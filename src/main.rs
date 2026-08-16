@@ -383,6 +383,8 @@ fn build_realm(config: &Config, realm: &RealmConfig) -> anyhow::Result<Realm> {
         pseudonymizer,
     )
     .with_token_lifetime(realm.token_lifetime())
+    .with_initial_token_expiry_policy(realm.initial_token_expiry_policy())
+    .with_key_cache_stale_for(realm.key_cache_stale_for())
     .with_token_signing_algorithm(realm.token_signing_algorithm())
     .with_exchange_profiles(realm.exchange_profiles().iter().cloned())
     .with_trusted_attesters(realm.trusted_attesters().iter().cloned()))

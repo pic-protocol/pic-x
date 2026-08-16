@@ -7,7 +7,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::Json;
 use axum::body::Bytes;
@@ -36,7 +36,7 @@ use tracing::{info, warn};
 use pic_x_core::audit::{AuditEvent, Subject};
 use pic_x_core::{
     ClaimMapping, EXCHANGE_ON_UNMATCHED_SCOPE_REJECT, EXCHANGE_SOURCE_OAUTH_ACCESS_TOKEN,
-    ExchangeProfileConfig, KeyManager, OAUTH_ACCESS_TOKEN_TYPE, Realm,
+    ExchangeProfileConfig, InitialTokenExpiryPolicy, KeyManager, OAUTH_ACCESS_TOKEN_TYPE, Realm,
 };
 
 use crate::COMPONENT;
@@ -237,8 +237,17 @@ impl TokenEndpoint {
             .fill(&mut challenge)
             .map_err(|_| ExchangeError::server_error("could not generate the next challenge"))?;
         let lineage_id = new_lineage_id()?;
-        let checkpoint =
-            PicPcaPayload::new(0, authority, challenge).with_lineage_id(lineage_id.clone());
+        let now = unix_now()?;
+        let expiry = initial_expiry(
+            proposal_value,
+            jwt.claim_i64("exp"),
+            now,
+            self.realm.token_lifetime(),
+            self.realm.initial_token_expiry_policy(),
+        )?;
+        let checkpoint = PicPcaPayload::new(0, authority, challenge)
+            .with_lineage_id(lineage_id.clone())
+            .with_expires_at(expiry);
 
         let keys = self.realm.token_keys().map(Arc::clone).ok_or_else(|| {
             ExchangeError::temporarily_unavailable(
@@ -246,19 +255,6 @@ impl TokenEndpoint {
             )
         })?;
         let signer = RealmTokenSigner::new(keys, self.realm.token_signing_algorithm())?;
-        let now = unix_now()?;
-        // The realm states the default; the proposal may ask for less, never more. Authority that
-        // outlived what the deployment allows would be a lifetime chosen by the caller.
-        let requested = proposal_lifetime(proposal_value)?;
-        let lifetime = match requested {
-            Some(asked) => asked.min(self.realm.token_lifetime().as_secs() as i64),
-            None => self.realm.token_lifetime().as_secs() as i64,
-        };
-        let expiry = match jwt.claim_i64("exp") {
-            // A PIC token must not outlive the OAuth authority it was derived from.
-            Some(source_expiry) => source_expiry.min(now + lifetime),
-            None => now + lifetime,
-        };
         let context = SettlementContext {
             iss: self
                 .realm
@@ -334,8 +330,18 @@ impl TokenEndpoint {
                 "the candidate predecessor checkpoint has no lineage identifier",
             ));
         };
-        // The settled token inherits the lifetime of the checkpoint it advances, so a lineage
-        // cannot outlive the authority it started from by advancing repeatedly.
+        if candidate_metadata.expires_at <= now {
+            self.record_advancement_rejected(
+                Some(&lineage_id),
+                Some(candidate_metadata.proposed_position),
+            )
+            .await?;
+            return Err(ExchangeError::invalid_grant(
+                "the candidate predecessor checkpoint is expired",
+            ));
+        }
+        // The settled token inherits the absolute expiry of the checkpoint it advances, so a
+        // lineage cannot outlive the authority it started from by advancing repeatedly.
         let context = SettlementContext {
             iss: self
                 .realm
@@ -345,7 +351,7 @@ impl TokenEndpoint {
             sub: None,
             aud: None,
             iat: Some(now),
-            exp: Some(now + self.realm.token_lifetime().as_secs() as i64),
+            exp: Some(candidate_metadata.expires_at),
             jti: Some(lineage_id.clone()),
         };
 
@@ -607,6 +613,7 @@ impl TokenEndpoint {
 
 struct CandidateMetadata {
     lineage_id: Option<String>,
+    expires_at: i64,
     proposed_position: u64,
 }
 
@@ -738,9 +745,28 @@ fn preflight_candidate_key_metadata(
             }
         }
     }
+    let Some(expires_at) = predecessor.expires_at else {
+        return Err(ExchangeError::invalid_grant(
+            "the candidate predecessor checkpoint has no absolute expiration",
+        ));
+    };
+    match decoded.claims.exp {
+        Some(exp) if exp == expires_at => {}
+        Some(_) => {
+            return Err(ExchangeError::invalid_grant(
+                "candidate PIC Token JWT exp does not match predecessor PCA expiration",
+            ));
+        }
+        None => {
+            return Err(ExchangeError::invalid_grant(
+                "candidate PIC Token JWT has no exp matching predecessor PCA expiration",
+            ));
+        }
+    }
 
     Ok(CandidateMetadata {
         lineage_id: predecessor.lineage_id,
+        expires_at,
         proposed_position: transition.position,
     })
 }
@@ -1070,7 +1096,12 @@ fn parse_form(body: &Bytes) -> Result<BTreeMap<String, String>, ExchangeError> {
 
     for pair in text.split('&').filter(|pair| !pair.is_empty()) {
         let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
-        form.insert(percent_decode(key)?, percent_decode(value)?);
+        let key = percent_decode(key)?;
+        if form.insert(key.clone(), percent_decode(value)?).is_some() {
+            return Err(ExchangeError::invalid_request(format!(
+                "duplicate `{key}` parameter"
+            )));
+        }
     }
 
     Ok(form)
@@ -1137,18 +1168,66 @@ fn unix_now() -> Result<i64, ExchangeError> {
         })
 }
 
-/// The lifetime an Initial Continuity Proposal asks for, when it asks for one.
+/// The absolute expiry an Initial Continuity Proposal asks for, when it asks for one.
 ///
 /// The articles allow a proposal to carry "additional initialization material defined by its
 /// proposal type", which is what this reads. The protocol crate tolerates the extra member, so the
 /// proposal is parsed twice: once by the crate for the parts it defines, once here for this.
-fn proposal_lifetime(encoded: &str) -> Result<Option<i64>, ExchangeError> {
+fn initial_expiry(
+    encoded: &str,
+    source_expiry: Option<i64>,
+    now: i64,
+    default_lifetime: Duration,
+    policy: InitialTokenExpiryPolicy,
+) -> Result<i64, ExchangeError> {
+    if let Some(proposal_expiry) = proposal_expiry(encoded, now)? {
+        return Ok(proposal_expiry);
+    }
+
+    let default_expiry = now
+        .checked_add(default_lifetime.as_secs() as i64)
+        .ok_or_else(|| ExchangeError::invalid_request("realm token_lifetime overflows time"))?;
+    let expiry = match source_expiry {
+        Some(source_expiry) => match policy {
+            InitialTokenExpiryPolicy::Later => source_expiry.max(default_expiry),
+            InitialTokenExpiryPolicy::Pic => default_expiry,
+            InitialTokenExpiryPolicy::OAuth => source_expiry,
+        },
+        None => default_expiry,
+    };
+    if expiry <= now {
+        return Err(ExchangeError::invalid_grant(
+            "initial PIC Token expiration is not in the future",
+        ));
+    }
+
+    Ok(expiry)
+}
+
+fn proposal_expiry(encoded: &str, now: i64) -> Result<Option<i64>, ExchangeError> {
     let bytes = URL_SAFE_NO_PAD.decode(encoded).map_err(|error| {
         ExchangeError::invalid_request(format!("continuity_proposal is not base64url: {error}"))
     })?;
     let document: Value = serde_json::from_slice(&bytes).map_err(|error| {
         ExchangeError::invalid_request(format!("continuity_proposal is not JSON: {error}"))
     })?;
+
+    if let Some(value) = document.get("tokenExpiresAt") {
+        let expires_at = value
+            .as_i64()
+            .filter(|expires_at| *expires_at > now)
+            .ok_or_else(|| {
+                ExchangeError::invalid_request(
+                    "`tokenExpiresAt` must be a future NumericDate in whole seconds",
+                )
+            })?;
+        if expires_at - now > MAX_REQUESTED_LIFETIME {
+            return Err(ExchangeError::invalid_request(
+                "`tokenExpiresAt` is more than a year in the future",
+            ));
+        }
+        return Ok(Some(expires_at));
+    }
 
     let Some(value) = document.get("tokenLifetimeSeconds") else {
         return Ok(None);
@@ -1167,7 +1246,9 @@ fn proposal_lifetime(encoded: &str) -> Result<Option<i64>, ExchangeError> {
         ));
     }
 
-    Ok(Some(seconds))
+    now.checked_add(seconds)
+        .ok_or_else(|| ExchangeError::invalid_request("`tokenLifetimeSeconds` overflows time"))
+        .map(Some)
 }
 
 fn new_lineage_id() -> Result<String, ExchangeError> {

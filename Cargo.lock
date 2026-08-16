@@ -1151,9 +1151,9 @@ dependencies = [
 
 [[package]]
 name = "pic-continuity"
-version = "0.2.2"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0f33693e880ffd9460c66311b6bf0074963260137c3abc8429d3701923474146"
+checksum = "95da673fdf829cc8e651470fd7bd4a19074e833de41179e44c7539e0c0880e5e"
 dependencies = [
  "base64",
  "ciborium",
@@ -1171,9 +1171,9 @@ dependencies = [
 
 [[package]]
 name = "pic-protocol"
-version = "0.2.2"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "86735b9f5006f910274a5ba7acfc76fccdedacafed029addcaccbd3b1af89a26"
+checksum = "1361db846ed6212bfa2f4edbbbb1d02ffe507385ba05a056f1515e9b81aa61b2"
 dependencies = [
  "pic-continuity",
 ]

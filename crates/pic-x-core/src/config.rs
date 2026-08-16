@@ -15,8 +15,8 @@ use crate::logging::{LogFormat, LogLevel};
 use crate::peer::AllowedPeer;
 use crate::realm::{
     EXCHANGE_ON_UNMATCHED_SCOPE_REJECT, EXCHANGE_SOURCE_FORMAT_JWT,
-    EXCHANGE_SOURCE_OAUTH_ACCESS_TOKEN, ExchangeProfileConfig, RealmConfig, RealmInput,
-    TrustedAttesterConfig,
+    EXCHANGE_SOURCE_OAUTH_ACCESS_TOKEN, ExchangeProfileConfig, InitialTokenExpiryPolicy,
+    RealmConfig, RealmInput, TrustedAttesterConfig,
 };
 use crate::secrets::{SecretProvider, SecretRef};
 use crate::tls::TlsSettings;
@@ -620,6 +620,18 @@ impl Config {
                 "the realm `{name}` issues tokens but declares no `token_lifetime`: how long issued authority stays valid is a deployment decision, and this build does not default one. Set the realm's `token_lifetime`, or `keys.enabled: false` if it issues nothing"
             ),
         };
+        let initial_token_expiry_policy = match input.initial_token_expiry_policy {
+            Some(value) => parse_initial_token_expiry_policy(&value).with_context(|| {
+                format!("the realm `{name}` has an invalid `initial_token_expiry_policy`")
+            })?,
+            None => InitialTokenExpiryPolicy::Later,
+        };
+        let key_cache_stale_for = match input.key_cache_stale_for {
+            Some(value) => parse_duration_allow_zero(&value).with_context(|| {
+                format!("the realm `{name}` has an invalid `key_cache_stale_for`")
+            })?,
+            None => Duration::from_secs(3_600),
+        };
 
         // Only the algorithms this build can actually sign with are accepted, and the check happens
         // at startup: a realm that names one it cannot produce would otherwise fail at the first
@@ -644,6 +656,8 @@ produce: use `EdDSA` or `ES256`"
             token_keys_rotate_every,
             token_keys_retain,
             token_lifetime,
+            initial_token_expiry_policy,
+            key_cache_stale_for,
             // The operations ring inherits the shared `operations` block unless the realm overrides it.
             operations_keys_enabled: inherit_bool(
                 input.operations_keys_enabled,
@@ -1928,6 +1942,28 @@ fn parse_duration(value: &str) -> Result<Duration> {
         .checked_mul(multiplier)
         .map(Duration::from_secs)
         .ok_or_else(|| anyhow!("`{value}` is longer than any deployment outlives"))
+}
+
+fn parse_duration_allow_zero(value: &str) -> Result<Duration> {
+    let trimmed = value.trim();
+    if matches!(
+        trimmed,
+        "0" | "0s" | "0S" | "0m" | "0M" | "0h" | "0H" | "0d" | "0D"
+    ) {
+        return Ok(Duration::ZERO);
+    }
+    parse_duration(trimmed)
+}
+
+fn parse_initial_token_expiry_policy(value: &str) -> Result<InitialTokenExpiryPolicy> {
+    match value.trim() {
+        "later" => Ok(InitialTokenExpiryPolicy::Later),
+        "pic" => Ok(InitialTokenExpiryPolicy::Pic),
+        "oauth" => Ok(InitialTokenExpiryPolicy::OAuth),
+        other => {
+            bail!("`{other}` is not an initial token expiry policy: expected later, pic or oauth")
+        }
+    }
 }
 
 /// Reads a setting written as a count, refusing zero.

@@ -9,7 +9,7 @@
 use std::fs;
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use std::process::{Command, ExitStatus, Output, Stdio};
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
@@ -109,6 +109,34 @@ struct Served {
     succeeded: bool,
     stdout: String,
     stderr: String,
+    ended: String,
+}
+
+impl Served {
+    /// Why a run that was supposed to succeed did not, in a form that says something even when the
+    /// process said nothing.
+    ///
+    /// A process killed by a signal writes no diagnostic: there is nowhere left to write it from. An
+    /// assertion that printed only standard error printed an empty line, and an empty line is what a
+    /// pipeline failure looked like the first time this happened — a panic with nothing after it.
+    fn why(&self) -> String {
+        format!("the run ended with {}\n{}", self.ended, self.stderr)
+    }
+}
+
+/// How a process ended, said the way the operating system means it.
+fn how_it_ended(status: ExitStatus) -> String {
+    #[cfg(unix)]
+    if let Some(signal) = std::os::unix::process::ExitStatusExt::signal(&status) {
+        return format!(
+            "signal {signal}: it was killed rather than asked, and stopped nothing in order"
+        );
+    }
+
+    match status.code() {
+        Some(code) => format!("exit status {code}"),
+        None => "no exit status at all".to_owned(),
+    }
 }
 
 /// Starts the server, waits until it is up, asks it to stop, and collects everything it said.
@@ -121,9 +149,20 @@ struct Served {
 /// prints nothing at all and the wait would never end. It is defined as *stopped saying things*:
 /// output is read until a lull, and the signal follows. A run that fails before it starts ends the
 /// stream instead, and its real exit status is what comes back.
+///
+/// Silence before the first line is a different question from silence after it, and gets a different
+/// answer. Once a run has said something it is running, and a lull means it has settled; before that
+/// it may not have been scheduled yet — a loaded build machine spawning a suite's worth of processes
+/// at once takes far longer to reach the first line than a quiet machine does. Signalling on that
+/// timeout signals a process that has not reached its own signal handlers, which the kernel resolves
+/// by ending it, and the test then fails for a reason that has nothing to do with what it tests.
 fn serve(args: &[&str], envs: &[(&str, &str)]) -> Served {
     /// How long a silence has to last before the server counts as up and waiting.
     const LULL: Duration = Duration::from_millis(1_500);
+    /// How long to wait for a run to say anything at all. Generous because it costs nothing: it is
+    /// reached only by a run that is either configured to say nothing or genuinely stuck, and the
+    /// second one is worth waiting for rather than misreporting.
+    const FIRST: Duration = Duration::from_secs(15);
 
     let mut command = Command::new(env!("CARGO_BIN_EXE_pic-x"));
 
@@ -161,7 +200,9 @@ fn serve(args: &[&str], envs: &[(&str, &str)]) -> Served {
     let mut ended = false;
 
     loop {
-        match incoming.recv_timeout(LULL) {
+        let patience = if stdout.is_empty() { FIRST } else { LULL };
+
+        match incoming.recv_timeout(patience) {
             Ok(line) => {
                 let started = line.contains("server.started");
                 stdout.push_str(&line);
@@ -203,6 +244,7 @@ fn serve(args: &[&str], envs: &[(&str, &str)]) -> Served {
         succeeded: status.success(),
         stdout,
         stderr,
+        ended: how_it_ended(status),
     }
 }
 
@@ -210,7 +252,7 @@ fn serve(args: &[&str], envs: &[(&str, &str)]) -> Served {
 fn test_the_default_run_is_a_json_stream_and_nothing_else() {
     let config = ConfigFixture::new("servable", SERVABLE_CONFIG);
     let served = serve(&[config.as_arg()], &[]);
-    assert!(served.succeeded, "{}", served.stderr);
+    assert!(served.succeeded, "{}", served.why());
 
     let stdout = served.stdout;
 
@@ -339,7 +381,7 @@ fn test_logging_can_be_set_from_the_configuration_file_and_the_environment() {
             ("PIC_X_LOG_FORMAT", "terminal"),
         ],
     );
-    assert!(quiet.succeeded, "{}", quiet.stderr);
+    assert!(quiet.succeeded, "{}", quiet.why());
     assert!(!quiet.stdout.contains("server.started"));
 }
 
@@ -413,7 +455,7 @@ fn test_a_key_resolved_from_the_environment_starts_and_pseudonymises() {
         ],
     );
 
-    assert!(served.succeeded, "{}", served.stderr);
+    assert!(served.succeeded, "{}", served.why());
     // The key reached the pseudonymiser and never reached the stream.
     assert!(
         !served.stdout.contains("0123456789abcdef"),
@@ -428,7 +470,7 @@ fn test_pseudonymisation_stays_off_unless_the_configuration_asks() {
     let config = ConfigFixture::new("pseudonym-default-off", SERVABLE_CONFIG);
     let served = serve(&[config.as_arg()], &[]);
 
-    assert!(served.succeeded, "{}", served.stderr);
+    assert!(served.succeeded, "{}", served.why());
     assert!(served.stdout.contains(r#""audit.subject.kind":"system""#));
 }
 
@@ -437,7 +479,7 @@ fn test_a_signalled_server_says_why_it_stopped_and_stops_in_order() {
     let config = ConfigFixture::new("graceful", SERVABLE_CONFIG);
     let served = serve(&[config.as_arg(), "--log-level", "debug"], &[]);
 
-    assert!(served.succeeded, "{}", served.stderr);
+    assert!(served.succeeded, "{}", served.why());
 
     let order: Vec<&str> = [
         "server.starting",
@@ -496,7 +538,7 @@ fn test_the_named_file_is_the_one_that_is_read() {
 
     // The decoy exists but is never named, so its contents cannot reach the run.
     let served = serve(&[named.as_arg()], &[]);
-    assert!(served.succeeded, "{}", served.stderr);
+    assert!(served.succeeded, "{}", served.why());
     assert!(decoy.path().exists());
 
     let missing = run(&["/nonexistent/pic-x/config.yaml"]);
@@ -524,7 +566,7 @@ fn test_command_line_flags_override_the_parsed_configuration_file() {
 
     // The flag is applied after the file is parsed, which satisfies the same validation.
     let with = serve(&[config.as_arg(), "--public-http-addr", "127.0.0.1:0"], &[]);
-    assert!(with.succeeded, "{}", with.stderr);
+    assert!(with.succeeded, "{}", with.why());
     assert!(with.stdout.contains(r#""event.name":"server.started""#));
 }
 
@@ -679,7 +721,7 @@ fn test_the_same_surface_on_loopback_starts() {
 
     let served = serve(&[config.as_arg()], &[config.volume()]);
 
-    assert!(served.succeeded, "{}", served.stderr);
+    assert!(served.succeeded, "{}", served.why());
 }
 
 #[test]
@@ -690,7 +732,7 @@ fn test_a_trail_this_build_wrote_is_a_trail_this_build_can_check() {
     );
 
     let served = serve(&[config.as_arg()], &[config.volume()]);
-    assert!(served.succeeded, "{}", served.stderr);
+    assert!(served.succeeded, "{}", served.why());
 
     let (_, volume) = config.volume();
     let directory = format!("{volume}/operations/audit");
@@ -712,7 +754,7 @@ fn test_a_trail_somebody_edited_does_not_verify() {
     );
 
     let served = serve(&[config.as_arg()], &[config.volume()]);
-    assert!(served.succeeded, "{}", served.stderr);
+    assert!(served.succeeded, "{}", served.why());
 
     let (_, volume) = config.volume();
     let directory = format!("{volume}/operations/audit");

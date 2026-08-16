@@ -26,23 +26,35 @@ use pic_x_core::ExchangeProfileConfig;
 use crate::attester_keys::{KeySetFetcher, parse_key_set};
 
 /// How long a key set that cannot be refreshed keeps being served.
+#[cfg(test)]
 const SERVE_STALE_FOR: Duration = Duration::from_secs(3_600);
 
 /// The identity-provider key sets one realm holds, keyed by Exchange Profile id.
 pub(crate) struct IdpKeyCache {
     profiles: Vec<ExchangeProfileConfig>,
+    serve_stale_for: Duration,
     entries: Mutex<BTreeMap<String, Entry>>,
 }
 
 struct Entry {
     keys: Vec<Value>,
     fetched_at: Instant,
+    failed_since: Option<Instant>,
 }
 
 impl IdpKeyCache {
+    #[cfg(test)]
     pub(crate) fn new(profiles: Vec<ExchangeProfileConfig>) -> Self {
+        Self::with_stale_for(profiles, SERVE_STALE_FOR)
+    }
+
+    pub(crate) fn with_stale_for(
+        profiles: Vec<ExchangeProfileConfig>,
+        serve_stale_for: Duration,
+    ) -> Self {
         Self {
             profiles,
+            serve_stale_for,
             entries: Mutex::new(BTreeMap::new()),
         }
     }
@@ -69,13 +81,17 @@ impl IdpKeyCache {
             anyhow!("no key set has been fetched yet for the exchange profile `{profile_id}`")
         })?;
 
-        let age = entry.fetched_at.elapsed();
-        if age > SERVE_STALE_FOR {
-            bail!(
-                "the cached key set for the exchange profile `{profile_id}` is {}s old and no \
-                 refresh has succeeded",
-                age.as_secs()
-            );
+        if let Some(failed_since) = entry.failed_since {
+            let failure_age = failed_since.elapsed();
+            if failure_age > self.serve_stale_for {
+                let last_success_age = entry.fetched_at.elapsed();
+                bail!(
+                    "the cached key set for the exchange profile `{profile_id}` has been stale for \
+                     {}s after refresh failures; the last successful fetch was {}s ago",
+                    failure_age.as_secs(),
+                    last_success_age.as_secs()
+                );
+            }
         }
 
         Ok(entry.keys.clone())
@@ -98,11 +114,18 @@ impl IdpKeyCache {
                             Entry {
                                 keys,
                                 fetched_at: Instant::now(),
+                                failed_since: None,
                             },
                         );
                     }
                 }
                 Err(error) => {
+                    if let Ok(mut entries) = self.entries.lock()
+                        && let Some(entry) = entries.get_mut(&profile.id)
+                        && entry.failed_since.is_none()
+                    {
+                        entry.failed_since = Some(Instant::now());
+                    }
                     tracing::warn!(
                         event.name = "idp.key_set_refresh_failed",
                         component = crate::COMPONENT,
@@ -226,6 +249,12 @@ mod tests {
         }
     }
 
+    fn age_failed_refresh(cache: &IdpKeyCache, by: Duration) {
+        let mut entries = cache.entries.lock().unwrap();
+        let entry = entries.get_mut("corporate-oauth-to-pic").unwrap();
+        entry.failed_since = Some(Instant::now() - by);
+    }
+
     #[tokio::test]
     async fn discovery_leads_to_the_key_set() {
         let idp = StubIdp::new("https://idp.example.com");
@@ -297,6 +326,33 @@ mod tests {
         cache.refresh(idp.as_ref()).await;
 
         assert_eq!(cache.keys_for("corporate-oauth-to-pic").unwrap(), first);
+    }
+
+    #[tokio::test]
+    async fn a_key_set_stale_after_failed_refresh_stops_being_served() {
+        let idp = StubIdp::new("https://idp.example.com");
+        let cache = IdpKeyCache::new(vec![profile("https://idp.example.com")]);
+        cache.refresh(idp.as_ref()).await;
+
+        *idp.broken.lock().unwrap() = true;
+        cache.refresh(idp.as_ref()).await;
+        age_failed_refresh(&cache, SERVE_STALE_FOR + Duration::from_secs(1));
+
+        assert!(cache.keys_for("corporate-oauth-to-pic").is_err());
+    }
+
+    #[tokio::test]
+    async fn stale_window_can_fail_closed_after_a_refresh_failure() {
+        let idp = StubIdp::new("https://idp.example.com");
+        let cache =
+            IdpKeyCache::with_stale_for(vec![profile("https://idp.example.com")], Duration::ZERO);
+        cache.refresh(idp.as_ref()).await;
+        assert!(cache.keys_for("corporate-oauth-to-pic").is_ok());
+
+        *idp.broken.lock().unwrap() = true;
+        cache.refresh(idp.as_ref()).await;
+
+        assert!(cache.keys_for("corporate-oauth-to-pic").is_err());
     }
 
     #[tokio::test]

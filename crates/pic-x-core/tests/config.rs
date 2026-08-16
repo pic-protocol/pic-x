@@ -11,8 +11,8 @@ use pic_x_core::{
     BuildSettings, ClaimMapping, Config, EXCHANGE_ON_UNMATCHED_SCOPE_REJECT,
     EXCHANGE_SOURCE_FORMAT_JWT, EXCHANGE_SOURCE_OAUTH_ACCESS_TOKEN, ExchangeProfileClaims,
     ExchangeProfileConfig, ExchangeProfilePrivileges, ExchangeProfileSource,
-    ExchangeTokenValidation, LogFormat, LogLevel, PrivilegeEmit, PrivilegeRule, RealmInput,
-    TlsVersion, TrustedAttesterConfig,
+    ExchangeTokenValidation, InitialTokenExpiryPolicy, LogFormat, LogLevel, PrivilegeEmit,
+    PrivilegeRule, RealmInput, TlsVersion, TrustedAttesterConfig,
 };
 
 /// The extra-settings layer of a build that declares none.
@@ -910,6 +910,90 @@ fn test_a_realm_inherits_the_servers_policy_and_overrides_only_what_it_states() 
         globex.operations_keys_retain(),
         std::time::Duration::from_secs(400 * 86_400)
     );
+    assert_eq!(
+        globex.key_cache_stale_for(),
+        std::time::Duration::from_secs(3_600)
+    );
+    assert_eq!(
+        globex.initial_token_expiry_policy(),
+        InitialTokenExpiryPolicy::Later
+    );
+}
+
+#[test]
+fn test_a_realm_may_configure_the_initial_token_expiry_policy() {
+    let config = servable()
+        .with_realms([RealmInput {
+            name: "acme".to_owned(),
+            initial_token_expiry_policy: Some("oauth".to_owned()),
+            token_keys_publish_ahead: Some("1h".to_owned()),
+            token_keys_rotate_every: Some("30d".to_owned()),
+            token_keys_retain: Some("400d".to_owned()),
+            token_lifetime: Some("1h".to_owned()),
+            ..RealmInput::default()
+        }])
+        .expect("the realm resolves");
+
+    assert_eq!(
+        config.realms()[0].initial_token_expiry_policy(),
+        InitialTokenExpiryPolicy::OAuth
+    );
+}
+
+#[test]
+fn test_an_unknown_initial_token_expiry_policy_is_refused() {
+    let error = servable()
+        .with_realms([RealmInput {
+            name: "acme".to_owned(),
+            initial_token_expiry_policy: Some("tomorrowish".to_owned()),
+            token_keys_publish_ahead: Some("1h".to_owned()),
+            token_keys_rotate_every: Some("30d".to_owned()),
+            token_keys_retain: Some("400d".to_owned()),
+            token_lifetime: Some("1h".to_owned()),
+            ..RealmInput::default()
+        }])
+        .expect_err("an unknown expiry policy is refused");
+    assert!(
+        format!("{error:#}").contains("later, pic or oauth"),
+        "{error:#}"
+    );
+}
+
+#[test]
+fn test_a_realm_may_configure_the_upstream_key_cache_stale_window() {
+    let config = servable()
+        .with_realms([RealmInput {
+            name: "acme".to_owned(),
+            key_cache_stale_for: Some("10m".to_owned()),
+            token_keys_publish_ahead: Some("1h".to_owned()),
+            token_keys_rotate_every: Some("30d".to_owned()),
+            token_keys_retain: Some("400d".to_owned()),
+            token_lifetime: Some("1h".to_owned()),
+            ..RealmInput::default()
+        }])
+        .expect("the realm resolves");
+
+    assert_eq!(
+        config.realms()[0].key_cache_stale_for(),
+        Duration::from_secs(600)
+    );
+}
+
+#[test]
+fn test_a_realm_may_fail_closed_on_upstream_key_cache_refresh_failure() {
+    let config = servable()
+        .with_realms([RealmInput {
+            name: "acme".to_owned(),
+            key_cache_stale_for: Some("0s".to_owned()),
+            token_keys_publish_ahead: Some("1h".to_owned()),
+            token_keys_rotate_every: Some("30d".to_owned()),
+            token_keys_retain: Some("400d".to_owned()),
+            token_lifetime: Some("1h".to_owned()),
+            ..RealmInput::default()
+        }])
+        .expect("the realm resolves");
+
+    assert_eq!(config.realms()[0].key_cache_stale_for(), Duration::ZERO);
 }
 
 #[test]

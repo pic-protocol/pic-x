@@ -477,6 +477,27 @@ async fn test_the_token_endpoint_is_a_post_that_validates_the_exchange_request()
         "the error should say why"
     );
 
+    let response = service
+        .router(&identity(), &config_with(&[]), &realms)
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/realms/acme/token")
+                .body(Body::from(
+                    "grant_type=urn:ietf:params:oauth:grant-type:token-exchange&grant_type=again",
+                ))
+                .expect("the request builds"),
+        )
+        .await
+        .expect("the route answers");
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("the body is readable");
+    let body = String::from_utf8_lossy(&body);
+    assert!(body.contains("invalid_request"), "{body}");
+    assert!(body.contains("duplicate `grant_type`"), "{body}");
+
     // The method is part of the contract: a GET is refused with 405, not served.
     assert_eq!(
         ask_full(&service, &config_with(&[]), &realms, "/realms/acme/token")
