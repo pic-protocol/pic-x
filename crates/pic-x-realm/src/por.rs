@@ -205,6 +205,10 @@ impl SdJwtPorValidator<'_> {
     }
 
     /// The full validation, also returning what the presentation disclosed.
+    ///
+    /// Production paths go through [`Self::validate_and_remember`] or the `PorValidator` boundary,
+    /// which reuse an accepted answer; this is the uncached form the tests exercise.
+    #[cfg(test)]
     pub(crate) fn validate_evidence(
         &self,
         por: &ProofOfRelationship,
