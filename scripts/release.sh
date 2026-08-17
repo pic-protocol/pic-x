@@ -31,12 +31,13 @@ cd "$(git rev-parse --show-toplevel)"
 
 product="$(basename "$(pwd)")"
 
-# The version the working tree declares: the first `version = "…"` line after a
-# `[workspace.package]` or `[package]` section header. Empty when there is no Cargo.toml, which is
-# what makes the bump below optional rather than assumed.
+# The version the working tree declares: the first `version = "…"` line inside a
+# `[workspace.package]` or `[package]` section — and only inside one, so a dependency pin in some
+# other section can never masquerade as the product version. Empty when there is no Cargo.toml,
+# which is what makes the bump below optional rather than assumed.
 declared_version() {
   [[ -f Cargo.toml ]] || return 0
-  awk -F'"' '/^\[(workspace\.)?package\]/ { in_section = 1 }
+  awk -F'"' '/^\[/ { in_section = ($0 ~ /^\[(workspace\.)?package\]/) }
              in_section && /^version = "/ { print $2; exit }' Cargo.toml
 }
 
@@ -119,8 +120,12 @@ fi
 # The declared version follows the tag, so the tagged source builds a binary that says what the tag
 # says. The bump is its own pushed commit, and the tag lands on it.
 if [[ -n "${workspace_version}" && "${workspace_version}" != "${version}" ]]; then
-  VERSION="${version}" perl -0pi -e \
-    's/(\[(?:workspace\.)?package\][^\[]*?^version = ")[^"]*/$1$ENV{VERSION}/ms' Cargo.toml
+  # The same section rule as the read above, line by line: only the first `version = "…"` inside a
+  # package section is rewritten, wherever that section sits and whatever brackets it contains.
+  VERSION="${version}" perl -pi -e '
+    $in_section = /^\[(?:workspace\.)?package\]/ ? 1 : 0 if /^\[/;
+    s/^version = "[^"]*"/version = "$ENV{VERSION}"/ if $in_section && !$bumped && /^version = "/ && ++$bumped;
+  ' Cargo.toml
   if [[ -f Cargo.lock ]]; then
     cargo update --workspace --quiet
   fi
