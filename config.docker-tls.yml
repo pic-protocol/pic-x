@@ -1,16 +1,16 @@
-# PIC-X — development, over TLS and mutual TLS.
+# PIC-X — development, in a single container, over TLS and mutual TLS.
 #
-#   task run-as-local-tls   starts the server against this file
-#   VS Code                 "pic-x: serve over TLS and mTLS (local)"
+#   task run-as-docker-tls   builds the image and runs it against this file,
+#                            mounted at /etc/pic-x/config.yml — the image itself ships no configuration
 #
-# The same as config.local.yaml, plus the transport security a real deployment has. Still nothing to
+# The same as config.docker.yml, plus the transport security a real deployment has. Still nothing to
 # set up first: the authority, the server certificate and the operator's client certificate are all
-# generated into the volume on the first start, and the paths below are exactly where they land.
+# generated into the mounted volume on the first start, and on the host they land under
+# `.volume-docker-tls/`:
 #
-# What this gets you that the plain file does not:
-#
-#   https://localhost:7556 --cacert .volume/tls/ca.pem
-#   grpcurl -cacert .volume/tls/ca.pem -cert .volume/tls/client.pem -key .volume/tls/client.key \
+#   curl --cacert .volume-docker-tls/tls/ca.pem https://localhost:7556/.well-known/jwks.json
+#   grpcurl -cacert .volume-docker-tls/tls/ca.pem \
+#           -cert .volume-docker-tls/tls/client.pem -key .volume-docker-tls/tls/client.key \
 #           -import-path crates/pic-x-admin/proto -proto picx/admin/v1/admin.proto \
 #           localhost:7557 picx.admin.v1.Admin/GetVersion
 #
@@ -20,14 +20,20 @@
 
 development_mode: true
 autogenerate: true
-working_dir: .volume
+
+# The volume the image declares. Mount something over it to keep what a run produced.
+working_dir: /var/lib/pic-x
 
 log:
+  # `debug` shows the starting and stopping transitions; `json` because a container's output goes to a
+  # collector even when the container is on your laptop.
   level: debug
-  format: terminal
+  format: json
 
 public:
-  http: 127.0.0.1:7556
+  # Every address is 0.0.0.0 rather than loopback: loopback inside a container means the container,
+  # which is not where you are.
+  http: 0.0.0.0:7556
   # The public base over TLS; realm issuers derive from it as `{url}/realms/<name>`.
   url: https://localhost:7556
   tls:
@@ -36,13 +42,13 @@ public:
     key: tls/server.key
 
 telemetry:
-  addr: 127.0.0.1:7558
+  addr: 0.0.0.0:7558
   tls:
     cert: tls/server.pem
     key: tls/server.key
 
 admin:
-  addr: 127.0.0.1:7557
+  addr: 0.0.0.0:7557
   tls:
     cert: tls/server.pem
     key: tls/server.key
@@ -65,12 +71,11 @@ operations:
     publish_ahead: 5m
     rotate_every: 1h
     retain: 1d
-    # The maintenance loop's default 60s tick applies. To watch a rotation live, set a small
-    # `maintenance_interval` (e.g. 2s) — it is one server-wide cadence, and a realm's `rotate_every`
-    # can never take effect faster than it.
   secrets:
+    # Resolves to /var/lib/pic-x/operations/secrets, where the generated pseudonymisation key lands.
     provider: directory
   audit:
+    # On disk and chained, so `pic-x audit verify` has something to check after the run.
     sink: file
     retention: 7d
     pseudonym:
@@ -79,8 +84,8 @@ operations:
       key_version: "v1"
 
 # Two example realms, both listed, issuers derived from `public.url` over TLS. Generated material
-# (token keys, operations keys, trail, pseudonymisation key) lands under .volume/realms/<name>/ on
-# first start.
+# (token keys, operations keys, trail, pseudonymisation key) lands under realms/<name>/ in the
+# volume on first start.
 realms:
   - name: acme
     # How long the PIC Tokens this realm issues stay valid. Stated per realm because the
@@ -88,8 +93,7 @@ realms:
     token_lifetime: 1h
     listed: true
     # Each realm states its own token-signing `keys` (signing policy is not inherited). acme rotates
-    # fast and keeps its trail longer; globex takes plainer values. Lower the maintenance_interval to
-    # watch acme churn.
+    # fast and keeps its trail longer; globex takes plainer values.
     keys:
       publish_ahead: 5m
       rotate_every: 30m

@@ -174,7 +174,7 @@ fn test_a_volume_can_be_lost_entirely_and_put_back() {
 
     // 1. A deployment that ran: it generated its key ring, wrote an audit trail, and sealed it when
     //    it stopped.
-    let server = serve("config.local.yaml", &volume);
+    let server = serve("config.local.yml", &volume);
     assert!(server.stop(), "the server did not shut down cleanly");
 
     // The key set, exported before the loss — read from the operations ring on disk, because that
@@ -223,7 +223,7 @@ fn test_a_volume_can_be_lost_entirely_and_put_back() {
 
     // 6. And it is a working deployment, not just readable files: the server starts again on it and
     //    continues the same trail rather than beginning a new one.
-    let again = serve("config.local.yaml", &volume);
+    let again = serve("config.local.yml", &volume);
     assert!(
         again.stop(),
         "the server did not start on the restored volume"
@@ -247,7 +247,7 @@ fn test_a_trail_restored_without_its_key_set_is_reported_as_unchecked() {
     // trail that deployment wrote. The verifier must not let the two be confused.
     let volume = scratch("unchecked");
 
-    let server = serve("config.local.yaml", &volume);
+    let server = serve("config.local.yml", &volume);
     assert!(server.stop(), "the server did not shut down cleanly");
 
     let (verified, said) = verify(&volume.join("operations/audit"), None);

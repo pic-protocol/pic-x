@@ -7,16 +7,15 @@ configuration system; the config files remain the source of truth.
 
 | Task | Use it for |
 | --- | --- |
-| `task run` | Start local development config |
+| `task run-as-local` | Start local development config |
 | `task run-as-local-tls` | Start local TLS and admin mTLS config |
-| `task run-as-prod` | Check a production-shaped config locally |
+| `task run-as-docker` | Build the image and run it as a single container |
+| `task run-as-docker-tls` | The same single container, with TLS and admin mTLS |
 | `task lab-up` | Start the local Keycloak, PIC-X and trust REST lab |
+| `task lab-down` | Stop the local Keycloak, PIC-X and trust REST lab |
 | `task lab-get-idp-config` | Print the example IdP well-known configuration |
 | `task lab-get-idp-jwt` | Print an example IdP JWT |
 | `task lab-demo` | Run the local lab walkthrough |
-| `task lab-down` | Stop the local Keycloak, PIC-X and trust REST lab |
-| `task run-as-docker-dev` | Build the image and run the dev container |
-| `task run-as-docker` | Build the image and run the production default |
 | `task audit:verify` | Verify the local file audit trail |
 | `task test` | Run the test suite |
 | `task check` | Run the local CI gate |
@@ -25,20 +24,20 @@ configuration system; the config files remain the source of truth.
 ## Useful Overrides
 
 ```sh
-task run LOG_LEVEL=trace
-task run ADMIN_ADDR=127.0.0.1:6000
+task run-as-local LOG_LEVEL=trace
+task run-as-local ADMIN_ADDR=127.0.0.1:6000
 task test PKG=pic-x-core
 task test FILTER=config
 task lab-get-idp-jwt KEYCLOAK_USERNAME=alice KEYCLOAK_PASSWORD=alice-password
 task lab-demo
-task run-as-docker-dev VOLUME=/tmp/pic-x-dev
-task run-as-docker TAG=pic-x:experiment VOLUME=/tmp/pic-x-prod
+task run-as-docker VOLUME=/tmp/pic-x-docker
+task run-as-docker-tls TAG=pic-x:experiment
 ```
 
 The same values can be passed directly to the binary:
 
 ```sh
-cargo run --bin pic-x -- config.local.yaml --log-level trace
+cargo run --bin pic-x -- config.local.yml --log-level trace
 ```
 
 ## CI Gate

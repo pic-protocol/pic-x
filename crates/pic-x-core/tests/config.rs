@@ -11,8 +11,8 @@ use pic_x_core::{
     BuildSettings, ClaimMapping, Config, EXCHANGE_ON_UNMATCHED_SCOPE_REJECT,
     EXCHANGE_SOURCE_FORMAT_JWT, EXCHANGE_SOURCE_OAUTH_ACCESS_TOKEN, ExchangeProfileClaims,
     ExchangeProfileConfig, ExchangeProfilePrivileges, ExchangeProfileSource,
-    ExchangeTokenValidation, InitialTokenExpiryPolicy, LogFormat, LogLevel, PrivilegeEmit,
-    PrivilegeRule, RealmInput, TlsVersion, TrustedAttesterConfig,
+    ExchangeTokenValidation, LogFormat, LogLevel, PrivilegeEmit, PrivilegeRule, RealmInput,
+    TlsVersion, TokenInitialExpiryPolicy, TrustedAttesterConfig,
 };
 
 /// The extra-settings layer of a build that declares none.
@@ -915,17 +915,17 @@ fn test_a_realm_inherits_the_servers_policy_and_overrides_only_what_it_states() 
         std::time::Duration::from_secs(3_600)
     );
     assert_eq!(
-        globex.initial_token_expiry_policy(),
-        InitialTokenExpiryPolicy::Later
+        globex.token_initial_expiry_policy(),
+        TokenInitialExpiryPolicy::Later
     );
 }
 
 #[test]
-fn test_a_realm_may_configure_the_initial_token_expiry_policy() {
+fn test_a_realm_may_configure_the_token_initial_expiry_policy() {
     let config = servable()
         .with_realms([RealmInput {
             name: "acme".to_owned(),
-            initial_token_expiry_policy: Some("oauth".to_owned()),
+            token_initial_expiry_policy: Some("oauth".to_owned()),
             token_keys_publish_ahead: Some("1h".to_owned()),
             token_keys_rotate_every: Some("30d".to_owned()),
             token_keys_retain: Some("400d".to_owned()),
@@ -935,17 +935,17 @@ fn test_a_realm_may_configure_the_initial_token_expiry_policy() {
         .expect("the realm resolves");
 
     assert_eq!(
-        config.realms()[0].initial_token_expiry_policy(),
-        InitialTokenExpiryPolicy::OAuth
+        config.realms()[0].token_initial_expiry_policy(),
+        TokenInitialExpiryPolicy::OAuth
     );
 }
 
 #[test]
-fn test_an_unknown_initial_token_expiry_policy_is_refused() {
+fn test_an_unknown_token_initial_expiry_policy_is_refused() {
     let error = servable()
         .with_realms([RealmInput {
             name: "acme".to_owned(),
-            initial_token_expiry_policy: Some("tomorrowish".to_owned()),
+            token_initial_expiry_policy: Some("tomorrowish".to_owned()),
             token_keys_publish_ahead: Some("1h".to_owned()),
             token_keys_rotate_every: Some("30d".to_owned()),
             token_keys_retain: Some("400d".to_owned()),

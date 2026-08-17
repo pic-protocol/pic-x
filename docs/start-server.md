@@ -12,16 +12,19 @@ During development, the Taskfile wraps that command so the common modes are easy
 
 | Mode | Command | Config | Security posture |
 | --- | --- | --- | --- |
-| Local quick start | `task run` | `config.local.yaml` | Loopback only, no TLS, development mode |
-| Local TLS and mTLS | `task run-as-local-tls` | `config.local-tls.yaml` | TLS on public/telemetry, mTLS on admin |
-| Production-shaped local run | `task run-as-prod` | `config.prod.yaml` | Refuses to start until required TLS and secrets exist |
-| Docker development | `task run-as-docker-dev` | `config.dev.yaml` | No TLS; do not expose outside your machine |
-| Docker production default | `task run-as-docker` | `config.prod.yaml` inside the image | Requires mounted production material |
+| Local quick start | `task run-as-local` | `config.local.yml` | Loopback only, no TLS, development mode |
+| Local TLS and mTLS | `task run-as-local-tls` | `config.local-tls.yml` | TLS on public/telemetry, mTLS on admin |
+| Single Docker container | `task run-as-docker` | `config.docker.yml` | No TLS; do not expose outside your machine |
+| Single Docker container, TLS | `task run-as-docker-tls` | `config.docker-tls.yml` | TLS on public/telemetry, mTLS on admin |
+| Docker Compose lab | `task lab-up` | `config.lab.yml` | No TLS, localhost-bound; Keycloak and trust-lab beside it |
+
+A production configuration is written by copying from `config.template.yml`; the container image
+ships no configuration and refuses to start until one is mounted. See [docker.md](docker.md).
 
 ## Local Quick Start
 
 ```sh
-task run
+task run-as-local
 ```
 
 Check the public and telemetry surfaces:
@@ -60,14 +63,14 @@ A client certificate must both be signed by the configured authority and match `
 Use this when Task is not installed:
 
 ```sh
-cargo run --bin pic-x -- config.local.yaml
-cargo run --bin pic-x -- config.local-tls.yaml
+cargo run --bin pic-x -- config.local.yml
+cargo run --bin pic-x -- config.local-tls.yml
 ```
 
 Runtime overrides are passed after the config file:
 
 ```sh
-cargo run --bin pic-x -- config.local.yaml \
+cargo run --bin pic-x -- config.local.yml \
   --public-http-addr 127.0.0.1:7556 \
   --telemetry-addr 127.0.0.1:7558 \
   --admin-addr 127.0.0.1:7557 \

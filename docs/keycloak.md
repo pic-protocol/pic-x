@@ -2,7 +2,7 @@
 
 Use `docker-compose.lab.yml` when you need a local OpenID Connect issuer beside a tiny
 unauthenticated public REST service. The stack starts Keycloak in development mode, imports the realm in
-`dev/keycloak/acme-idp-realm.json`, builds PIC-X from the local checkout with `config.lab.yaml`, and
+`dev/keycloak/acme-idp-realm.json`, builds PIC-X from the local checkout with `config.lab.yml`, and
 builds the Rust service in `trust-lab/`.
 
 The lab is intentionally HTTP-only and bound to localhost. That keeps it easy to run on a fresh

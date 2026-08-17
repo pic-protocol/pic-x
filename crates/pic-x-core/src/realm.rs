@@ -61,7 +61,7 @@ pub const EXCHANGE_ON_UNMATCHED_SCOPE_REJECT: &str = "reject";
 
 /// How initial PIC Token expiration is chosen when the source token also has an expiration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum InitialTokenExpiryPolicy {
+pub enum TokenInitialExpiryPolicy {
     /// Use whichever absolute expiration is later.
     Later,
     /// Use the realm's configured PIC Token lifetime.
@@ -70,7 +70,7 @@ pub enum InitialTokenExpiryPolicy {
     OAuth,
 }
 
-impl InitialTokenExpiryPolicy {
+impl TokenInitialExpiryPolicy {
     /// Stable configuration spelling.
     pub fn as_str(self) -> &'static str {
         match self {
@@ -207,7 +207,7 @@ pub struct RealmInput {
     /// How long a PIC Token this realm issues is valid, when the caller asks for nothing else.
     pub token_lifetime: Option<String>,
     /// How initial PIC Token expiration is chosen against OAuth source expiration.
-    pub initial_token_expiry_policy: Option<String>,
+    pub token_initial_expiry_policy: Option<String>,
     /// How long to serve cached IdP/attester JWKS after refresh starts failing.
     pub key_cache_stale_for: Option<String>,
     /// Which algorithm this realm signs its tokens and COSE artifacts with.
@@ -237,7 +237,7 @@ pub struct RealmConfig {
     /// The default lifetime of a PIC Token this realm issues.
     pub(crate) token_lifetime: Duration,
     /// How the initial PIC Token expiration is chosen during OAuth-to-PIC exchange.
-    pub(crate) initial_token_expiry_policy: InitialTokenExpiryPolicy,
+    pub(crate) token_initial_expiry_policy: TokenInitialExpiryPolicy,
     /// How long cached IdP/attester JWKS stay usable after refresh starts failing.
     pub(crate) key_cache_stale_for: Duration,
     /// The JOSE algorithm this realm signs with, e.g. `EdDSA` or `ES256`.
@@ -304,8 +304,8 @@ impl RealmConfig {
     }
 
     /// How the initial PIC Token expiration is chosen during OAuth-to-PIC exchange.
-    pub fn initial_token_expiry_policy(&self) -> InitialTokenExpiryPolicy {
-        self.initial_token_expiry_policy
+    pub fn token_initial_expiry_policy(&self) -> TokenInitialExpiryPolicy {
+        self.token_initial_expiry_policy
     }
 
     /// How long cached upstream JWKS stay usable after refresh starts failing.
@@ -407,7 +407,7 @@ pub struct Realm {
     /// How long the PIC Tokens this realm issues stay valid.
     token_lifetime: Duration,
     /// How the initial PIC Token expiration is chosen during OAuth-to-PIC exchange.
-    initial_token_expiry_policy: InitialTokenExpiryPolicy,
+    token_initial_expiry_policy: TokenInitialExpiryPolicy,
     /// How long cached IdP/attester JWKS stay usable after refresh starts failing.
     key_cache_stale_for: Duration,
     /// The JOSE algorithm this realm signs with.
@@ -448,7 +448,7 @@ impl Realm {
             exchange_profiles: Vec::new(),
             trusted_attesters: Vec::new(),
             token_lifetime: DEFAULT_TOKEN_LIFETIME,
-            initial_token_expiry_policy: InitialTokenExpiryPolicy::Later,
+            token_initial_expiry_policy: TokenInitialExpiryPolicy::Later,
             key_cache_stale_for: DEFAULT_KEY_CACHE_STALE_FOR,
             token_signing_algorithm: DEFAULT_SIGNING_ALGORITHM.to_owned(),
         }
@@ -462,8 +462,8 @@ impl Realm {
     }
 
     /// Sets how initial PIC Token expiration is chosen during OAuth-to-PIC exchange.
-    pub fn with_initial_token_expiry_policy(mut self, policy: InitialTokenExpiryPolicy) -> Self {
-        self.initial_token_expiry_policy = policy;
+    pub fn with_token_initial_expiry_policy(mut self, policy: TokenInitialExpiryPolicy) -> Self {
+        self.token_initial_expiry_policy = policy;
 
         self
     }
@@ -567,8 +567,8 @@ impl Realm {
     }
 
     /// How the initial PIC Token expiration is chosen during OAuth-to-PIC exchange.
-    pub fn initial_token_expiry_policy(&self) -> InitialTokenExpiryPolicy {
-        self.initial_token_expiry_policy
+    pub fn token_initial_expiry_policy(&self) -> TokenInitialExpiryPolicy {
+        self.token_initial_expiry_policy
     }
 
     /// How long cached upstream JWKS stay usable after refresh starts failing.

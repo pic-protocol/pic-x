@@ -1,16 +1,17 @@
-//! The four configuration files that ship with this repository, checked against the binary.
+//! The configuration files that ship with this repository, checked against the binary.
 //!
 //! A configuration file is documentation that is also executable, which means it can be wrong in two
 //! directions: it can stop matching the code, and the code can stop matching it. Both are silent.
 //!
 //! So each file is exercised here by the thing it configures:
 //!
-//! * `config.template.yaml` is **uncommented** and started, which proves every setting it documents
-//!   still exists, still parses, and still makes a configuration a server will accept;
-//! * `config.local.yaml` and `config.local-tls.yaml` are started from an empty volume, which is the
-//!   claim they make on their first line;
-//! * `config.prod.yaml` is started too, because a shipped default that does not start is worse than
-//!   no default at all — and separately checked for the postures it must *not* have.
+//! * `config.template.yml` is **uncommented** and started, which proves every setting it documents
+//!   still exists, still parses, and still makes a configuration a server will accept — and, since
+//!   it describes a production deployment, it is separately checked to refuse an empty volume and to
+//!   keep the postures a production configuration must have;
+//! * `config.local.yml`, `config.local-tls.yml`, `config.docker.yml`, `config.docker-tls.yml`
+//!   and `config.lab.yml` are started from an empty volume, which is the claim they make on their
+//!   first line.
 
 use std::fs;
 use std::io::{BufRead, BufReader, Read};
@@ -41,6 +42,15 @@ fn volume(name: &str) -> PathBuf {
     path
 }
 
+/// Creates the empty realm directory the uncommented template names with `realms_from: realms.d`.
+///
+/// The path resolves against the configuration file's own directory, which for these tests is the
+/// system temp directory. Empty is the honest fixture: the directory exists, and declares nothing.
+fn realms_dir_beside_the_config() {
+    fs::create_dir_all(std::env::temp_dir().join("realms.d"))
+        .expect("creating the realms directory the template names");
+}
+
 /// Turns the template into the configuration it documents.
 ///
 /// The convention the template keeps: `##` is prose and disappears, `# ` is a setting and loses its
@@ -66,7 +76,7 @@ fn uncomment(template: &str) -> String {
 /// they are, with not one line rewritten.
 fn at(volume: &Path, name: &str, contents: &str) -> PathBuf {
     let path = volume.with_file_name(format!(
-        "{}-{name}.yaml",
+        "{}-{name}.yml",
         volume.file_name().unwrap_or_default().to_string_lossy()
     ));
     fs::write(&path, contents).expect("writing the configuration under test");
@@ -178,7 +188,8 @@ fn test_the_template_documents_a_configuration_that_actually_starts() {
     // material to be there. The development file is used to put it there first, which incidentally
     // checks the two agree about what the material is called.
     let volume = volume("template");
-    let generator = at(&volume, "generator", &shipped("config.local-tls.yaml"));
+    realms_dir_beside_the_config();
+    let generator = at(&volume, "generator", &shipped("config.local-tls.yml"));
     let generated = start(&generator, &volume);
     assert!(
         generated.started,
@@ -189,7 +200,7 @@ fn test_the_template_documents_a_configuration_that_actually_starts() {
     let config = at(
         &volume,
         "template",
-        &uncomment(&shipped("config.template.yaml")),
+        &uncomment(&shipped("config.template.yml")),
     );
     let outcome = start(&config, &volume);
 
@@ -204,7 +215,7 @@ fn test_the_template_documents_a_configuration_that_actually_starts() {
 fn test_the_template_leaves_nothing_it_documents_commented_out() {
     // A setting mentioned only in prose is a setting nobody can copy. Every one of them has to appear
     // as a line that uncommenting turns into YAML.
-    let uncommented = uncomment(&shipped("config.template.yaml"));
+    let uncommented = uncomment(&shipped("config.template.yml"));
 
     for section in [
         "public:",
@@ -218,6 +229,9 @@ fn test_the_template_leaves_nothing_it_documents_commented_out() {
         "secrets:",
         "audit:",
         "keys:",
+        "realms:",
+        "exchange_profiles:",
+        "attesters:",
     ] {
         assert!(
             uncommented.lines().any(|line| line.trim() == section),
@@ -229,6 +243,13 @@ fn test_the_template_leaves_nothing_it_documents_commented_out() {
         "working_dir:",
         "development_mode:",
         "autogenerate:",
+        "realms_from:",
+        "token_lifetime:",
+        "token_initial_expiry_policy:",
+        "key_cache_stale_for:",
+        "token_signing_algorithm:",
+        "discovery_url:",
+        "listed:",
         "url:",
         "issuer:",
         "path_prefix:",
@@ -267,7 +288,7 @@ fn test_the_template_leaves_nothing_it_documents_commented_out() {
 fn test_the_local_file_starts_from_an_empty_volume() {
     // Its first claim: nothing has to be set up first.
     let volume = volume("local");
-    let config = at(&volume, "local", &shipped("config.local.yaml"));
+    let config = at(&volume, "local", &shipped("config.local.yml"));
 
     let outcome = start(&config, &volume);
 
@@ -289,7 +310,7 @@ fn test_the_local_file_starts_from_an_empty_volume() {
 #[test]
 fn test_the_local_tls_file_generates_its_own_certificates_and_serves_with_them() {
     let volume = volume("local-tls");
-    let config = at(&volume, "local-tls", &shipped("config.local-tls.yaml"));
+    let config = at(&volume, "local-tls", &shipped("config.local-tls.yml"));
 
     let outcome = start(&config, &volume);
 
@@ -310,11 +331,11 @@ fn test_the_local_tls_file_generates_its_own_certificates_and_serves_with_them()
 }
 
 #[test]
-fn test_the_development_container_file_starts_from_an_empty_volume() {
-    // Its whole reason to exist: the same image, run with nothing prepared. If this ever stops being
-    // true, there is no way to try the product without first minting a certificate authority.
-    let volume = volume("dev");
-    let config = at(&volume, "dev", &shipped("config.dev.yaml"));
+fn test_the_docker_file_starts_from_an_empty_volume() {
+    // Its whole reason to exist: a single container, run with nothing prepared. If this ever stops
+    // being true, there is no way to try the product without first minting a certificate authority.
+    let volume = volume("docker");
+    let config = at(&volume, "docker", &shipped("config.docker.yml"));
 
     let outcome = start(&config, &volume);
 
@@ -332,23 +353,79 @@ fn test_the_development_container_file_starts_from_an_empty_volume() {
     // authorises nobody is defensible on a laptop and indefensible in silence.
     assert!(
         outcome.stdout.contains("admin.unauthenticated"),
-        "the development container does not report that it authorises nobody"
+        "the container configuration does not report that it authorises nobody"
     );
 }
 
 #[test]
-fn test_the_production_file_refuses_to_start_without_the_material_it_names() {
-    // The invariant that makes the production file worth shipping. A default that quietly serves
-    // plain HTTP and admits every client is a footgun: the first thing anybody does with an image is
-    // run it, and the second is assume it is configured.
-    let volume = volume("prod-bare");
-    let config = at(&volume, "prod-bare", &shipped("config.prod.yaml"));
+fn test_the_docker_tls_file_generates_its_own_certificates_and_serves_with_them() {
+    let volume = volume("docker-tls");
+    let config = at(&volume, "docker-tls", &shipped("config.docker-tls.yml"));
+
+    let outcome = start(&config, &volume);
+
+    assert!(outcome.started, "{}", outcome.stderr);
+    for material in ["tls/ca.pem", "tls/server.pem", "tls/client.pem"] {
+        assert!(
+            volume.join(material).exists(),
+            "{material} was not generated"
+        );
+    }
+    // Both halves: TLS on the public surface, and a client certificate demanded on the
+    // administrative one. A file called `docker-tls` that only did the first would be a lie.
+    assert!(
+        outcome.stdout.contains(r#""mutual_tls":true"#),
+        "the administrative surface is not demanding a client certificate:\n{}",
+        outcome.stdout
+    );
+}
+
+#[test]
+fn test_the_lab_file_starts_from_an_empty_volume() {
+    // The compose stack, brought up with nothing prepared. The Keycloak and trust-lab hostnames it
+    // names are not resolvable here, and that is part of what is checked: a key sweep that fails is
+    // retried, not fatal, or the stack could never start in any order.
+    let volume = volume("lab");
+    let config = at(&volume, "lab", &shipped("config.lab.yml"));
+
+    let outcome = start(&config, &volume);
+
+    assert!(outcome.started, "{}", outcome.stderr);
+    assert!(
+        volume.join("operations/secrets/audit-pseudonym").exists(),
+        "the pseudonymisation secret was not generated"
+    );
+    assert!(
+        volume.join("operations/keys/ring.json").exists(),
+        "the key ring was not created"
+    );
+
+    // And it must say what it gave up to start unattended, every single time. A surface that
+    // authorises nobody is defensible on a laptop and indefensible in silence.
+    assert!(
+        outcome.stdout.contains("admin.unauthenticated"),
+        "the lab configuration does not report that it authorises nobody"
+    );
+}
+
+#[test]
+fn test_the_template_refuses_to_start_without_the_material_it_names() {
+    // The template describes a production deployment, and the invariant that makes one worth
+    // documenting: a configuration that quietly serves plain HTTP and admits every client is a
+    // footgun. From an empty volume it has to refuse, not invent.
+    let volume = volume("template-bare");
+    realms_dir_beside_the_config();
+    let config = at(
+        &volume,
+        "template-bare",
+        &uncomment(&shipped("config.template.yml")),
+    );
 
     let outcome = start(&config, &volume);
 
     assert!(
         !outcome.started,
-        "the production file started with an empty volume, so it demands nothing"
+        "the template started with an empty volume, so it demands nothing"
     );
     // And it has to say which file, or the operator is left guessing at four in the morning.
     assert!(
@@ -359,51 +436,23 @@ fn test_the_production_file_refuses_to_start_without_the_material_it_names() {
 }
 
 #[test]
-fn test_the_production_file_starts_once_it_has_been_given_what_it_asks_for() {
-    // The other half. A file that cannot be satisfied at all is not strict, it is broken — so the
-    // material it names has to be material a deployment can actually supply.
-    let volume = volume("prod");
-
-    // The development file mints a local authority and a server certificate into the volume. That is
-    // a demonstration authority, trusted by nobody, and it stands in here for the mounted secrets a
-    // real deployment has.
-    let generator = at(&volume, "prod-generator", &shipped("config.local-tls.yaml"));
-    let generated = start(&generator, &volume);
-    assert!(
-        generated.started,
-        "the development file could not prepare the volume: {}",
-        generated.stderr
-    );
-
-    // The authority that signed the operators is a separate file from the one that signed the server,
-    // and in a real deployment it usually is a separate authority too.
-    fs::copy(volume.join("tls/ca.pem"), volume.join("tls/operators.pem"))
-        .expect("naming the operators' authority");
-
-    let config = at(&volume, "prod", &shipped("config.prod.yaml"));
-    let outcome = start(&config, &volume);
-
-    assert!(
-        outcome.started,
-        "the production file cannot be satisfied by material a deployment can supply: {}",
-        outcome.stderr
-    );
-}
-
-#[test]
-fn test_the_production_file_is_not_a_development_one() {
-    let shipped_text = shipped("config.prod.yaml");
-    let settings: Vec<&str> = shipped_text
+fn test_the_template_is_not_a_development_configuration() {
+    let uncommented = uncomment(&shipped("config.template.yml"));
+    let settings: Vec<&str> = uncommented
         .lines()
         .map(str::trim)
         .filter(|line| !line.starts_with('#') && !line.is_empty())
         .collect();
 
-    // How this file went wrong once already.
-    for forbidden in ["development_mode:", "autogenerate:"] {
+    // The template documents both switches, so they have to be documented in the off position: a
+    // reader who uncomments the whole file has to end up with a production posture, not a laptop's.
+    for switch in ["development_mode:", "autogenerate:"] {
         assert!(
-            !settings.iter().any(|line| line.starts_with(forbidden)),
-            "config.prod.yaml sets `{forbidden}`, which is a development switch"
+            settings
+                .iter()
+                .filter(|line| line.starts_with(switch))
+                .all(|line| line.ends_with("false")),
+            "the template documents `{switch}` in the on position"
         );
     }
 
@@ -429,24 +478,18 @@ fn test_the_production_file_is_not_a_development_one() {
 }
 
 #[test]
-fn test_the_file_the_image_ships_is_the_production_one() {
-    // The Dockerfile and the file it copies drift apart silently, and the symptom is a container
-    // that runs somebody's old defaults.
+fn test_the_image_ships_no_configuration() {
+    // The image carries no configuration at all: a baked-in default is a posture somebody else
+    // chose. The command still names the one path a deployment mounts its file at, so a container
+    // given nothing refuses to start naming the file that is missing.
     let dockerfile = shipped("Dockerfile");
 
     assert!(
-        dockerfile.contains("COPY config.prod.yaml /etc/pic-x/config.yaml"),
-        "the image does not ship config.prod.yaml"
+        !dockerfile.contains("COPY config"),
+        "the image ships a configuration file, and a baked-in default is a posture somebody chose"
     );
     assert!(
-        dockerfile.contains(r#"CMD ["/etc/pic-x/config.yaml"]"#),
-        "the image does not run the file it ships"
-    );
-
-    // Both, from the one image: the strict default it runs, and the one that starts unattended. Two
-    // images would mean the thing anybody tries is not the thing that gets deployed.
-    assert!(
-        dockerfile.contains("COPY config.dev.yaml /etc/pic-x/config.dev.yaml"),
-        "the image does not ship the development configuration"
+        dockerfile.contains(r#"CMD ["/etc/pic-x/config.yml"]"#),
+        "the image does not name the path a deployment mounts its configuration at"
     );
 }

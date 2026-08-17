@@ -15,8 +15,8 @@ use crate::logging::{LogFormat, LogLevel};
 use crate::peer::AllowedPeer;
 use crate::realm::{
     EXCHANGE_ON_UNMATCHED_SCOPE_REJECT, EXCHANGE_SOURCE_FORMAT_JWT,
-    EXCHANGE_SOURCE_OAUTH_ACCESS_TOKEN, ExchangeProfileConfig, InitialTokenExpiryPolicy,
-    RealmConfig, RealmInput, TrustedAttesterConfig,
+    EXCHANGE_SOURCE_OAUTH_ACCESS_TOKEN, ExchangeProfileConfig, RealmConfig, RealmInput,
+    TokenInitialExpiryPolicy, TrustedAttesterConfig,
 };
 use crate::secrets::{SecretProvider, SecretRef};
 use crate::tls::TlsSettings;
@@ -620,11 +620,11 @@ impl Config {
                 "the realm `{name}` issues tokens but declares no `token_lifetime`: how long issued authority stays valid is a deployment decision, and this build does not default one. Set the realm's `token_lifetime`, or `keys.enabled: false` if it issues nothing"
             ),
         };
-        let initial_token_expiry_policy = match input.initial_token_expiry_policy {
-            Some(value) => parse_initial_token_expiry_policy(&value).with_context(|| {
-                format!("the realm `{name}` has an invalid `initial_token_expiry_policy`")
+        let token_initial_expiry_policy = match input.token_initial_expiry_policy {
+            Some(value) => parse_token_initial_expiry_policy(&value).with_context(|| {
+                format!("the realm `{name}` has an invalid `token_initial_expiry_policy`")
             })?,
-            None => InitialTokenExpiryPolicy::Later,
+            None => TokenInitialExpiryPolicy::Later,
         };
         let key_cache_stale_for = match input.key_cache_stale_for {
             Some(value) => parse_duration_allow_zero(&value).with_context(|| {
@@ -656,7 +656,7 @@ produce: use `EdDSA` or `ES256`"
             token_keys_rotate_every,
             token_keys_retain,
             token_lifetime,
-            initial_token_expiry_policy,
+            token_initial_expiry_policy,
             key_cache_stale_for,
             // The operations ring inherits the shared `operations` block unless the realm overrides it.
             operations_keys_enabled: inherit_bool(
@@ -1955,11 +1955,11 @@ fn parse_duration_allow_zero(value: &str) -> Result<Duration> {
     parse_duration(trimmed)
 }
 
-fn parse_initial_token_expiry_policy(value: &str) -> Result<InitialTokenExpiryPolicy> {
+fn parse_token_initial_expiry_policy(value: &str) -> Result<TokenInitialExpiryPolicy> {
     match value.trim() {
-        "later" => Ok(InitialTokenExpiryPolicy::Later),
-        "pic" => Ok(InitialTokenExpiryPolicy::Pic),
-        "oauth" => Ok(InitialTokenExpiryPolicy::OAuth),
+        "later" => Ok(TokenInitialExpiryPolicy::Later),
+        "pic" => Ok(TokenInitialExpiryPolicy::Pic),
+        "oauth" => Ok(TokenInitialExpiryPolicy::OAuth),
         other => {
             bail!("`{other}` is not an initial token expiry policy: expected later, pic or oauth")
         }

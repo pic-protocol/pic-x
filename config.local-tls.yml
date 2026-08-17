@@ -1,0 +1,108 @@
+# PIC-X — development, over TLS and mutual TLS.
+#
+#   task run-as-local-tls   starts the server against this file
+#   VS Code                 "pic-x: serve over TLS and mTLS (local)"
+#
+# The same as config.local.yml, plus the transport security a real deployment has. Still nothing to
+# set up first: the authority, the server certificate and the operator's client certificate are all
+# generated into the volume on the first start, and the paths below are exactly where they land.
+#
+# What this gets you that the plain file does not:
+#
+#   https://localhost:7556 --cacert .volume/tls/ca.pem
+#   grpcurl -cacert .volume/tls/ca.pem -cert .volume/tls/client.pem -key .volume/tls/client.key \
+#           -import-path crates/pic-x-admin/proto -proto picx/admin/v1/admin.proto \
+#           localhost:7557 picx.admin.v1.Admin/GetVersion
+#
+# and, more to the point, a client certificate that authority signed but which is not named below is
+# refused with PERMISSION_DENIED. That is the difference between authentication and authorisation,
+# and it is worth seeing once.
+
+development_mode: true
+autogenerate: true
+working_dir: .volume
+
+log:
+  level: debug
+  format: terminal
+
+public:
+  http: 127.0.0.1:7556
+  # The public base over TLS; realm issuers derive from it as `{url}/realms/<name>`.
+  url: https://localhost:7556
+  tls:
+    # Relative to the volume. Generated on the first start.
+    cert: tls/server.pem
+    key: tls/server.key
+
+telemetry:
+  addr: 127.0.0.1:7558
+  tls:
+    cert: tls/server.pem
+    key: tls/server.key
+
+admin:
+  addr: 127.0.0.1:7557
+  tls:
+    cert: tls/server.pem
+    key: tls/server.key
+    # The generated authority. Its presence is what turns TLS into mutual TLS.
+    client_ca: tls/ca.pem
+    # The list that authority publishes, generated alongside it and revoking nothing yet. It is here
+    # so the revocation path is configured and therefore exercised: a list that revokes nothing and
+    # no list at all are opposite things to a listener, and only one of them is checked.
+    crl: tls/ca.crl
+  allow:
+    # The common name the generated client certificate carries. Without this line, development mode
+    # would admit every client the generated authority signed — which is nobody else here, and is
+    # still the wrong habit to demonstrate.
+    - cn:local-operator
+
+# The shared record-keeping subsystem: sealing keys, trail, pseudonymisation. Realms inherit it.
+operations:
+  keys:
+    enabled: true
+    publish_ahead: 5m
+    rotate_every: 1h
+    retain: 1d
+    # The maintenance loop's default 60s tick applies. To watch a rotation live, set a small
+    # `maintenance_interval` (e.g. 2s) — it is one server-wide cadence, and a realm's `rotate_every`
+    # can never take effect faster than it.
+  secrets:
+    provider: directory
+  audit:
+    sink: file
+    retention: 7d
+    pseudonym:
+      enabled: true
+      key_ref: audit-pseudonym
+      key_version: "v1"
+
+# Two example realms, both listed, issuers derived from `public.url` over TLS. Generated material
+# (token keys, operations keys, trail, pseudonymisation key) lands under .volume/realms/<name>/ on
+# first start.
+realms:
+  - name: acme
+    # How long the PIC Tokens this realm issues stay valid. Stated per realm because the
+    # lifetime of issued authority is a deployment decision, not something to default.
+    token_lifetime: 1h
+    listed: true
+    # Each realm states its own token-signing `keys` (signing policy is not inherited). acme rotates
+    # fast and keeps its trail longer; globex takes plainer values. Lower the maintenance_interval to
+    # watch acme churn.
+    keys:
+      publish_ahead: 5m
+      rotate_every: 30m
+      retain: 12h
+    operations:
+      audit:
+        retention: 30d
+  - name: globex
+    # How long the PIC Tokens this realm issues stay valid. Stated per realm because the
+    # lifetime of issued authority is a deployment decision, not something to default.
+    token_lifetime: 1h
+    listed: true
+    keys:
+      publish_ahead: 5m
+      rotate_every: 1h
+      retain: 1d

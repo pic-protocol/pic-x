@@ -130,7 +130,7 @@ fn config_file(name: &str, contents: &str) -> std::path::PathBuf {
     let dir = env::temp_dir().join("pic-x-app-test");
     fs::create_dir_all(&dir).expect("creating the fixture directory");
 
-    let path = dir.join(format!("{name}.yaml"));
+    let path = dir.join(format!("{name}.yml"));
     fs::write(&path, contents).expect("writing the fixture configuration file");
 
     path

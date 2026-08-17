@@ -20,11 +20,12 @@ docker pull ghcr.io/pic-protocol/pic-x:0.2
 ## Development Container
 
 ```sh
-task run-as-docker-dev
+task run-as-docker
 ```
 
-This builds the image and runs `/etc/pic-x/config.dev.yaml`. It starts with an empty mounted volume
-and generates the missing development material.
+This builds the image and runs it as one container against `config.docker.yml`, mounted at
+`/etc/pic-x/config.yml` — the image itself ships no configuration. It starts with an empty mounted
+volume and generates the missing development material.
 
 ```sh
 curl http://localhost:7556/.well-known/server-configuration
@@ -38,14 +39,37 @@ grpcurl -plaintext \
 Do not expose this mode to other machines. It has no transport security and the admin surface is a
 development-only surface.
 
-## Production Default
+For the same container over TLS and mutual TLS:
 
 ```sh
-task run-as-docker
+task run-as-docker-tls
 ```
 
-This runs the image default, `/etc/pic-x/config.yaml`, copied from `config.prod.yaml`. With an empty
-volume it should fail, because production config requires material supplied from outside the process.
+The first start generates the authority, server certificate and operator client certificate into the
+volume, `.volume-docker-tls/` on the host:
+
+```sh
+curl --cacert .volume-docker-tls/tls/ca.pem https://localhost:7556/.well-known/server-configuration
+
+grpcurl -cacert .volume-docker-tls/tls/ca.pem \
+  -cert .volume-docker-tls/tls/client.pem -key .volume-docker-tls/tls/client.key \
+  -import-path crates/pic-x-admin/proto -proto picx/admin/v1/admin.proto \
+  localhost:7557 picx.admin.v1.Admin/GetVersion
+```
+
+For the full local stack — PIC-X beside Keycloak and trust-lab — use `task lab-up` instead; see
+[keycloak.md](keycloak.md).
+
+## No Configuration Ships in the Image
+
+```sh
+docker run --rm ghcr.io/pic-protocol/pic-x:0.2
+```
+
+fails on purpose. The image ships no configuration — a baked-in default is a posture somebody else
+chose — and the default command names `/etc/pic-x/config.yml`, which is where a deployment mounts
+its own file, written by copying from `config.template.yml`. Given nothing, the container refuses to
+start and names the file that is missing.
 
 Minimum mounted material before a production-shaped start:
 
@@ -64,9 +88,8 @@ volume, not just the files listed above.
 | Fact | Value |
 | --- | --- |
 | Entry point | `/usr/local/bin/pic-x` |
-| Default command | `/etc/pic-x/config.yaml` |
-| Production config in image | `/etc/pic-x/config.yaml` |
-| Development config in image | `/etc/pic-x/config.dev.yaml` |
+| Default command | `/etc/pic-x/config.yml` |
+| Config in image | None — mount your own at `/etc/pic-x/config.yml` |
 | Runtime user | `65532:65532` |
 | Volume path | `/var/lib/pic-x` |
 
@@ -76,38 +99,44 @@ write audit files, keys and state.
 ## Custom Config
 
 The image entry point is `/usr/local/bin/pic-x`; the command is the config file path. The default command
-is `/etc/pic-x/config.yaml`, so mounting a file there uses a custom config without changing the command:
+is `/etc/pic-x/config.yml`, so mounting a file there uses it without changing the command:
 
 ```sh
 docker run --rm --init \
   --publish 7556:7556 --publish 7557:7557 --publish 7558:7558 \
-  --volume "$PWD/config.prod.yaml:/etc/pic-x/config.yaml:ro" \
+  --volume "$PWD/my-config.yml:/etc/pic-x/config.yml:ro" \
   --volume "$PWD/pic-x-state:/var/lib/pic-x" \
   ghcr.io/pic-protocol/pic-x:0.2
 ```
 
-To keep the image's built-in production config untouched, mount the file somewhere else and pass that
-path as the command:
+Alternatively, mount the file somewhere else and pass that path as the command:
 
 ```sh
 docker run --rm --init \
   --publish 7556:7556 --publish 7557:7557 --publish 7558:7558 \
-  --volume "$PWD/my-realm.yaml:/run/pic-x/config.yaml:ro" \
+  --volume "$PWD/my-realm.yml:/run/pic-x/config.yml:ro" \
   --volume "$PWD/pic-x-state:/var/lib/pic-x" \
   ghcr.io/pic-protocol/pic-x:0.2 \
-  /run/pic-x/config.yaml
+  /run/pic-x/config.yml
 ```
 
 ## Try the Production Shape Locally
 
-The Taskfile includes a demo path that reuses local TLS material:
+Write a production-shaped configuration by copying from `config.template.yml` — uncommenting every
+setting line yields a valid one, and the test suite proves it. Then reuse local TLS material to
+satisfy what it demands:
 
 ```sh
 PIC_X_WORKING_DIR=.volume-docker task run-as-local-tls
 # Stop it with Ctrl-C once the volume has been generated, then continue:
 cp .volume-docker/tls/ca.pem .volume-docker/tls/operators.pem
 chmod 600 .volume-docker/operations/secrets/* .volume-docker/tls/*.key
-task run-as-docker
+docker build --tag pic-x:local .
+docker run --rm --init \
+  --publish 7556:7556 --publish 7557:7557 --publish 7558:7558 \
+  --volume "$PWD/my-config.yml:/etc/pic-x/config.yml:ro" \
+  --volume "$PWD/.volume-docker:/var/lib/pic-x" \
+  pic-x:local
 ```
 
 This is only a local demonstration authority. Real deployments should mount certificates and secrets

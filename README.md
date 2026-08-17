@@ -35,7 +35,7 @@ make help
 ## Run PIC-X
 
 ```sh
-make run
+make run-as-local
 ```
 
 This starts the local development config, creates `.volume/`, writes a file audit trail, creates the
@@ -80,13 +80,13 @@ Published images are available from GitHub Container Registry:
 docker pull ghcr.io/pic-protocol/pic-x:0.2
 ```
 
-The image entry point is `pic-x`; the command is the config path. To run with a custom config, mount
-the file and pass its in-container path:
+The image entry point is `pic-x`; the command is the config path. The image ships no configuration:
+write yours by copying from [config.template.yml](config.template.yml), then mount it:
 
 ```sh
 docker run --rm --init \
   --publish 7556:7556 --publish 7557:7557 --publish 7558:7558 \
-  --volume "$PWD/config.prod.yaml:/etc/pic-x/config.yaml:ro" \
+  --volume "$PWD/my-config.yml:/etc/pic-x/config.yml:ro" \
   --volume "$PWD/pic-x-state:/var/lib/pic-x" \
   ghcr.io/pic-protocol/pic-x:0.2
 ```
@@ -98,7 +98,7 @@ For volume contents, TLS material and production requirements, see [docs/docker.
 The lab is the fast path for seeing the moving pieces together:
 
 - Keycloak with an imported example realm: <http://localhost:18080/>
-- PIC-X built from this checkout and run with [config.lab.yaml](config.lab.yaml): <http://localhost:17556/>
+- PIC-X built from this checkout and run with [config.lab.yml](config.lab.yml): <http://localhost:17556/>
 - A tiny public Rust API built from [trust-lab/](trust-lab/): <http://localhost:17080/>
 
 Everything is HTTP-only and bound to `127.0.0.1`, so there is no certificate setup and nothing is
@@ -181,7 +181,7 @@ The ports are separate so administration is not accidentally exposed through the
 
 | Need | Read |
 | --- | --- |
-| Start locally, with TLS, or with production validation | [docs/start-server.md](docs/start-server.md) |
+| Start locally, with TLS, in docker, or in the lab | [docs/start-server.md](docs/start-server.md) |
 | Run the image and understand the volume | [docs/docker.md](docs/docker.md) |
 | Run the local Keycloak and public REST lab | [docs/keycloak.md](docs/keycloak.md) |
 | Verify and operate the audit trail | [docs/audit.md](docs/audit.md) |
@@ -192,12 +192,12 @@ The ports are separate so administration is not accidentally exposed through the
 
 | File | Use |
 | --- | --- |
-| [config.local.yaml](config.local.yaml) | Local development, no TLS, loopback only; used by `make run` |
-| [config.local-tls.yaml](config.local-tls.yaml) | Local development with TLS and mTLS; used by `make run-as-local-tls` |
-| [config.lab.yaml](config.lab.yaml) | Docker Compose lab config for the PIC-X container |
-| [config.dev.yaml](config.dev.yaml) | Container development, no TLS; used by `make run-as-docker-dev` |
-| [config.prod.yaml](config.prod.yaml) | Production-shaped default copied into the image; refuses missing TLS/secrets |
-| [config.template.yaml](config.template.yaml) | Full annotated reference; not meant to be run directly |
+| [config.local.yml](config.local.yml) | Local development, no TLS, loopback only; used by `make run-as-local` |
+| [config.local-tls.yml](config.local-tls.yml) | Local development with TLS and mTLS; used by `make run-as-local-tls` |
+| [config.docker.yml](config.docker.yml) | Single container, no TLS; mounted by `make run-as-docker` |
+| [config.docker-tls.yml](config.docker-tls.yml) | Single container with TLS and mTLS; mounted by `make run-as-docker-tls` |
+| [config.lab.yml](config.lab.yml) | Docker Compose lab config for the PIC-X container |
+| [config.template.yml](config.template.yml) | Full annotated reference, and what a production config is copied from |
 
 Runtime values are layered: defaults, build metadata, config file, environment, then CLI flags. A CLI
 flag such as `--log-level trace` wins over `PIC_X_LOG_LEVEL`, which wins over `log.level` in the file.
@@ -213,7 +213,7 @@ make lab-get-idp-config
 make lab-get-idp-jwt
 make lab-demo
 make lab-down
-make run-as-docker-dev
+make run-as-docker
 ```
 
 `make check` is the local CI gate: clippy with warnings denied, architecture checks, supply-chain

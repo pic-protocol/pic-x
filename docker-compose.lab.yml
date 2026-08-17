@@ -9,13 +9,13 @@ services:
     build:
       context: .
     command:
-      - /etc/pic-x/config.lab.yaml
+      - /etc/pic-x/config.lab.yml
     ports:
       - "127.0.0.1:${PIC_X_PUBLIC_PORT:-17556}:7556"
       - "127.0.0.1:${PIC_X_ADMIN_PORT:-17557}:7557"
       - "127.0.0.1:${PIC_X_TELEMETRY_PORT:-17558}:7558"
     volumes:
-      - ./config.lab.yaml:/etc/pic-x/config.lab.yaml:ro
+      - ./config.lab.yml:/etc/pic-x/config.lab.yml:ro
       - ./.volume-docker-compose/pic-x:/var/lib/pic-x
     # The realm fetches its attester and identity-provider key sets at startup; starting after both
     # means the first sweep succeeds rather than waiting out the refresh interval.

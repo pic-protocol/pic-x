@@ -129,6 +129,27 @@ Default **false**. A realm appears in the server's public catalogue only if it o
 deployment does not enumerate its tenants to the world. A realm that is not listed is still reachable
 at its own path: a client that knows the name can always fetch the keys it needs to verify a token.
 
+### One file per realm: `realms_from`
+
+A configuration whose realms grow large can keep each in a file of its own, in a directory the main
+file names:
+
+```yaml
+realms_from: realms.d   # resolved against the configuration file's own directory
+```
+
+Each file in that directory declares exactly **one complete realm** — the same shape as one `realms:`
+entry, no partial overlays — and is named after it: `realms.d/acme.yml` declares `acme`, so the
+directory listing *is* the realm listing. Files load in name order, after the realms declared inline,
+and everything then resolves identically: inline or from a file, a realm is the same realm.
+
+The loading is fail-closed, naming the culprit: a directory that does not exist, a file that does not
+parse, a file named one thing declaring another, a name already taken (inline or by another file),
+and any visible entry that is not a `<name>.yml`/`<name>.yaml` file all refuse to start. Hidden
+entries are ignored — editors and file managers drop them everywhere. Like `realms:`, `realms_from`
+is file-only: which issuers exist is structured configuration, never an environment variable or a
+command-line flag.
+
 ## One process, one loop
 
 Hosting many realms costs a loop, not a thread. The key service maintains the server's ring and every

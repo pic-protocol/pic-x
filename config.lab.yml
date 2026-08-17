@@ -1,7 +1,12 @@
-# PIC-X — local Docker Compose lab.
+# PIC-X — the local Docker Compose lab.
+#
+#   task lab-up              builds the stack and starts it against this file
+#   docker-compose.lab.yml   mounts it at /etc/pic-x/config.lab.yml
 #
 # This is intentionally HTTP-only and localhost-bound by docker-compose.lab.yml. It is here to make
-# the lab easy to run on a fresh developer machine, not to model production transport security.
+# the lab — PIC-X beside Keycloak and trust-lab — easy to run on a fresh developer machine, not to
+# model production transport security. For a single container, use config.docker.yml or
+# config.docker-tls.yml; for what a real deployment looks like, copy from config.template.yml.
 
 development_mode: true
 autogenerate: true
@@ -42,6 +47,9 @@ realms:
     # How long the PIC Tokens this realm issues stay valid. Stated per realm because the
     # lifetime of issued authority is a deployment decision, not something to default.
     token_lifetime: 1h
+    # Which expiration wins at OAuth-to-PIC exchange: `later` (the default, stated here so the lab
+    # shows the choice), `pic` for this realm's `token_lifetime`, `oauth` for the source token's own.
+    token_initial_expiry_policy: later
     # The lab signs with ES256, the algorithm a deployment keeping its keys in an HSM or a managed
     # KMS will ask for. Set `EdDSA` for the faster software default.
     token_signing_algorithm: ES256
