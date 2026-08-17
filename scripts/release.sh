@@ -9,18 +9,36 @@
 #   DRAFT=1 scripts/release.sh  # publish the release as a draft, to edit and release by hand
 #   YES=1 scripts/release.sh    # no summary, no question: one line, then the release happens
 #
-# The tag is `v<version>` and its message is `pic-x v<version>`. "Latest" is decided after fetching
-# the remote's tags, so a stale checkout cannot re-issue a bump somebody else already pushed. The
-# prompt shows what is about to happen — the commits going into the release, and the workspace
-# version, which the tag does not change — and anything other than `y` aborts with nothing created.
+# The tag is `v<version>` and its message is `<product> v<version>`, where the product is the
+# repository's name. "Latest" is decided after fetching the remote's tags, so a stale checkout
+# cannot re-issue a bump somebody else already pushed. The prompt shows what is about to happen —
+# the commits going into the release, and any version bump — and anything other than `y` aborts
+# with nothing created.
 #
 # The release notes are the commit subjects since the previous tag, so work committed straight to
 # main is listed too; GitHub's generated "What's Changed" section (merged pull requests) is appended
 # under them.
+#
+# Nothing here is specific to this repository. When a Cargo.toml declares a version — under
+# `[workspace.package]` or `[package]`, wherever it sits in the file — the version follows the tag:
+# the script bumps it, commits `<product> v<version>` and pushes, and only then tags, so the tagged
+# source always builds a binary that reports the version the tag claims. A repository without a
+# Cargo.toml skips the bump and just tags.
 
 set -euo pipefail
 
-cd "$(dirname "$0")/.."
+cd "$(git rev-parse --show-toplevel)"
+
+product="$(basename "$(pwd)")"
+
+# The version the working tree declares: the first `version = "…"` line after a
+# `[workspace.package]` or `[package]` section header. Empty when there is no Cargo.toml, which is
+# what makes the bump below optional rather than assumed.
+declared_version() {
+  [[ -f Cargo.toml ]] || return 0
+  awk -F'"' '/^\[(workspace\.)?package\]/ { in_section = 1 }
+             in_section && /^version = "/ { print $2; exit }' Cargo.toml
+}
 
 if [[ -n "$(git status --porcelain)" ]]; then
   echo "the working tree is not clean: commit or stash before releasing" >&2
@@ -31,15 +49,19 @@ fi
 git fetch --tags --quiet origin
 
 latest="$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' | sort -V | tail -1)"
+workspace_version="$(declared_version)"
 
 if [[ $# -ge 1 && -n "$1" ]]; then
   version="${1#v}"
 elif [[ -n "${latest}" ]]; then
   IFS=. read -r major minor patch <<<"${latest#v}"
   version="${major}.${minor}.$((patch + 1))"
+elif [[ -n "${workspace_version}" ]]; then
+  # No tag yet: the first release is whatever the working tree already says it is.
+  version="${workspace_version}"
 else
-  # No tag yet: the first release is whatever the workspace already says it is.
-  version="$(cargo pkgid --package pic-x | sed 's/.*[@#]//')"
+  echo "no tag to bump and no Cargo.toml to read: name the version, e.g. $0 0.1.0" >&2
+  exit 1
 fi
 
 if [[ ! "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
@@ -54,7 +76,6 @@ if git rev-parse --quiet --verify "refs/tags/${tag}" >/dev/null; then
   exit 1
 fi
 
-workspace_version="$(cargo pkgid --package pic-x | sed 's/.*[@#]//')"
 branch="$(git rev-parse --abbrev-ref HEAD)"
 
 # What the release will say: every commit since the previous tag, newest first.
@@ -62,22 +83,20 @@ range="${latest:+${latest}..}HEAD"
 notes="$(git log --format='- %s (%h)' "${range}")"
 
 if [[ -n "${YES:-}" ]]; then
-  echo "releasing ${tag} — pic-x v${version}, from $(git rev-parse --short HEAD) on ${branch}"
+  echo "releasing ${tag} — ${product} v${version}, from $(git rev-parse --short HEAD) on ${branch}"
 else
   echo "release:"
   echo "  latest tag    ${latest:-none}"
   echo "  new tag       ${tag}"
-  echo "  message       pic-x v${version}"
+  echo "  message       ${product} v${version}"
   echo "  commit        $(git rev-parse --short HEAD) on ${branch}"
-  echo "  workspace     ${workspace_version}"
   echo "  changes since ${latest:-the beginning}:"
   git log --format='    - %s (%h)' "${range}"
 fi
 
 # The warnings appear in both modes: YES silences the question, never the risks.
-if [[ "${workspace_version}" != "${version}" ]]; then
-  echo "  NOTE: the workspace says ${workspace_version}, the tag says ${version} — the banner will"
-  echo "        not match the tag until Cargo.toml is bumped too"
+if [[ -n "${workspace_version}" && "${workspace_version}" != "${version}" ]]; then
+  echo "  bump          Cargo.toml ${workspace_version} -> ${version}, committed and pushed before tagging"
 fi
 if [[ "${branch}" != "main" ]]; then
   echo "  NOTE: this is not main"
@@ -97,7 +116,29 @@ if [[ -z "${YES:-}" ]]; then
   esac
 fi
 
-git tag --annotate "${tag}" --message "pic-x v${version}"
+# The declared version follows the tag, so the tagged source builds a binary that says what the tag
+# says. The bump is its own pushed commit, and the tag lands on it.
+if [[ -n "${workspace_version}" && "${workspace_version}" != "${version}" ]]; then
+  VERSION="${version}" perl -0pi -e \
+    's/(\[(?:workspace\.)?package\][^\[]*?^version = ")[^"]*/$1$ENV{VERSION}/ms' Cargo.toml
+  if [[ -f Cargo.lock ]]; then
+    cargo update --workspace --quiet
+  fi
+  bumped="$(declared_version)"
+  if [[ "${bumped}" != "${version}" ]]; then
+    echo "bumping Cargo.toml did not take: it now says \`${bumped}\`, not ${version}" >&2
+    exit 1
+  fi
+  git add Cargo.toml
+  if [[ -f Cargo.lock ]]; then
+    git add Cargo.lock
+  fi
+  git commit --quiet --message "${product} v${version}"
+  git push --quiet origin HEAD
+  echo "bumped the workspace to ${version}"
+fi
+
+git tag --annotate "${tag}" --message "${product} v${version}"
 git push origin "${tag}"
 
 # The commit list travels as the notes body; GitHub appends its generated "What's Changed" section
@@ -111,10 +152,10 @@ if [[ -n "${latest}" ]]; then
   start="--notes-start-tag ${latest}"
 fi
 # shellcheck disable=SC2086 # ${draft} and ${start} are deliberate word-split flags
-if ! gh release create "${tag}" --title "pic-x v${version}" --verify-tag \
+if ! gh release create "${tag}" --title "${product} v${version}" --verify-tag \
   --notes "${notes}" --generate-notes ${start} ${draft}; then
   echo "the tag ${tag} was pushed, but the release page was not created — retry with:" >&2
-  echo "  gh release create ${tag} --title \"pic-x v${version}\" --verify-tag --generate-notes" >&2
+  echo "  gh release create ${tag} --title \"${product} v${version}\" --verify-tag --generate-notes" >&2
   exit 1
 fi
 
