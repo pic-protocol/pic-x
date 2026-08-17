@@ -44,6 +44,7 @@ ADMIN_ADDR        ?=
 TAG               ?= pic-x:local
 VOLUME            ?=
 KEYS              ?=
+VERSION           ?=
 
 PYTHON            ?= python3
 
@@ -74,8 +75,8 @@ serve_cmd = cargo run $(profile) --bin pic-x -- $(1) \
 
 .PHONY: audit-verify bench build check check-core-deps check-seams check-supply-chain cli help \
         lab-demo lab-demo-interactive lab-demo-print lab-down lab-get-idp-config lab-get-idp-jwt \
-        lab-run-demo lab-up lint run-as-docker run-as-docker-tls run-as-local run-as-local-tls \
-        test version
+        lab-run-demo lab-up lint release run-as-docker run-as-docker-tls run-as-local \
+        run-as-local-tls test version
 
 # ---------------------------------------------------------------------------------------------
 # Targets, in alphabetical order — so a reader scanning the file finds them in series.
@@ -268,6 +269,17 @@ lab-up: ## Start the local Docker Compose lab.
 #   ARGS  Extra flags appended verbatim to `cargo clippy`. Default: empty.
 lint: ## Run clippy over every crate and target.
 	cargo clippy $(scope) --all-targets --all-features $(ARGS) -- -D warnings
+
+# Read the latest `v<major>.<minor>.<patch>` tag (after fetching the remote's), bump the patch,
+# and — only after a `y` at the prompt — create the annotated tag `v<version>` with the message
+# `pic-x v<version>` and push it to origin. Anything other than `y` aborts with nothing created.
+#
+#   make release
+#   make release VERSION=0.4.0
+#
+#   VERSION  The exact version to tag, e.g. 0.4.0. Default: the latest tag, patch bumped.
+release: ## Tag the next release and push the tag — after a y at the prompt.
+	@./scripts/release.sh $(VERSION)
 
 # Build the image and run it as one container against config.docker.yml, mounted at
 # /etc/pic-x/config.yml — the image itself ships no configuration.

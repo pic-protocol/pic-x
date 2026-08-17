@@ -223,11 +223,11 @@ checks and the test suite.
 
 Articles:
 
-- [Designing PIC-X: From Specification to Architecture to Code](https://www.ngallo.it/blog/2026-08-01/pic-x-from-spec-to-arch/)
-- [Designing PIC-X: Deriving an Initial PIC Context of Authority](https://www.ngallo.it/blog/2026-08-01/pic-x-exchanging-token-to-pca/)
-- [Designing PIC-X: Exposing Configuration through .well-known/pic-x-configuration](https://www.ngallo.it/blog/2026-08-01/pic-x-well-known-config/)
-- [Designing PIC-X: PIC Token JWT and COSE Artifacts](https://www.ngallo.it/blog/2026-08-11/pic-x-token-types-jwts/)
-- [Designing PIC-X: Centralized Token Exchange End to End](https://www.ngallo.it/blog/2026-08-14/pic-x-centralized-token-exchange/)
+- <a href="https://www.ngallo.it/blog/2026-08-01/pic-x-from-spec-to-arch/" target="_blank" rel="noopener noreferrer">Designing PIC-X: From Specification to Architecture to Code</a>
+- <a href="https://www.ngallo.it/blog/2026-08-01/pic-x-exchanging-token-to-pca/" target="_blank" rel="noopener noreferrer">Designing PIC-X: Deriving an Initial PIC Context of Authority</a>
+- <a href="https://www.ngallo.it/blog/2026-08-01/pic-x-well-known-config/" target="_blank" rel="noopener noreferrer">Designing PIC-X: Exposing Configuration through .well-known/pic-x-configuration</a>
+- <a href="https://www.ngallo.it/blog/2026-08-11/pic-x-token-types-jwts/" target="_blank" rel="noopener noreferrer">Designing PIC-X: PIC Token JWT and COSE Artifacts</a>
+- <a href="https://www.ngallo.it/blog/2026-08-14/pic-x-centralized-token-exchange/" target="_blank" rel="noopener noreferrer">Designing PIC-X: Centralized Token Exchange End to End</a>
 
 ## License
 

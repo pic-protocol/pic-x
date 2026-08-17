@@ -342,6 +342,27 @@ tasks:
         cargo clippy {{if .PKG}}-p {{.PKG}}{{else}}--workspace{{end}}
         --all-targets --all-features {{.ARGS}} -- -D warnings
 
+  release:
+    desc: Tag the next release and push the tag — after a y at the prompt.
+    silent: true
+    summary: |
+      Read the latest `v<major>.<minor>.<patch>` tag (after fetching the remote's), bump the patch,
+      and — only after a `y` at the prompt — create the annotated tag `v<version>` with the message
+      `pic-x v<version>` and push it to origin. Anything other than `y` aborts with nothing created.
+
+      With VERSION, tag exactly that version instead: how a minor or major release is cut.
+
+      Examples:
+        task release
+        task release VERSION=0.4.0
+
+      Parameters:
+        VERSION  The exact version to tag, e.g. 0.4.0. Default: the latest tag, patch bumped.
+    vars:
+      VERSION: '{{.VERSION | default ""}}'
+    cmds:
+      - ./scripts/release.sh {{.VERSION}}
+
   run-as-docker:
     desc: Build the image and run it as a single container — no transport security.
     summary: |
