@@ -16,6 +16,7 @@ use crate::v1::{GetHealthRequest, GetHealthResponse, GetVersionRequest, GetVersi
 pub(crate) struct AdminApi {
     pub(crate) product: String,
     pub(crate) version: String,
+    pub(crate) commit: String,
     pub(crate) health: Health,
 }
 
@@ -28,6 +29,7 @@ impl Admin for AdminApi {
         Ok(Response::new(GetVersionResponse {
             product: self.product.clone(),
             version: self.version.clone(),
+            commit: self.commit.clone(),
         }))
     }
 
@@ -69,6 +71,7 @@ mod tests {
         let api = AdminApi {
             product: context.identity().product_name().to_owned(),
             version: context.config().version().to_owned(),
+            commit: context.config().commit().to_owned(),
             health: context.health().clone(),
         };
 
@@ -99,6 +102,7 @@ mod tests {
         let api = AdminApi {
             product: "Demo X".to_owned(),
             version: "9.9.9".to_owned(),
+            commit: "abc123".to_owned(),
             health: context.health().clone(),
         };
 

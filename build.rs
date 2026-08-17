@@ -29,6 +29,22 @@ fn main() -> Result<(), Box<dyn Error>> {
         println!("cargo:rustc-env={name}={value}");
     }
 
+    // The commit this binary was built from. A local build resolves it from the repository; an
+    // image build has no `.git` in its context (.dockerignore) and passes PIC_X_BUILD_COMMIT as a
+    // build argument instead; a build from a bare source archive has neither and says `unknown`
+    // rather than inventing one. Truncated to twelve characters, which is what the banner prints.
+    println!("cargo:rerun-if-env-changed=PIC_X_BUILD_COMMIT");
+    println!("cargo:rerun-if-changed=.git/HEAD");
+    println!("cargo:rerun-if-changed=.git/refs");
+    let commit = env::var("PIC_X_BUILD_COMMIT")
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .or_else(git_head_commit)
+        .unwrap_or_else(|| "unknown".to_owned());
+    let commit: String = commit.chars().take(12).collect();
+    println!("cargo:rustc-env=PIC_X_BUILD_COMMIT={commit}");
+
     println!("cargo:rerun-if-changed={LOGO_SOURCE}");
     let bytes =
         std::fs::read(LOGO_SOURCE).map_err(|error| format!("reading {LOGO_SOURCE}: {error}"))?;
@@ -38,6 +54,21 @@ fn main() -> Result<(), Box<dyn Error>> {
         .map_err(|error| format!("writing {}: {error}", out.display()))?;
 
     Ok(())
+}
+
+/// Returns the repository's short HEAD commit, or nothing when there is no repository to ask.
+fn git_head_commit() -> Option<String> {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "--short=12", "HEAD"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let commit = String::from_utf8(output.stdout).ok()?;
+    let commit = commit.trim();
+
+    (!commit.is_empty()).then(|| commit.to_owned())
 }
 
 /// Encodes bytes as standard base64 with padding.

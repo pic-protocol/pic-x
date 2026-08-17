@@ -68,7 +68,9 @@ async fn main() -> ExitCode {
         env!("CARGO_PKG_VERSION"),
         env!("PIC_X_COPYRIGHT_YEAR"),
         env!("PIC_X_COPYRIGHT_HOLDER"),
-    );
+    )
+    // Resolved by build.rs: the build argument in an image build, the repository in a local one.
+    .with_commit(env!("PIC_X_BUILD_COMMIT"));
 
     App::new(
         identity,

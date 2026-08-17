@@ -32,8 +32,13 @@ RUN case "${TARGETARCH}" in \
 # them without editing the source tree.
 ARG PIC_X_COPYRIGHT_YEAR=2026
 ARG PIC_X_COPYRIGHT_HOLDER="Nitro Agility S.r.l."
+# The commit this image is built from, stamped into the binary (banner, admin GetVersion). It has to
+# arrive as an argument: `.git` is deliberately outside the build context, so the build cannot ask
+# the repository itself. Left empty, the binary says `unknown`.
+ARG PIC_X_BUILD_COMMIT=""
 ENV PIC_X_COPYRIGHT_YEAR=${PIC_X_COPYRIGHT_YEAR} \
-    PIC_X_COPYRIGHT_HOLDER=${PIC_X_COPYRIGHT_HOLDER}
+    PIC_X_COPYRIGHT_HOLDER=${PIC_X_COPYRIGHT_HOLDER} \
+    PIC_X_BUILD_COMMIT=${PIC_X_BUILD_COMMIT}
 
 COPY . .
 

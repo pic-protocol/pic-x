@@ -331,6 +331,7 @@ impl Layers {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BuildSettings {
     version: &'static str,
+    commit: &'static str,
     copyright_year: &'static str,
     copyright_holder: &'static str,
 }
@@ -344,14 +345,28 @@ impl BuildSettings {
     ) -> Self {
         Self {
             version,
+            // What a build that states nothing says — the same word build.rs falls back to when
+            // neither the environment nor a repository can answer.
+            commit: "unknown",
             copyright_year,
             copyright_holder,
         }
     }
 
+    /// Names the commit this binary was built from.
+    pub fn with_commit(mut self, commit: &'static str) -> Self {
+        self.commit = commit;
+        self
+    }
+
     /// Returns the version the binary was compiled with.
     pub fn version(&self) -> &'static str {
         self.version
+    }
+
+    /// Returns the commit the binary was built from, or `unknown`.
+    pub fn commit(&self) -> &'static str {
+        self.commit
     }
 }
 
@@ -375,6 +390,7 @@ impl BuildSettings {
 #[derive(Debug, Clone)]
 pub struct Config {
     version: String,
+    commit: String,
     copyright_year: String,
     copyright_holder: String,
     working_dir: Option<String>,
@@ -424,6 +440,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             version: DEFAULT_VERSION.to_owned(),
+            commit: "unknown".to_owned(),
             copyright_year: DEFAULT_COPYRIGHT_YEAR.to_owned(),
             copyright_holder: DEFAULT_COPYRIGHT_HOLDER.to_owned(),
             working_dir: None,
@@ -1245,6 +1262,11 @@ produce: use `EdDSA` or `ES256`"
         &self.version
     }
 
+    /// Returns the commit the running binary was built from, or `unknown`.
+    pub fn commit(&self) -> &str {
+        &self.commit
+    }
+
     /// Returns the effective copyright year.
     pub fn copyright_year(&self) -> &str {
         &self.copyright_year
@@ -1597,6 +1619,7 @@ produce: use `EdDSA` or `ES256`"
 
     fn apply_build_settings(&mut self, build_settings: BuildSettings) {
         self.version = build_settings.version.to_owned();
+        self.commit = build_settings.commit.to_owned();
         self.copyright_year = build_settings.copyright_year.to_owned();
         self.copyright_holder = build_settings.copyright_holder.to_owned();
     }

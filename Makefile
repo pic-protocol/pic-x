@@ -318,7 +318,7 @@ run-as-docker: ## Build the image and run it as a single container — no transp
 run-as-docker: VOLUME_DIR = $(if $(VOLUME),$(VOLUME),.volume-docker)
 run-as-docker: CONFIG_FILE = $(if $(CONFIG),$(CONFIG),config.docker.yml)
 run-as-docker:
-	docker build --tag $(TAG) .
+	docker build --tag $(TAG) --build-arg PIC_X_BUILD_COMMIT=$$(git rev-parse --short=12 HEAD) .
 	mkdir -p $(VOLUME_DIR)
 # The mount point, and nothing inside it: the container writes as uid 65532 and needs the
 # directory. Recursing would loosen the secret it wrote on the last run, and the secret store
@@ -349,7 +349,7 @@ run-as-docker-tls: ## The same single container, over TLS with mutual TLS on the
 run-as-docker-tls: VOLUME_DIR = $(if $(VOLUME),$(VOLUME),.volume-docker-tls)
 run-as-docker-tls: CONFIG_FILE = $(if $(CONFIG),$(CONFIG),config.docker-tls.yml)
 run-as-docker-tls:
-	docker build --tag $(TAG) .
+	docker build --tag $(TAG) --build-arg PIC_X_BUILD_COMMIT=$$(git rev-parse --short=12 HEAD) .
 	mkdir -p $(VOLUME_DIR)
 # The mount point, and nothing inside it: the container writes as uid 65532 and needs the
 # directory. Recursing would loosen the secret it wrote on the last run, and the secret store

@@ -20,6 +20,18 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v5
 
+      # The image tag comes from the git tag, but the binary inside reports Cargo.toml's version.
+      # Publishing an image whose two versions disagree is worse than publishing nothing, so this
+      # refuses before building anything.
+      - name: The tag must match the workspace version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)"
+          if [ "$tag" != "$version" ]; then
+            echo "the tag v$tag does not match the workspace version $version in Cargo.toml" >&2
+            exit 1
+          fi
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v4
 
@@ -56,5 +68,9 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # Stamped into the binary by build.rs: `.git` is outside the build context on purpose, so
+          # the commit travels as an argument. build.rs truncates it to twelve characters.
+          build-args: |
+            PIC_X_BUILD_COMMIT=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

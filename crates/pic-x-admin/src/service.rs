@@ -66,6 +66,7 @@ impl AdminService {
         routes.add_service(AdminServer::new(AdminApi {
             product: context.identity().product_name().to_owned(),
             version: context.config().version().to_owned(),
+            commit: context.config().commit().to_owned(),
             health: context.health().clone(),
         }));
 

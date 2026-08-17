@@ -406,7 +406,7 @@ tasks:
       VOLUME: '{{.VOLUME | default ".volume-docker"}}'
       CONFIG: '{{.CONFIG | default "config.docker.yml"}}'
     cmds:
-      - docker build --tag {{.TAG}} .
+      - docker build --tag {{.TAG}} --build-arg PIC_X_BUILD_COMMIT=$(git rev-parse --short=12 HEAD) .
       - mkdir -p {{.VOLUME}}
       # The mount point, and nothing inside it: the container writes as uid 65532 and needs the
       # directory. Recursing would loosen the secret it wrote on the last run, and the secret store
@@ -446,7 +446,7 @@ tasks:
       VOLUME: '{{.VOLUME | default ".volume-docker-tls"}}'
       CONFIG: '{{.CONFIG | default "config.docker-tls.yml"}}'
     cmds:
-      - docker build --tag {{.TAG}} .
+      - docker build --tag {{.TAG}} --build-arg PIC_X_BUILD_COMMIT=$(git rev-parse --short=12 HEAD) .
       - mkdir -p {{.VOLUME}}
       # The mount point, and nothing inside it: the container writes as uid 65532 and needs the
       # directory. Recursing would loosen the secret it wrote on the last run, and the secret store

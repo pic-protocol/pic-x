@@ -11,6 +11,7 @@ pub struct Banner {
     product_name: String,
     tagline: String,
     version: String,
+    commit: String,
     copyright_year: String,
     copyright_holder: String,
 }
@@ -26,6 +27,7 @@ impl Banner {
             product_name: identity.product_name().to_owned(),
             tagline: identity.tagline().to_owned(),
             version: config.version().to_owned(),
+            commit: config.commit().to_owned(),
             copyright_year: config.copyright_year().to_owned(),
             copyright_holder: config.copyright_holder().to_owned(),
         }
@@ -34,11 +36,12 @@ impl Banner {
     /// Returns the full startup banner used by commands that start the server.
     pub fn render_full(&self) -> String {
         format!(
-            "{}\n\n{}\n{}\n\nVersion {}\n\n© {} {}. All rights reserved.\n",
+            "{}\n\n{}\n{}\n\nVersion {} (build {})\n\n© {} {}. All rights reserved.\n",
             self.art,
             self.product_name,
             self.tagline,
             self.version,
+            self.commit,
             self.copyright_year,
             self.copyright_holder
         )
@@ -47,10 +50,11 @@ impl Banner {
     /// Returns the short banner used by commands that only return a value.
     pub fn render_short(&self) -> String {
         format!(
-            "{}\n{}\nVersion {}\n© {} {}.\n",
+            "{}\n{}\nVersion {} (build {})\n© {} {}.\n",
             self.product_name,
             self.tagline,
             self.version,
+            self.commit,
             self.copyright_year,
             self.copyright_holder
         )

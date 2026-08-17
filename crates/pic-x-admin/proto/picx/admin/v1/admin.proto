@@ -30,6 +30,8 @@ message GetVersionResponse {
   string product = 1;
   // The version this build was compiled at.
   string version = 2;
+  // The commit this build was compiled from, or `unknown` when the build could not name one.
+  string commit = 3;
 }
 
 message GetHealthRequest {}
