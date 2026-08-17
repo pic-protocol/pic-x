@@ -12,15 +12,15 @@
 ## Start Here
 
 PIC-X is a local-first Rust service with three surfaces: public discovery, administrative gRPC and
-telemetry. The repository uses [Task](https://taskfile.dev/) as the command runner so the useful paths
-are one command away and still visible in plain YAML.
+telemetry. The repository exposes the same workflows through `Makefile` and `Taskfile.yml`; use
+whichever runner you already have. The examples below use `make`.
 
 ### Requirements
 
 | Tool | Why | Install |
 | --- | --- | --- |
 | Rust 1.97+ | Build and run PIC-X locally | <https://rustup.rs/> |
-| Task | Run project workflows | <https://taskfile.dev/installation/> |
+| Make or Task | Run project workflows | Make is usually already installed; Task: <https://taskfile.dev/installation/> |
 | Docker | Run the lab stack | <https://docs.docker.com/get-docker/> |
 | Python 3 | Run the lab demo script | <https://www.python.org/downloads/> |
 | grpcurl | Exercise the admin gRPC endpoint | <https://github.com/fullstorydev/grpcurl> |
@@ -29,13 +29,13 @@ are one command away and still visible in plain YAML.
 See every available workflow with:
 
 ```sh
-task --list
+make help
 ```
 
 ## Run PIC-X
 
 ```sh
-task run
+make run
 ```
 
 This starts the local development config, creates `.volume/`, writes a file audit trail, creates the
@@ -59,7 +59,7 @@ grpcurl -plaintext \
 For the TLS and mTLS local profile:
 
 ```sh
-task run-as-local-tls
+make run-as-local-tls
 ```
 
 ```sh
@@ -106,9 +106,9 @@ published to your network. The first `lab-up` builds the local PIC-X and trust-l
 take a few minutes.
 
 ```sh
-task lab-up
-task lab-demo
-task lab-down
+make lab-up
+make lab-demo
+make lab-down
 ```
 
 The demo starts with an ASCII flow map, checks that the three services are reachable, gets a token
@@ -161,8 +161,8 @@ Flow map
 Useful lab commands:
 
 ```sh
-task lab-get-idp-config
-task lab-get-idp-jwt
+make lab-get-idp-config
+make lab-get-idp-jwt
 curl -fsS http://localhost:17080/
 curl -fsS http://localhost:17556/.well-known/server-configuration
 ```
@@ -186,16 +186,16 @@ The ports are separate so administration is not accidentally exposed through the
 | Run the local Keycloak and public REST lab | [docs/keycloak.md](docs/keycloak.md) |
 | Verify and operate the audit trail | [docs/audit.md](docs/audit.md) |
 | Back up and restore the volume | [docs/backup-and-restore.md](docs/backup-and-restore.md) |
-| Use the Taskfile shortcuts | [docs/tasks.md](docs/tasks.md) |
+| Use the workflow shortcuts | [docs/tasks.md](docs/tasks.md) |
 
 ## Config Files
 
 | File | Use |
 | --- | --- |
-| [config.local.yaml](config.local.yaml) | Local development, no TLS, loopback only; used by `task run` |
-| [config.local-tls.yaml](config.local-tls.yaml) | Local development with TLS and mTLS; used by `task run-as-local-tls` |
+| [config.local.yaml](config.local.yaml) | Local development, no TLS, loopback only; used by `make run` |
+| [config.local-tls.yaml](config.local-tls.yaml) | Local development with TLS and mTLS; used by `make run-as-local-tls` |
 | [config.lab.yaml](config.lab.yaml) | Docker Compose lab config for the PIC-X container |
-| [config.dev.yaml](config.dev.yaml) | Container development, no TLS; used by `task run-as-docker-dev` |
+| [config.dev.yaml](config.dev.yaml) | Container development, no TLS; used by `make run-as-docker-dev` |
 | [config.prod.yaml](config.prod.yaml) | Production-shaped default copied into the image; refuses missing TLS/secrets |
 | [config.template.yaml](config.template.yaml) | Full annotated reference; not meant to be run directly |
 
@@ -205,18 +205,18 @@ flag such as `--log-level trace` wins over `PIC_X_LOG_LEVEL`, which wins over `l
 ## Development
 
 ```sh
-task --list
-task check
-task test
-task lab-up
-task lab-get-idp-config
-task lab-get-idp-jwt
-task lab-demo
-task lab-down
-task run-as-docker-dev
+make help
+make check
+make test
+make lab-up
+make lab-get-idp-config
+make lab-get-idp-jwt
+make lab-demo
+make lab-down
+make run-as-docker-dev
 ```
 
-`task check` is the local CI gate: clippy with warnings denied, architecture checks, supply-chain
+`make check` is the local CI gate: clippy with warnings denied, architecture checks, supply-chain
 checks and the test suite.
 
 ## Learn
