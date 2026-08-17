@@ -45,6 +45,7 @@ TAG               ?= pic-x:local
 VOLUME            ?=
 KEYS              ?=
 VERSION           ?=
+DRAFT             ?=
 
 PYTHON            ?= python3
 
@@ -271,15 +272,19 @@ lint: ## Run clippy over every crate and target.
 	cargo clippy $(scope) --all-targets --all-features $(ARGS) -- -D warnings
 
 # Read the latest `v<major>.<minor>.<patch>` tag (after fetching the remote's), bump the patch,
-# and — only after a `y` at the prompt — create the annotated tag `v<version>` with the message
-# `pic-x v<version>` and push it to origin. Anything other than `y` aborts with nothing created.
+# and — only after a `y` at the prompt, which lists the commits going in — create the annotated tag
+# `v<version>` (message: `pic-x v<version>`), push it to origin, and publish the GitHub release.
+# Its notes are the commit subjects since the previous tag, with GitHub's generated "What's Changed"
+# section (merged pull requests) underneath. Anything other than `y` aborts with nothing created.
 #
 #   make release
 #   make release VERSION=0.4.0
+#   make release DRAFT=1
 #
 #   VERSION  The exact version to tag, e.g. 0.4.0. Default: the latest tag, patch bumped.
-release: ## Tag the next release and push the tag — after a y at the prompt.
-	@./scripts/release.sh $(VERSION)
+#   DRAFT    Publish the release as a draft, to edit and release by hand. Default: unset.
+release: ## Tag the next release, push the tag and publish the release notes — after a y at the prompt.
+	@DRAFT=$(DRAFT) ./scripts/release.sh $(VERSION)
 
 # Build the image and run it as one container against config.docker.yml, mounted at
 # /etc/pic-x/config.yml — the image itself ships no configuration.

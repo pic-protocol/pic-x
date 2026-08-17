@@ -1,15 +1,21 @@
 #!/usr/bin/env bash
 #
-# Cuts a release tag: reads the latest `v<major>.<minor>.<patch>` tag, bumps the patch, and — after
-# a `y` at the prompt — creates the annotated tag and pushes it to origin.
+# Cuts a release: reads the latest `v<major>.<minor>.<patch>` tag, bumps the patch, and — after a
+# `y` at the prompt — creates the annotated tag, pushes it to origin, and publishes the GitHub
+# release with notes.
 #
 #   scripts/release.sh          # v0.3.0 -> v0.3.1
 #   scripts/release.sh 0.4.0    # tag exactly this version — how a minor or major release is cut
+#   DRAFT=1 scripts/release.sh  # publish the release as a draft, to edit and release by hand
 #
 # The tag is `v<version>` and its message is `pic-x v<version>`. "Latest" is decided after fetching
 # the remote's tags, so a stale checkout cannot re-issue a bump somebody else already pushed. The
-# prompt shows what is about to happen — including the workspace version, which the tag does not
-# change — and anything other than `y` aborts with nothing created.
+# prompt shows what is about to happen — the commits going into the release, and the workspace
+# version, which the tag does not change — and anything other than `y` aborts with nothing created.
+#
+# The release notes are the commit subjects since the previous tag, so work committed straight to
+# main is listed too; GitHub's generated "What's Changed" section (merged pull requests) is appended
+# under them.
 
 set -euo pipefail
 
@@ -50,12 +56,18 @@ fi
 workspace_version="$(cargo pkgid --package pic-x | sed 's/.*[@#]//')"
 branch="$(git rev-parse --abbrev-ref HEAD)"
 
+# What the release will say: every commit since the previous tag, newest first.
+range="${latest:+${latest}..}HEAD"
+notes="$(git log --format='- %s (%h)' "${range}")"
+
 echo "release:"
 echo "  latest tag    ${latest:-none}"
 echo "  new tag       ${tag}"
 echo "  message       pic-x v${version}"
 echo "  commit        $(git rev-parse --short HEAD) on ${branch}"
 echo "  workspace     ${workspace_version}"
+echo "  changes since ${latest:-the beginning}:"
+git log --format='    - %s (%h)' "${range}"
 if [[ "${workspace_version}" != "${version}" ]]; then
   echo "  NOTE: the workspace says ${workspace_version}, the tag says ${version} — the banner will"
   echo "        not match the tag until Cargo.toml is bumped too"
@@ -63,8 +75,11 @@ fi
 if [[ "${branch}" != "main" ]]; then
   echo "  NOTE: this is not main"
 fi
+if [[ -n "${DRAFT:-}" ]]; then
+  echo "  NOTE: the release will be a draft — edit and publish it on GitHub"
+fi
 
-read -r -p "create and push ${tag}? [y/N] " answer
+read -r -p "create ${tag}, push it and publish the release? [y/N] " answer
 case "${answer}" in
   y | Y | yes | YES) ;;
   *)
@@ -75,5 +90,23 @@ esac
 
 git tag --annotate "${tag}" --message "pic-x v${version}"
 git push origin "${tag}"
+
+# The commit list travels as the notes body; GitHub appends its generated "What's Changed" section
+# (merged pull requests since --notes-start-tag) underneath.
+draft=""
+if [[ -n "${DRAFT:-}" ]]; then
+  draft="--draft"
+fi
+start=""
+if [[ -n "${latest}" ]]; then
+  start="--notes-start-tag ${latest}"
+fi
+# shellcheck disable=SC2086 # ${draft} and ${start} are deliberate word-split flags
+if ! gh release create "${tag}" --title "pic-x v${version}" --verify-tag \
+  --notes "${notes}" --generate-notes ${start} ${draft}; then
+  echo "the tag ${tag} was pushed, but the release page was not created — retry with:" >&2
+  echo "  gh release create ${tag} --title \"pic-x v${version}\" --verify-tag --generate-notes" >&2
+  exit 1
+fi
 
 echo "released ${tag}"

@@ -17,7 +17,7 @@ configuration system; the config files remain the source of truth.
 | `task lab-get-idp-jwt` | Print an example IdP JWT |
 | `task lab-demo` | Run the local lab walkthrough |
 | `task audit:verify` | Verify the local file audit trail |
-| `task release` | Tag the next release and push the tag, after a confirmation |
+| `task release` | Tag the next release, push it and publish the release notes, after a confirmation |
 | `task test` | Run the test suite |
 | `task check` | Run the local CI gate |
 | `task --list` | Show every available task |
