@@ -359,15 +359,19 @@ tasks:
         task release
         task release VERSION=0.4.0
         task release DRAFT=1
+        task release YES=1
 
       Parameters:
         VERSION  The exact version to tag, e.g. 0.4.0. Default: the latest tag, patch bumped.
         DRAFT    Publish the release as a draft, to edit and release by hand. Default: unset.
+        YES      Skip the summary and the question: one line, then the release happens. The
+                 dirty-tree, duplicate-tag and version checks still apply. Default: unset.
     vars:
       VERSION: '{{.VERSION | default ""}}'
       DRAFT: '{{.DRAFT | default ""}}'
+      YES: '{{.YES | default ""}}'
     cmds:
-      - DRAFT={{.DRAFT}} ./scripts/release.sh {{.VERSION}}
+      - DRAFT={{.DRAFT}} YES={{.YES}} ./scripts/release.sh {{.VERSION}}
 
   run-as-docker:
     desc: Build the image and run it as a single container — no transport security.

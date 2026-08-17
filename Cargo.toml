@@ -53,7 +53,7 @@ members = ["crates/*"]
 # keeps it that way. A downstream binary can therefore reuse any subset of these crates and supply
 # its own implementation of the rest without forking.
 [workspace.package]
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 rust-version = "1.97"
 # The SPDX expression, which is what crates.io, every licence scanner and every downstream compliance

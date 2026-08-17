@@ -7,6 +7,7 @@
 #   scripts/release.sh          # v0.3.0 -> v0.3.1
 #   scripts/release.sh 0.4.0    # tag exactly this version — how a minor or major release is cut
 #   DRAFT=1 scripts/release.sh  # publish the release as a draft, to edit and release by hand
+#   YES=1 scripts/release.sh    # no summary, no question: one line, then the release happens
 #
 # The tag is `v<version>` and its message is `pic-x v<version>`. "Latest" is decided after fetching
 # the remote's tags, so a stale checkout cannot re-issue a bump somebody else already pushed. The
@@ -60,14 +61,20 @@ branch="$(git rev-parse --abbrev-ref HEAD)"
 range="${latest:+${latest}..}HEAD"
 notes="$(git log --format='- %s (%h)' "${range}")"
 
-echo "release:"
-echo "  latest tag    ${latest:-none}"
-echo "  new tag       ${tag}"
-echo "  message       pic-x v${version}"
-echo "  commit        $(git rev-parse --short HEAD) on ${branch}"
-echo "  workspace     ${workspace_version}"
-echo "  changes since ${latest:-the beginning}:"
-git log --format='    - %s (%h)' "${range}"
+if [[ -n "${YES:-}" ]]; then
+  echo "releasing ${tag} — pic-x v${version}, from $(git rev-parse --short HEAD) on ${branch}"
+else
+  echo "release:"
+  echo "  latest tag    ${latest:-none}"
+  echo "  new tag       ${tag}"
+  echo "  message       pic-x v${version}"
+  echo "  commit        $(git rev-parse --short HEAD) on ${branch}"
+  echo "  workspace     ${workspace_version}"
+  echo "  changes since ${latest:-the beginning}:"
+  git log --format='    - %s (%h)' "${range}"
+fi
+
+# The warnings appear in both modes: YES silences the question, never the risks.
 if [[ "${workspace_version}" != "${version}" ]]; then
   echo "  NOTE: the workspace says ${workspace_version}, the tag says ${version} — the banner will"
   echo "        not match the tag until Cargo.toml is bumped too"
@@ -79,14 +86,16 @@ if [[ -n "${DRAFT:-}" ]]; then
   echo "  NOTE: the release will be a draft — edit and publish it on GitHub"
 fi
 
-read -r -p "create ${tag}, push it and publish the release? [y/N] " answer
-case "${answer}" in
-  y | Y | yes | YES) ;;
-  *)
-    echo "aborted: nothing was created"
-    exit 1
-    ;;
-esac
+if [[ -z "${YES:-}" ]]; then
+  read -r -p "create ${tag}, push it and publish the release? [y/N] " answer
+  case "${answer}" in
+    y | Y | yes | YES) ;;
+    *)
+      echo "aborted: nothing was created"
+      exit 1
+      ;;
+  esac
+fi
 
 git tag --annotate "${tag}" --message "pic-x v${version}"
 git push origin "${tag}"

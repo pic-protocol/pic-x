@@ -46,6 +46,7 @@ VOLUME            ?=
 KEYS              ?=
 VERSION           ?=
 DRAFT             ?=
+YES               ?=
 
 PYTHON            ?= python3
 
@@ -280,11 +281,14 @@ lint: ## Run clippy over every crate and target.
 #   make release
 #   make release VERSION=0.4.0
 #   make release DRAFT=1
+#   make release YES=1
 #
 #   VERSION  The exact version to tag, e.g. 0.4.0. Default: the latest tag, patch bumped.
 #   DRAFT    Publish the release as a draft, to edit and release by hand. Default: unset.
+#   YES      Skip the summary and the question: one line, then the release happens. The dirty-tree,
+#            duplicate-tag and version checks still apply. Default: unset.
 release: ## Tag the next release, push the tag and publish the release notes — after a y at the prompt.
-	@DRAFT=$(DRAFT) ./scripts/release.sh $(VERSION)
+	@DRAFT=$(DRAFT) YES=$(YES) ./scripts/release.sh $(VERSION)
 
 # Build the image and run it as one container against config.docker.yml, mounted at
 # /etc/pic-x/config.yml — the image itself ships no configuration.
