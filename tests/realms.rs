@@ -160,7 +160,7 @@ fn post(address: &str, path: &str) -> (String, String) {
 
 /// Writes a two-realm development configuration into `volume`.
 fn config_in(volume: &std::path::Path) -> PathBuf {
-    let path = volume.join("config.yaml");
+    let path = volume.join("config.yml");
     fs::write(
         &path,
         format!(
@@ -207,6 +207,83 @@ fn kids(body: &str) -> Vec<String> {
 /// Reads a file to a string, or empty when it is not there.
 fn read(path: &std::path::Path) -> String {
     fs::read_to_string(path).unwrap_or_default()
+}
+
+/// Writes a configuration that declares one realm inline and one per-file, via `realms_from`.
+fn split_config_in(volume: &std::path::Path) -> PathBuf {
+    let realms = volume.join("realms.d");
+    fs::create_dir_all(&realms).expect("the realms directory is created");
+    fs::write(
+        realms.join("delta.yml"),
+        "name: delta\n\
+         listed: true\n\
+         token_lifetime: 1h\n\
+         keys:\n  publish_ahead: 1m\n  rotate_every: 10m\n  retain: 1h\n",
+    )
+    .expect("the realm file is written");
+
+    let path = volume.join("config.yml");
+    fs::write(
+        &path,
+        format!(
+            "development_mode: true\n\
+             autogenerate: true\n\
+             working_dir: {}/vol\n\
+             log:\n  level: info\n  format: json\n\
+             public:\n  http: 127.0.0.1:0\n\
+             operations:\n  \
+             secrets:\n    provider: directory\n  \
+             audit:\n    sink: file\n    retention: 7d\n    \
+             pseudonym:\n      enabled: true\n      key_ref: audit-pseudonym\n      key_version: \"v1\"\n  \
+             keys:\n    enabled: true\n    publish_ahead: 1m\n    rotate_every: 10m\n    retain: 1h\n\
+             realms_from: realms.d\n\
+             realms:\n  \
+             - name: acme\n    listed: true\n    token_lifetime: 1h\n    \
+             keys:\n      publish_ahead: 1m\n      rotate_every: 10m\n      retain: 1h\n",
+            volume.display()
+        ),
+    )
+    .expect("the configuration is written");
+
+    path
+}
+
+#[test]
+fn test_a_realm_loaded_from_a_directory_is_served_like_an_inline_one() {
+    // The whole `realms_from` claim: inline or from a file, a realm is the same realm. One realm of
+    // each kind, and past loading nothing can tell them apart — both in the catalogue, both serving
+    // their own discovery, both leaving their own material on disk.
+    let volume = scratch("from-dir");
+    let config = split_config_in(&volume);
+    let server = serve(&config);
+
+    let (status, catalogue) = get(&server.public, "/.well-known/server-configuration");
+    assert!(status.contains("200"), "{status}");
+    assert!(
+        catalogue.contains("acme"),
+        "the catalogue omits the inline realm: {catalogue}"
+    );
+    assert!(
+        catalogue.contains("delta"),
+        "the catalogue omits the realm loaded from the directory: {catalogue}"
+    );
+
+    let (delta_status, delta) = get(
+        &server.public,
+        "/realms/delta/.well-known/pic-x-configuration",
+    );
+    assert!(delta_status.contains("200"), "{delta_status}");
+    assert!(delta.contains("/realms/delta"), "{delta}");
+
+    server.stop();
+
+    let vol = volume.join("vol");
+    assert!(
+        vol.join("realms/delta/operations/keys/ring.json").exists(),
+        "the file-declared realm sealed nothing on disk"
+    );
+
+    let _ = fs::remove_dir_all(&volume);
 }
 
 #[test]

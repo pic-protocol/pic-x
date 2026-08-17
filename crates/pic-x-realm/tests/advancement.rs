@@ -32,8 +32,8 @@ use pic_x_core::{
     BoxFuture, ClaimMapping, Config, EXCHANGE_ON_UNMATCHED_SCOPE_REJECT,
     EXCHANGE_SOURCE_FORMAT_JWT, EXCHANGE_SOURCE_OAUTH_ACCESS_TOKEN, ExchangeProfileClaims,
     ExchangeProfileConfig, ExchangeProfilePrivileges, ExchangeProfileSource,
-    ExchangeTokenValidation, InitialTokenExpiryPolicy, Jwk, KeyId, KeyManager, Maintenance,
-    PrivilegeEmit, PrivilegeRule, ProductIdentity, Pseudonymizer, Realm, Realms, Signature,
+    ExchangeTokenValidation, Jwk, KeyId, KeyManager, Maintenance, PrivilegeEmit, PrivilegeRule,
+    ProductIdentity, Pseudonymizer, Realm, Realms, Signature, TokenInitialExpiryPolicy,
     TrustedAttesterConfig,
 };
 use pic_x_realm::WellKnownService;
@@ -470,7 +470,7 @@ fn realm_trusting_with_audit(
     jwks_uri: &str,
     idp_issuer: &str,
     audit: Arc<dyn pic_x_core::AuditSink>,
-    expiry_policy: InitialTokenExpiryPolicy,
+    expiry_policy: TokenInitialExpiryPolicy,
 ) -> Realm {
     Realm::new(
         "acme",
@@ -482,7 +482,7 @@ fn realm_trusting_with_audit(
         audit,
         None,
     )
-    .with_initial_token_expiry_policy(expiry_policy)
+    .with_token_initial_expiry_policy(expiry_policy)
     .with_exchange_profiles([exchange_profile(idp_issuer)])
     .with_trusted_attesters([TrustedAttesterConfig {
         id: "test-por-attester".to_owned(),
@@ -628,10 +628,10 @@ struct Lab {
 }
 
 async fn lab() -> Lab {
-    lab_with_expiry_policy(InitialTokenExpiryPolicy::Later).await
+    lab_with_expiry_policy(TokenInitialExpiryPolicy::Later).await
 }
 
-async fn lab_with_expiry_policy(expiry_policy: InitialTokenExpiryPolicy) -> Lab {
+async fn lab_with_expiry_policy(expiry_policy: TokenInitialExpiryPolicy) -> Lab {
     let attester = Attester::new();
     let provider = serve_identity_provider().await;
     let jwks_uri = serve_key_set(attester.key_set()).await;
@@ -1339,7 +1339,7 @@ async fn the_initial_expiry_policy_is_fixed_into_the_lineage() {
 async fn the_initial_expiry_policy_can_prefer_pic_or_oauth() {
     let now = unix_now_for_test();
 
-    let pic_lab = lab_with_expiry_policy(InitialTokenExpiryPolicy::Pic).await;
+    let pic_lab = lab_with_expiry_policy(TokenInitialExpiryPolicy::Pic).await;
     let (status, body) = post_token(
         &pic_lab.router,
         initialization_body(&pic_lab.provider.access_token_with_exp(now + 7_200)),
@@ -1353,7 +1353,7 @@ async fn the_initial_expiry_policy_can_prefer_pic_or_oauth() {
         "PIC policy should ignore the later OAuth exp"
     );
 
-    let oauth_lab = lab_with_expiry_policy(InitialTokenExpiryPolicy::OAuth).await;
+    let oauth_lab = lab_with_expiry_policy(TokenInitialExpiryPolicy::OAuth).await;
     let (status, body) = post_token(
         &oauth_lab.router,
         initialization_body(&oauth_lab.provider.access_token_with_exp(now + 120)),

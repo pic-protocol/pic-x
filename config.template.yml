@@ -2,9 +2,14 @@
 ##
 ## Nothing here runs. This is the catalogue you copy from; the files that run are:
 ##
-##   config.local.yaml      development, no transport security  — `task run`
-##   config.local-tls.yaml  development, TLS and mutual TLS     — `task run-as-local-tls`
-##   config.prod.yaml       production, and what the image ships — `task run-as-prod`
+##   config.local.yml       the binary, no transport security     — `task run-as-local`
+##   config.local-tls.yml   the binary, TLS and mutual TLS        — `task run-as-local-tls`
+##   config.docker.yml      one container, no transport security  — `task run-as-docker`
+##   config.docker-tls.yml  one container, TLS and mutual TLS     — `task run-as-docker-tls`
+##   config.lab.yml         the local Docker Compose lab          — `task lab-up`
+##
+## A production configuration is written by copying from this file; the container image ships no
+## configuration at all and refuses to start until one is mounted at /etc/pic-x/config.yml.
 ##
 ## ## How to read this file
 ##
@@ -90,6 +95,17 @@
 ##
 ## Whatever the policy, a realm's keys, trail and pseudonymisation key stay in its own directory,
 ## `realms/<name>/`, isolated from the server's and from each other.
+##
+## Realms can also live one per file, in a directory this file names. Each file is one complete
+## realm — the same shape as one `realms:` entry below — and is named after it (`acme.yml` declares
+## `acme`), so the directory listing is the realm listing. Files load in name order, after the
+## realms declared inline here. Anything surprising refuses to start naming the culprit: a directory
+## that is not there, a file that does not parse, a file named one thing declaring another, a name
+## already taken, or a visible entry that is not a realm file. The path resolves against this file's
+## own directory — realm files are configuration and travel with it — and, like `realms:`, it is
+## file-only: no environment or command-line spelling.
+
+# realms_from: realms.d
 
 # realms:
 #   - name: acme
@@ -98,6 +114,18 @@
 #     # How long the PIC Tokens this realm issues stay valid. Stated per realm because the
 #     # lifetime of issued authority is a deployment decision, not something to default.
 #     token_lifetime: 1h
+#     # How the initial PIC Token expiration is chosen during OAuth-to-PIC exchange, when the source
+#     # token carries an expiration of its own: `later` (the default) takes whichever absolute
+#     # expiration is later, `pic` always takes this realm's `token_lifetime`, `oauth` takes the
+#     # source token's expiration whenever it has one.
+#     token_initial_expiry_policy: later
+#     # How long cached IdP and attester key sets stay usable once refreshing them starts failing.
+#     # Default: 1h. The window buys tolerance to an upstream outage; when it runs out, tokens from
+#     # that source are refused rather than checked against keys nobody vouches for anymore.
+#     key_cache_stale_for: 1h
+#     # The JOSE algorithm this realm signs its tokens and COSE artifacts with: `EdDSA` (the
+#     # default) or `ES256`.
+#     token_signing_algorithm: EdDSA
 #     keys:
 #       publish_ahead: 1h
 #       rotate_every: 90d
@@ -108,6 +136,10 @@
 #           token_type: oauth-access-token
 #           format: jwt
 #           issuer: https://idp.example.com
+#           # Where this deployment fetches the provider's OpenID Connect discovery, when that
+#           # address differs from the issuer identity — a service mesh, a container network, a NAT.
+#           # Identity is not an address. Absent, discovery is fetched from the issuer URL itself.
+#           discovery_url: https://idp.internal.example.com
 #           audience: pic-x
 #           validation:
 #             allowed_algorithms:

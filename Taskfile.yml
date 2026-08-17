@@ -1,230 +1,36 @@
 version: '3'
 
+# Tasks are kept in alphabetical order, so a reader scanning the file finds them in series.
 tasks:
-  build:
-    desc: Build every component.
+  audit:verify:
+    desc: Check that nothing in the audit trail has been altered.
     summary: |
-      Build every component.
+      Read the file audit trail and check record digests, sequence continuity, day boundaries and
+      seals.
+
+      With KEYS, each seal's signature is checked too. Point it at a key set you trust — checking a
+      seal against keys taken from the machine under suspicion checks a signature against a key the
+      same attacker could have replaced:
+
+        task audit:verify KEYS=./trusted.jwks
 
       Examples:
-        task build
-        task build PKG=pic-x-core
-        task build RELEASE=1
-        task build ARGS='--all-features'
+        task audit:verify
+        task audit:verify VOLUME=/tmp/pic-x
+        task audit:verify KEYS=./trusted.jwks
 
       Parameters:
-        PKG      Build only this workspace crate. Default: the whole workspace.
-        RELEASE  Build with the release profile when set to any value. Default: unset.
-        ARGS     Extra flags appended verbatim to `cargo build`. Default: empty.
+        VOLUME  Where everything lives. Default: .volume beside the repository.
+        KEYS    A JWKS document to check the seals' signatures against. Default: unset.
+
+      See docs/audit.md for the audit guide.
     vars:
-      PKG: '{{.PKG | default ""}}'
-      RELEASE: '{{.RELEASE | default ""}}'
-      ARGS: '{{.ARGS | default ""}}'
+      VOLUME: '{{.VOLUME | default ".volume"}}'
+      KEYS: '{{.KEYS | default ""}}'
     cmds:
       - >-
-        cargo build {{if .PKG}}-p {{.PKG}}{{else}}--workspace{{end}}
-        {{if .RELEASE}}--release{{end}} {{.ARGS}}
-
-  run:
-    desc: Run the server locally — everything on, nothing to set up first.
-    summary: |
-      Start the server against config.local.yaml.
-
-      It is a local development run: loopback only, no TLS, readable logs and `.volume/` created on
-      first start. Serving is the binary's default action, so the direct form is `pic-x <CONFIG>`.
-
-      See docs/start-server.md for the full startup guide.
-
-      Examples:
-        task run
-        task run CONFIG=./my-config.yaml
-        task run LOG_LEVEL=trace
-        task run ADMIN_ADDR=127.0.0.1:6000
-
-      Parameters:
-        CONFIG            Configuration file. Default: config.local.yaml.
-        LOG_LEVEL         error, warn, info, debug, or trace. Default: whatever CONFIG says.
-        LOG_FORMAT        json or terminal. Default: whatever CONFIG says.
-        RELEASE           Run the release build when set to any value. Default: unset.
-        PUBLIC_HTTP_ADDR  Override the public listen address. Default: from CONFIG.
-        TELEMETRY_ADDR    Override the telemetry listen address. Default: from CONFIG.
-        ADMIN_ADDR        Override the admin listen address. Default: from CONFIG.
-        ARGS              Extra flags appended verbatim to the invocation. Default: empty.
-    cmds:
-      - task: serve
-        vars:
-          CONFIG: '{{.CONFIG | default "config.local.yaml"}}'
-          LOG_LEVEL: '{{.LOG_LEVEL}}'
-          LOG_FORMAT: '{{.LOG_FORMAT}}'
-          RELEASE: '{{.RELEASE}}'
-          PUBLIC_HTTP_ADDR: '{{.PUBLIC_HTTP_ADDR}}'
-          TELEMETRY_ADDR: '{{.TELEMETRY_ADDR}}'
-          ADMIN_ADDR: '{{.ADMIN_ADDR}}'
-          ARGS: '{{.ARGS}}'
-
-  run-as-local-tls:
-    desc: The same local run, over TLS with mutual TLS on the administrative surface.
-    summary: |
-      Start the server against config.local-tls.yaml.
-
-      The first start generates a local authority, a server certificate and an operator client
-      certificate under `.volume/tls/`. Once it is up:
-
-        curl --cacert .volume/tls/ca.pem https://localhost:7556/.well-known/jwks.json
-
-        grpcurl -cacert .volume/tls/ca.pem \
-                -cert .volume/tls/client.pem -key .volume/tls/client.key \
-                -import-path crates/pic-x-admin/proto -proto picx/admin/v1/admin.proto \
-                localhost:7557 picx.admin.v1.Admin/GetVersion
-
-      Examples:
-        task run-as-local-tls
-        task run-as-local-tls LOG_FORMAT=json
-
-      Parameters: the same as `task run`, with CONFIG defaulting to config.local-tls.yaml.
-      See docs/start-server.md for the full startup guide.
-    cmds:
-      - task: serve
-        vars:
-          CONFIG: '{{.CONFIG | default "config.local-tls.yaml"}}'
-          LOG_LEVEL: '{{.LOG_LEVEL}}'
-          LOG_FORMAT: '{{.LOG_FORMAT}}'
-          RELEASE: '{{.RELEASE}}'
-          PUBLIC_HTTP_ADDR: '{{.PUBLIC_HTTP_ADDR}}'
-          TELEMETRY_ADDR: '{{.TELEMETRY_ADDR}}'
-          ADMIN_ADDR: '{{.ADMIN_ADDR}}'
-          ARGS: '{{.ARGS}}'
-
-  run-as-prod:
-    desc: Run the server as a deployment runs it — the file the image ships.
-    summary: |
-      Start the server against config.prod.yaml, which is the file copied into the container image.
-
-      It is production-shaped and should fail until the required TLS material, admin client CA and
-      audit pseudonymisation secret exist. That is intentional: production config does not mint trust
-      material for itself.
-
-      It also writes to /var/lib/pic-x, which on a developer machine usually does not exist, so
-
-        task run-as-prod CONFIG=./my-config.yaml
-
-      is the usual way to try a real configuration of your own.
-
-      Examples:
-        task run-as-prod
-        task run-as-prod RELEASE=1
-
-      Parameters: the same as `task run`, with CONFIG defaulting to config.prod.yaml.
-      See docs/start-server.md and docs/docker.md for the operational notes.
-    cmds:
-      - task: serve
-        vars:
-          CONFIG: '{{.CONFIG | default "config.prod.yaml"}}'
-          LOG_LEVEL: '{{.LOG_LEVEL}}'
-          LOG_FORMAT: '{{.LOG_FORMAT}}'
-          RELEASE: '{{.RELEASE}}'
-          PUBLIC_HTTP_ADDR: '{{.PUBLIC_HTTP_ADDR}}'
-          TELEMETRY_ADDR: '{{.TELEMETRY_ADDR}}'
-          ADMIN_ADDR: '{{.ADMIN_ADDR}}'
-          ARGS: '{{.ARGS}}'
-
-  serve:
-    internal: true
-    desc: Start the server against a named configuration file.
-    vars:
-      CONFIG: '{{.CONFIG | default "config.local.yaml"}}'
-      LOG_LEVEL: '{{.LOG_LEVEL | default ""}}'
-      LOG_FORMAT: '{{.LOG_FORMAT | default ""}}'
-      RELEASE: '{{.RELEASE | default ""}}'
-      PUBLIC_HTTP_ADDR: '{{.PUBLIC_HTTP_ADDR | default ""}}'
-      TELEMETRY_ADDR: '{{.TELEMETRY_ADDR | default ""}}'
-      ADMIN_ADDR: '{{.ADMIN_ADDR | default ""}}'
-      ARGS: '{{.ARGS | default ""}}'
-    cmds:
-      - >-
-        cargo run {{if .RELEASE}}--release{{end}} --bin pic-x -- {{.CONFIG}}
-        {{if .LOG_LEVEL}}--log-level {{.LOG_LEVEL}}{{end}}
-        {{if .LOG_FORMAT}}--log-format {{.LOG_FORMAT}}{{end}}
-        {{if .PUBLIC_HTTP_ADDR}}--public-http-addr {{.PUBLIC_HTTP_ADDR}}{{end}}
-        {{if .TELEMETRY_ADDR}}--telemetry-addr {{.TELEMETRY_ADDR}}{{end}}
-        {{if .ADMIN_ADDR}}--admin-addr {{.ADMIN_ADDR}}{{end}}
-        {{.ARGS}}
-
-  version:
-    desc: Report the product version.
-    summary: |
-      Report the product version.
-
-      Example:
-        task version
-
-      Parameters: none.
-    cmds:
-      - task: cli
-        vars:
-          ARGS: version
-
-  cli:
-    desc: Run the pic-x binary with arbitrary arguments.
-    summary: |
-      Run the pic-x binary with arbitrary arguments.
-
-      This is the escape hatch for invocations the named tasks do not cover — a command added later,
-      or a flag combination worth trying once. `task run` stays the way to start the server.
-
-      Both spellings work and mean the same thing: everything after `--`, and whatever `ARGS` holds.
-      The `--` form is here because it is what fingers type; the named form is here because it is what
-      the other tasks use.
-
-      Examples:
-        task cli -- --help
-        task cli ARGS=--help
-        task cli ARGS=version
-        task cli -- ./my-config.yaml --admin-addr 0.0.0.0:6000
-        task cli RELEASE=1 ARGS=--version
-
-      Parameters:
-        ARGS     Arguments passed verbatim to the binary. Default: empty, which prints usage.
-        RELEASE  Run the release build when set to any value. Default: unset.
-    vars:
-      ARGS: '{{.ARGS | default ""}}'
-      RELEASE: '{{.RELEASE | default ""}}'
-    cmds:
-      - cargo run {{if .RELEASE}}--release{{end}} --bin pic-x -- {{.CLI_ARGS}} {{.ARGS}}
-
-  test:
-    desc: Run the unit and use-case tests.
-    summary: |
-      Run the unit and use-case tests.
-
-      Examples:
-        task test
-        task test PKG=pic-x-core
-        task test FILTER=test_validate
-        task test FILTER=test_validate NOCAPTURE=1
-        task test RELEASE=1 ARGS='--all-features'
-
-      Parameters:
-        PKG        Test only this workspace crate. Default: the whole workspace.
-        FILTER     Only run tests whose name contains this string. Default: all tests.
-        NOCAPTURE  Show test stdout/stderr when set to any value. Default: unset.
-        RELEASE    Test the release profile when set to any value. Default: unset.
-        FEATURES   Feature selection. Default: --all-features, so nothing is silently skipped —
-                   `pic-x-std` keeps `provision` outside its default set, and a plain `cargo test`
-                   would never compile the tests that cover it.
-        ARGS       Extra flags appended verbatim to `cargo test`. Default: empty.
-    vars:
-      PKG: '{{.PKG | default ""}}'
-      FILTER: '{{.FILTER | default ""}}'
-      NOCAPTURE: '{{.NOCAPTURE | default ""}}'
-      RELEASE: '{{.RELEASE | default ""}}'
-      FEATURES: '{{.FEATURES | default "--all-features"}}'
-      ARGS: '{{.ARGS | default ""}}'
-    cmds:
-      - >-
-        cargo test {{if .PKG}}-p {{.PKG}}{{else}}--workspace{{end}}
-        {{.FEATURES}} {{if .RELEASE}}--release{{end}} {{.ARGS}} {{.FILTER}}
-        {{if .NOCAPTURE}}-- --nocapture{{end}}
+        cargo run --quiet --bin pic-x -- audit verify --directory {{.VOLUME}}/audit
+        {{if .KEYS}}--keys {{.KEYS}}{{end}}
 
   bench:
     desc: Run the benchmarks.
@@ -252,44 +58,172 @@ tasks:
         cargo bench {{if .PKG}}-p {{.PKG}}{{else}}--workspace{{end}}
         {{if .BENCH}}--bench {{.BENCH}}{{end}} {{.ARGS}} {{.FILTER}}
 
-  lint:
-    desc: Run clippy over every crate and target.
+  build:
+    desc: Build every component.
     summary: |
-      Run clippy over every crate and target, failing on any warning.
+      Build every component.
 
       Examples:
-        task lint
-        task lint PKG=pic-x-server
-        task lint ARGS=--fix
+        task build
+        task build PKG=pic-x-core
+        task build RELEASE=1
+        task build ARGS='--all-features'
 
       Parameters:
-        PKG   Lint only this workspace crate. Default: the whole workspace.
-        ARGS  Extra flags appended verbatim to `cargo clippy`. Default: empty.
+        PKG      Build only this workspace crate. Default: the whole workspace.
+        RELEASE  Build with the release profile when set to any value. Default: unset.
+        ARGS     Extra flags appended verbatim to `cargo build`. Default: empty.
     vars:
       PKG: '{{.PKG | default ""}}'
+      RELEASE: '{{.RELEASE | default ""}}'
       ARGS: '{{.ARGS | default ""}}'
     cmds:
       - >-
-        cargo clippy {{if .PKG}}-p {{.PKG}}{{else}}--workspace{{end}}
-        --all-targets --all-features {{.ARGS}} -- -D warnings
+        cargo build {{if .PKG}}-p {{.PKG}}{{else}}--workspace{{end}}
+        {{if .RELEASE}}--release{{end}} {{.ARGS}}
 
-  lab-up:
-    desc: Start the local Docker Compose lab.
-    silent: true
+  check:
+    desc: Run every check the pipeline runs.
     summary: |
-      Start the local compose stack. It imports the `acme-idp` example IdP realm into Keycloak,
-      exposes Keycloak on localhost:18080, builds PIC-X from the local source with config.lab.yaml,
-      and builds the local trust-lab REST service on localhost:17080.
+      Run lint, both structural checks, the supply-chain gates and the test suite, in that order.
+
+      Example:
+        task check
+
+      Parameters: none.
+    cmds:
+      - task: lint
+      - task: check:seams
+      - task: check:core-deps
+      - task: check:supply-chain
+      - task: test
+
+  check:core-deps:
+    desc: Check that pic-x-core keeps its dependency list minimal.
+    summary: |
+      Check that pic-x-core keeps its dependency list minimal.
+
+      Every crate depends on pic-x-core, including the ones a downstream build writes. Whatever
+      lands in its dependency list lands in all of them, so the list is an allowlist.
+
+      Example:
+        task check:core-deps
+
+      Parameters: none.
+    cmds:
+      - ./scripts/check-core-dependencies.sh
+
+  check:seams:
+    desc: Check that only the binary constructs swappable collaborators.
+    summary: |
+      Check that only the binary constructs swappable collaborators.
+
+      Every crate here receives its collaborators instead of resolving them, which is what lets
+      another binary reuse these crates and replace the parts it needs. Nothing in the type system
+      enforces that, so it is checked here.
+
+      Example:
+        task check:seams
+
+      Parameters: none.
+    cmds:
+      - ./scripts/check-composition-root.sh
+
+  check:supply-chain:
+    desc: Check the dependency tree for advisories, licences and unknown sources.
+    summary: |
+      Check every crate this workspace pulls in: known advisories, unmaintained crates, licences
+      outside the permissive set, and anything from a registry nobody named.
+
+      The rules live in deny.toml, and each of them exists for a reason written down beside it. An
+      exception belongs in that file with an id and a justification, so it is reviewable rather than
+      invisible.
+
+      Example:
+        task check:supply-chain
+
+      Parameters: none.
+    cmds:
+      - cargo deny check
+
+  cli:
+    desc: Run the pic-x binary with arbitrary arguments.
+    summary: |
+      Run the pic-x binary with arbitrary arguments.
+
+      This is the escape hatch for invocations the named tasks do not cover — a command added later,
+      or a flag combination worth trying once. `task run-as-local` stays the way to start the server.
+
+      Both spellings work and mean the same thing: everything after `--`, and whatever `ARGS` holds.
+      The `--` form is here because it is what fingers type; the named form is here because it is what
+      the other tasks use.
 
       Examples:
-        task lab-up
+        task cli -- --help
+        task cli ARGS=--help
+        task cli ARGS=version
+        task cli -- ./my-config.yml --admin-addr 0.0.0.0:6000
+        task cli RELEASE=1 ARGS=--version
 
-      See docs/keycloak.md for credentials and lab commands.
+      Parameters:
+        ARGS     Arguments passed verbatim to the binary. Default: empty, which prints usage.
+        RELEASE  Run the release build when set to any value. Default: unset.
+    vars:
+      ARGS: '{{.ARGS | default ""}}'
+      RELEASE: '{{.RELEASE | default ""}}'
     cmds:
-      # One directory per service, so the lab's state can be read from the host while it runs.
-      - mkdir -p .volume-docker-compose/pic-x .volume-docker-compose/trust-lab .volume-docker-compose/keycloak
-      - chmod -R a+rwX .volume-docker-compose
-      - docker compose -f docker-compose.lab.yml up --build -d
+      - cargo run {{if .RELEASE}}--release{{end}} --bin pic-x -- {{.CLI_ARGS}} {{.ARGS}}
+
+  lab-demo:
+    desc: Run the local lab walkthrough.
+    silent: true
+    summary: |
+      Run the didactic lab walkthrough. It checks that Keycloak, PIC-X and trust-lab are reachable,
+      requests an example IdP token and prints the token with a short explanation of what happened.
+
+      Start the lab first with `task lab-up`.
+
+      Examples:
+        task lab-demo
+        task lab-demo ARGS=--print-tokens
+        task lab-demo ARGS=--interactive
+    vars:
+      PYTHON: '{{.PYTHON | default "python3"}}'
+      ARGS: '{{.ARGS | default ""}}'
+    cmds:
+      - '{{.PYTHON}} trust-lab/scripts/pic-x-demo.py {{.ARGS}}'
+
+  lab-demo-interactive:
+    desc: Run the local lab walkthrough step by step with HTTP packet traces.
+    silent: true
+    summary: |
+      Run the didactic lab walkthrough in guided mode. It pauses before each exchange, prints the
+      OAuth access token, PIC Token JWTs, Continuity/PCA payloads, execution contract, the real HTTP
+      requests and responses, and the local workload process outputs used by the exchanges.
+
+      Start the lab first with `task lab-up`.
+
+      Examples:
+        task lab-demo-interactive
+    vars:
+      PYTHON: '{{.PYTHON | default "python3"}}'
+    cmds:
+      - '{{.PYTHON}} trust-lab/scripts/pic-x-demo.py --interactive'
+
+  lab-demo-print:
+    desc: Run the local lab walkthrough and print decoded token/PIC artifact values.
+    silent: true
+    summary: |
+      Run the didactic lab walkthrough with token and PIC artifact inspection enabled.
+
+      Start the lab first with `task lab-up`.
+
+      Examples:
+        task lab-demo-print
+    vars:
+      PYTHON: '{{.PYTHON | default "python3"}}'
+    cmds:
+      - '{{.PYTHON}} trust-lab/scripts/pic-x-demo.py --print-tokens'
 
   lab-down:
     desc: Stop the local Docker Compose lab.
@@ -363,105 +297,56 @@ tasks:
         --data-urlencode "password={{.KEYCLOAK_PASSWORD}}"
         | sed -n 's/.*"access_token"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p'
 
-  lab-demo:
-    desc: Run the local lab walkthrough.
-    silent: true
-    summary: |
-      Run the didactic lab walkthrough. It checks that Keycloak, PIC-X and trust-lab are reachable,
-      requests an example IdP token and prints the token with a short explanation of what happened.
-
-      Start the lab first with `task lab-up`.
-
-      Examples:
-        task lab-demo
-        task lab-demo ARGS=--print-tokens
-        task lab-demo ARGS=--interactive
-    vars:
-      PYTHON: '{{.PYTHON | default "python3"}}'
-      ARGS: '{{.ARGS | default ""}}'
-    cmds:
-      - '{{.PYTHON}} trust-lab/scripts/pic-x-demo.py {{.ARGS}}'
-
-  lab-demo-print:
-    desc: Run the local lab walkthrough and print decoded token/PIC artifact values.
-    silent: true
-    summary: |
-      Run the didactic lab walkthrough with token and PIC artifact inspection enabled.
-
-      Start the lab first with `task lab-up`.
-
-      Examples:
-        task lab-demo-print
-    vars:
-      PYTHON: '{{.PYTHON | default "python3"}}'
-    cmds:
-      - '{{.PYTHON}} trust-lab/scripts/pic-x-demo.py --print-tokens'
-
-  lab-demo-interactive:
-    desc: Run the local lab walkthrough step by step with HTTP packet traces.
-    silent: true
-    summary: |
-      Run the didactic lab walkthrough in guided mode. It pauses before each exchange, prints the
-      OAuth access token, PIC Token JWTs, Continuity/PCA payloads, execution contract, the real HTTP
-      requests and responses, and the local workload process outputs used by the exchanges.
-
-      Start the lab first with `task lab-up`.
-
-      Examples:
-        task lab-demo-interactive
-    vars:
-      PYTHON: '{{.PYTHON | default "python3"}}'
-    cmds:
-      - '{{.PYTHON}} trust-lab/scripts/pic-x-demo.py --interactive'
-
   lab-run-demo:
     desc: Alias for lab-demo.
     silent: true
     cmds:
       - task: lab-demo
 
-  run-as-docker:
-    desc: Build the image and run what it ships — production, which refuses to start unprepared.
+  lab-up:
+    desc: Start the local Docker Compose lab.
+    silent: true
     summary: |
-      Build the image and run it against the configuration it runs by default: config.prod.yaml,
-      copied to /etc/pic-x/config.yaml.
-
-      With an empty volume this should fail. Production config requires TLS material, an admin client
-      CA and a pseudonymisation secret supplied from outside the process:
-
-        pic-x: validating the configuration loaded from /etc/pic-x/config.yaml: validating the public
-        TLS material: the TLS certificate /var/lib/pic-x/tls/server.pem is not a readable file
-
-      For a container that starts with nothing prepared, use `task run-as-docker-dev`. It is the same
-      image and gives up transport security to get there.
+      Start the local compose stack. It imports the `acme-idp` example IdP realm into Keycloak,
+      exposes Keycloak on localhost:18080, builds PIC-X from the local source with config.lab.yml,
+      and builds the local trust-lab REST service on localhost:17080.
 
       Examples:
-        task run-as-docker
-        task run-as-docker VOLUME=/tmp/pic-x-docker
-        task run-as-docker TAG=pic-x:experiment
+        task lab-up
+
+      See docs/keycloak.md for credentials and lab commands.
+    cmds:
+      # One directory per service, so the lab's state can be read from the host while it runs.
+      - mkdir -p .volume-docker-compose/pic-x .volume-docker-compose/trust-lab .volume-docker-compose/keycloak
+      - chmod -R a+rwX .volume-docker-compose
+      - docker compose -f docker-compose.lab.yml up --build -d
+
+  lint:
+    desc: Run clippy over every crate and target.
+    summary: |
+      Run clippy over every crate and target, failing on any warning.
+
+      Examples:
+        task lint
+        task lint PKG=pic-x-server
+        task lint ARGS=--fix
 
       Parameters:
-        TAG     Image tag to build and run. Default: pic-x:local.
-        VOLUME  Host directory mounted as the volume. Default: .volume-docker.
-
-      See docs/docker.md for required files, permissions and the local production-shaped demo.
+        PKG   Lint only this workspace crate. Default: the whole workspace.
+        ARGS  Extra flags appended verbatim to `cargo clippy`. Default: empty.
     vars:
-      TAG: '{{.TAG | default "pic-x:local"}}'
-      VOLUME: '{{.VOLUME | default ".volume-docker"}}'
+      PKG: '{{.PKG | default ""}}'
+      ARGS: '{{.ARGS | default ""}}'
     cmds:
-      - docker build --tag {{.TAG}} .
-      - mkdir -p {{.VOLUME}}
       - >-
-        docker run --rm --init
-        --publish 7556:7556 --publish 7557:7557 --publish 7558:7558
-        --volume "$(pwd)/{{.VOLUME}}:/var/lib/pic-x"
-        {{.TAG}}
+        cargo clippy {{if .PKG}}-p {{.PKG}}{{else}}--workspace{{end}}
+        --all-targets --all-features {{.ARGS}} -- -D warnings
 
-  run-as-docker-dev:
-    desc: Build the image and run it with nothing to prepare — no transport security.
+  run-as-docker:
+    desc: Build the image and run it as a single container — no transport security.
     summary: |
-      Build the image and run it against config.dev.yaml, which the same image ships at
-      /etc/pic-x/config.dev.yaml.
+      Build the image and run it as one container against config.docker.yml, mounted at
+      /etc/pic-x/config.yml — the image itself ships no configuration.
 
       It starts from an empty volume and generates development material on first start. It has no TLS
       and no admin client certificate; do not run it where the ports are reachable by somebody else.
@@ -476,14 +361,19 @@ tasks:
                 localhost:7557 picx.admin.v1.Admin/GetVersion
 
       Examples:
-        task run-as-docker-dev
-        task run-as-docker-dev VOLUME=/tmp/pic-x-docker-dev
+        task run-as-docker
+        task run-as-docker VOLUME=/tmp/pic-x-docker
+        task run-as-docker TAG=pic-x:experiment
 
-      Parameters: the same as `task run-as-docker`, with VOLUME defaulting to .volume-docker-dev.
+      Parameters:
+        TAG     Image tag to build and run. Default: pic-x:local.
+        VOLUME  Host directory mounted as the volume. Default: .volume-docker.
+
       See docs/docker.md for the container guide.
     vars:
       TAG: '{{.TAG | default "pic-x:local"}}'
-      VOLUME: '{{.VOLUME | default ".volume-docker-dev"}}'
+      VOLUME: '{{.VOLUME | default ".volume-docker"}}'
+      CONFIG: '{{.CONFIG | default "config.docker.yml"}}'
     cmds:
       - docker build --tag {{.TAG}} .
       - mkdir -p {{.VOLUME}}
@@ -494,99 +384,186 @@ tasks:
       - >-
         docker run --rm --init
         --publish 7556:7556 --publish 7557:7557 --publish 7558:7558
+        --volume "$(pwd)/{{.CONFIG}}:/etc/pic-x/config.yml:ro"
         --volume "$(pwd)/{{.VOLUME}}:/var/lib/pic-x"
-        {{.TAG}} /etc/pic-x/config.dev.yaml
+        {{.TAG}}
 
-  audit:verify:
-    desc: Check that nothing in the audit trail has been altered.
+  run-as-docker-tls:
+    desc: The same single container, over TLS with mutual TLS on the administrative surface.
     summary: |
-      Read the file audit trail and check record digests, sequence continuity, day boundaries and
-      seals.
+      Build the image and run it as one container against config.docker-tls.yml, mounted at
+      /etc/pic-x/config.yml — the image itself ships no configuration.
 
-      With KEYS, each seal's signature is checked too. Point it at a key set you trust — checking a
-      seal against keys taken from the machine under suspicion checks a signature against a key the
-      same attacker could have replaced:
+      The first start generates a local authority, a server certificate and an operator client
+      certificate into the volume, `.volume-docker-tls/` on the host. Once it is up:
 
-        task audit:verify KEYS=./trusted.jwks
+        curl --cacert .volume-docker-tls/tls/ca.pem https://localhost:7556/.well-known/jwks.json
+
+        grpcurl -cacert .volume-docker-tls/tls/ca.pem \
+                -cert .volume-docker-tls/tls/client.pem -key .volume-docker-tls/tls/client.key \
+                -import-path crates/pic-x-admin/proto -proto picx/admin/v1/admin.proto \
+                localhost:7557 picx.admin.v1.Admin/GetVersion
 
       Examples:
-        task audit:verify
-        task audit:verify VOLUME=/tmp/pic-x
-        task audit:verify KEYS=./trusted.jwks
+        task run-as-docker-tls
+        task run-as-docker-tls VOLUME=/tmp/pic-x-docker-tls
+
+      Parameters: the same as `task run-as-docker`, with VOLUME defaulting to .volume-docker-tls.
+      See docs/docker.md for the container guide.
+    vars:
+      TAG: '{{.TAG | default "pic-x:local"}}'
+      VOLUME: '{{.VOLUME | default ".volume-docker-tls"}}'
+      CONFIG: '{{.CONFIG | default "config.docker-tls.yml"}}'
+    cmds:
+      - docker build --tag {{.TAG}} .
+      - mkdir -p {{.VOLUME}}
+      # The mount point, and nothing inside it: the container writes as uid 65532 and needs the
+      # directory. Recursing would loosen the secret it wrote on the last run, and the secret store
+      # would then refuse to read it — correctly.
+      - chmod a+rwX {{.VOLUME}}
+      - >-
+        docker run --rm --init
+        --publish 7556:7556 --publish 7557:7557 --publish 7558:7558
+        --volume "$(pwd)/{{.CONFIG}}:/etc/pic-x/config.yml:ro"
+        --volume "$(pwd)/{{.VOLUME}}:/var/lib/pic-x"
+        {{.TAG}}
+
+  run-as-local:
+    desc: Run the server locally — everything on, nothing to set up first.
+    summary: |
+      Start the server against config.local.yml.
+
+      It is a local development run: loopback only, no TLS, readable logs and `.volume/` created on
+      first start. Serving is the binary's default action, so the direct form is `pic-x <CONFIG>`.
+
+      See docs/start-server.md for the full startup guide.
+
+      Examples:
+        task run-as-local
+        task run-as-local CONFIG=./my-config.yml
+        task run-as-local LOG_LEVEL=trace
+        task run-as-local ADMIN_ADDR=127.0.0.1:6000
 
       Parameters:
-        VOLUME  Where everything lives. Default: .volume beside the repository.
-        KEYS    A JWKS document to check the seals' signatures against. Default: unset.
+        CONFIG            Configuration file. Default: config.local.yml.
+        LOG_LEVEL         error, warn, info, debug, or trace. Default: whatever CONFIG says.
+        LOG_FORMAT        json or terminal. Default: whatever CONFIG says.
+        RELEASE           Run the release build when set to any value. Default: unset.
+        PUBLIC_HTTP_ADDR  Override the public listen address. Default: from CONFIG.
+        TELEMETRY_ADDR    Override the telemetry listen address. Default: from CONFIG.
+        ADMIN_ADDR        Override the admin listen address. Default: from CONFIG.
+        ARGS              Extra flags appended verbatim to the invocation. Default: empty.
+    cmds:
+      - task: serve
+        vars:
+          CONFIG: '{{.CONFIG | default "config.local.yml"}}'
+          LOG_LEVEL: '{{.LOG_LEVEL}}'
+          LOG_FORMAT: '{{.LOG_FORMAT}}'
+          RELEASE: '{{.RELEASE}}'
+          PUBLIC_HTTP_ADDR: '{{.PUBLIC_HTTP_ADDR}}'
+          TELEMETRY_ADDR: '{{.TELEMETRY_ADDR}}'
+          ADMIN_ADDR: '{{.ADMIN_ADDR}}'
+          ARGS: '{{.ARGS}}'
 
-      See docs/audit.md for the audit guide.
+  run-as-local-tls:
+    desc: The same local run, over TLS with mutual TLS on the administrative surface.
+    summary: |
+      Start the server against config.local-tls.yml.
+
+      The first start generates a local authority, a server certificate and an operator client
+      certificate under `.volume/tls/`. Once it is up:
+
+        curl --cacert .volume/tls/ca.pem https://localhost:7556/.well-known/jwks.json
+
+        grpcurl -cacert .volume/tls/ca.pem \
+                -cert .volume/tls/client.pem -key .volume/tls/client.key \
+                -import-path crates/pic-x-admin/proto -proto picx/admin/v1/admin.proto \
+                localhost:7557 picx.admin.v1.Admin/GetVersion
+
+      Examples:
+        task run-as-local-tls
+        task run-as-local-tls LOG_FORMAT=json
+
+      Parameters: the same as `task run-as-local`, with CONFIG defaulting to config.local-tls.yml.
+      See docs/start-server.md for the full startup guide.
+    cmds:
+      - task: serve
+        vars:
+          CONFIG: '{{.CONFIG | default "config.local-tls.yml"}}'
+          LOG_LEVEL: '{{.LOG_LEVEL}}'
+          LOG_FORMAT: '{{.LOG_FORMAT}}'
+          RELEASE: '{{.RELEASE}}'
+          PUBLIC_HTTP_ADDR: '{{.PUBLIC_HTTP_ADDR}}'
+          TELEMETRY_ADDR: '{{.TELEMETRY_ADDR}}'
+          ADMIN_ADDR: '{{.ADMIN_ADDR}}'
+          ARGS: '{{.ARGS}}'
+
+  serve:
+    internal: true
+    desc: Start the server against a named configuration file.
     vars:
-      VOLUME: '{{.VOLUME | default ".volume"}}'
-      KEYS: '{{.KEYS | default ""}}'
+      CONFIG: '{{.CONFIG | default "config.local.yml"}}'
+      LOG_LEVEL: '{{.LOG_LEVEL | default ""}}'
+      LOG_FORMAT: '{{.LOG_FORMAT | default ""}}'
+      RELEASE: '{{.RELEASE | default ""}}'
+      PUBLIC_HTTP_ADDR: '{{.PUBLIC_HTTP_ADDR | default ""}}'
+      TELEMETRY_ADDR: '{{.TELEMETRY_ADDR | default ""}}'
+      ADMIN_ADDR: '{{.ADMIN_ADDR | default ""}}'
+      ARGS: '{{.ARGS | default ""}}'
     cmds:
       - >-
-        cargo run --quiet --bin pic-x -- audit verify --directory {{.VOLUME}}/audit
-        {{if .KEYS}}--keys {{.KEYS}}{{end}}
+        cargo run {{if .RELEASE}}--release{{end}} --bin pic-x -- {{.CONFIG}}
+        {{if .LOG_LEVEL}}--log-level {{.LOG_LEVEL}}{{end}}
+        {{if .LOG_FORMAT}}--log-format {{.LOG_FORMAT}}{{end}}
+        {{if .PUBLIC_HTTP_ADDR}}--public-http-addr {{.PUBLIC_HTTP_ADDR}}{{end}}
+        {{if .TELEMETRY_ADDR}}--telemetry-addr {{.TELEMETRY_ADDR}}{{end}}
+        {{if .ADMIN_ADDR}}--admin-addr {{.ADMIN_ADDR}}{{end}}
+        {{.ARGS}}
 
-  check:seams:
-    desc: Check that only the binary constructs swappable collaborators.
+  test:
+    desc: Run the unit and use-case tests.
     summary: |
-      Check that only the binary constructs swappable collaborators.
+      Run the unit and use-case tests.
 
-      Every crate here receives its collaborators instead of resolving them, which is what lets
-      another binary reuse these crates and replace the parts it needs. Nothing in the type system
-      enforces that, so it is checked here.
+      Examples:
+        task test
+        task test PKG=pic-x-core
+        task test FILTER=test_validate
+        task test FILTER=test_validate NOCAPTURE=1
+        task test RELEASE=1 ARGS='--all-features'
+
+      Parameters:
+        PKG        Test only this workspace crate. Default: the whole workspace.
+        FILTER     Only run tests whose name contains this string. Default: all tests.
+        NOCAPTURE  Show test stdout/stderr when set to any value. Default: unset.
+        RELEASE    Test the release profile when set to any value. Default: unset.
+        FEATURES   Feature selection. Default: --all-features, so nothing is silently skipped —
+                   `pic-x-std` keeps `provision` outside its default set, and a plain `cargo test`
+                   would never compile the tests that cover it.
+        ARGS       Extra flags appended verbatim to `cargo test`. Default: empty.
+    vars:
+      PKG: '{{.PKG | default ""}}'
+      FILTER: '{{.FILTER | default ""}}'
+      NOCAPTURE: '{{.NOCAPTURE | default ""}}'
+      RELEASE: '{{.RELEASE | default ""}}'
+      FEATURES: '{{.FEATURES | default "--all-features"}}'
+      ARGS: '{{.ARGS | default ""}}'
+    cmds:
+      - >-
+        cargo test {{if .PKG}}-p {{.PKG}}{{else}}--workspace{{end}}
+        {{.FEATURES}} {{if .RELEASE}}--release{{end}} {{.ARGS}} {{.FILTER}}
+        {{if .NOCAPTURE}}-- --nocapture{{end}}
+
+  version:
+    desc: Report the product version.
+    summary: |
+      Report the product version.
 
       Example:
-        task check:seams
+        task version
 
       Parameters: none.
     cmds:
-      - ./scripts/check-composition-root.sh
-
-  check:core-deps:
-    desc: Check that pic-x-core keeps its dependency list minimal.
-    summary: |
-      Check that pic-x-core keeps its dependency list minimal.
-
-      Every crate depends on pic-x-core, including the ones a downstream build writes. Whatever
-      lands in its dependency list lands in all of them, so the list is an allowlist.
-
-      Example:
-        task check:core-deps
-
-      Parameters: none.
-    cmds:
-      - ./scripts/check-core-dependencies.sh
-
-  check:supply-chain:
-    desc: Check the dependency tree for advisories, licences and unknown sources.
-    summary: |
-      Check every crate this workspace pulls in: known advisories, unmaintained crates, licences
-      outside the permissive set, and anything from a registry nobody named.
-
-      The rules live in deny.toml, and each of them exists for a reason written down beside it. An
-      exception belongs in that file with an id and a justification, so it is reviewable rather than
-      invisible.
-
-      Example:
-        task check:supply-chain
-
-      Parameters: none.
-    cmds:
-      - cargo deny check
-
-  check:
-    desc: Run every check the pipeline runs.
-    summary: |
-      Run lint, both structural checks, the supply-chain gates and the test suite, in that order.
-
-      Example:
-        task check
-
-      Parameters: none.
-    cmds:
-      - task: lint
-      - task: check:seams
-      - task: check:core-deps
-      - task: check:supply-chain
-      - task: test
+      - task: cli
+        vars:
+          ARGS: version

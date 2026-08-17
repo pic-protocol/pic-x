@@ -31,7 +31,7 @@ impl ConfigFixture {
         let dir = std::env::temp_dir().join("pic-x-cli-test");
         fs::create_dir_all(&dir).expect("creating the fixture directory");
 
-        let path = dir.join(format!("{name}.yaml"));
+        let path = dir.join(format!("{name}.yml"));
         fs::write(&path, contents).expect("writing the fixture configuration file");
 
         let volume = dir.join(format!("{name}.volume"));
@@ -541,9 +541,9 @@ fn test_the_named_file_is_the_one_that_is_read() {
     assert!(served.succeeded, "{}", served.why());
     assert!(decoy.path().exists());
 
-    let missing = run(&["/nonexistent/pic-x/config.yaml"]);
+    let missing = run(&["/nonexistent/pic-x/config.yml"]);
     assert!(!missing.status.success());
-    assert!(stderr_of(&missing).contains("/nonexistent/pic-x/config.yaml"));
+    assert!(stderr_of(&missing).contains("/nonexistent/pic-x/config.yml"));
 }
 
 #[test]

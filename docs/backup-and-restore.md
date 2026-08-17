@@ -100,7 +100,7 @@ pic-x audit verify \
 # 4. Move the verified volume into place, then start PIC-X.
 mv /var/lib/pic-x /var/lib/pic-x.before-restore
 mv /var/lib/pic-x.restore /var/lib/pic-x
-pic-x /etc/pic-x/config.yaml
+pic-x /etc/pic-x/config.yml
 ```
 
 The container image runs as UID/GID `65532:65532`, so restored files mounted into the image must be

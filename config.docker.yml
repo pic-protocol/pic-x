@@ -1,19 +1,19 @@
-# PIC-X — development, in a container.
+# PIC-X — development, in a single container.
 #
-#   task run-as-docker-dev   builds the image and runs it against this file
-#   the image                ships it at /etc/pic-x/config.dev.yaml
+#   task run-as-docker   builds the image and runs it against this file,
+#                        mounted at /etc/pic-x/config.yml — the image itself ships no configuration
 #
-# The counterpart to config.prod.yaml, and the difference between them is the whole point: this file
-# starts with an empty volume and nothing mounted, that one refuses to start until it has been given
-# what it needs. Both are in the same image, because the image you try has to be the image you ship.
-#
-# What this gives up to start unattended: transport security. There is no TLS here and no client
-# certificate on the administrative surface, so anything that can reach the ports is admitted. That is
-# only permitted because `development_mode` is on, and the server says so in the log every time it
-# starts. Do not run it anywhere the ports are reachable by somebody else.
+# This file starts with an empty volume and nothing else prepared. What it gives up to start
+# unattended: transport security. There is no TLS here and no client certificate on the
+# administrative surface, so anything that can reach the ports is admitted. That is only permitted
+# because `development_mode` is on, and the server says so in the log every time it starts. Do not
+# run it anywhere the ports are reachable by somebody else.
 #
 # What it keeps: signing keys that rotate, an audit trail chained on disk, pseudonymised subjects.
 # Those are what a local run needs to exercise, and none of them needs anything mounted.
+#
+# For the same container over TLS and mutual TLS, use config.docker-tls.yml. For what a real
+# deployment looks like, copy from config.template.yml.
 
 # This is a container somebody is trying, and says so. It is what permits the line below, the
 # administrative surface without a client certificate, and the key windows further down.
@@ -82,6 +82,10 @@ realms:
     # How long the PIC Tokens this realm issues stay valid. Stated per realm because the
     # lifetime of issued authority is a deployment decision, not something to default.
     token_lifetime: 1h
+    # Which expiration wins at OAuth-to-PIC exchange: `later` (the default, stated here so the
+    # choice is visible), `pic` for this realm's `token_lifetime`, `oauth` for the source token's
+    # own. globex below says nothing and takes the default.
+    token_initial_expiry_policy: later
     listed: true
     # Every realm states its own token-signing `keys` (signing policy is not inherited); operations
     # blocks it omits are inherited.

@@ -2,7 +2,8 @@
 //!
 //! The binary never looks for a configuration file on its own. The path always arrives as the
 //! positional argument of the invocation, so a container or orchestrator supplies its own default
-//! through the command it runs.
+//! through the command it runs. The file may in turn name a directory of one-realm files
+//! (`realms_from`); those are read here too, as part of loading the file that named them.
 //!
 //! Sections this crate does not know about are kept, not rejected: a build that adds capabilities
 //! claims its own sections by name and reads them back with [`ConfigFile::section`]. Whatever nobody
@@ -10,7 +11,7 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
@@ -87,6 +88,12 @@ pub struct ConfigFile {
     /// (and, later, a database), never from a single environment variable.
     #[serde(default)]
     realms: Vec<RealmSection>,
+    /// A directory of one-realm files, loaded after the list above. File-only for the same reason
+    /// `realms` is: which issuers exist is structured configuration, never an environment variable.
+    /// The path resolves against this file's own directory — realm files are configuration, and they
+    /// travel with the file that names them.
+    #[serde(default, alias = "realmsFrom")]
+    realms_from: Option<String>,
     /// Sections outside the typed ones, kept verbatim for whoever claims them.
     #[serde(flatten)]
     sections: BTreeMap<String, Value>,
@@ -106,8 +113,8 @@ struct RealmSection {
     #[serde(default, alias = "tokenLifetime")]
     token_lifetime: Option<String>,
     /// Which expiration wins at OAuth-to-PIC initialization: `later`, `pic`, or `oauth`.
-    #[serde(default, alias = "initialTokenExpiryPolicy")]
-    initial_token_expiry_policy: Option<String>,
+    #[serde(default, alias = "tokenInitialExpiryPolicy")]
+    token_initial_expiry_policy: Option<String>,
     /// How long cached IdP/attester JWKS remain usable after refresh starts failing.
     #[serde(default, alias = "keyCacheStaleFor")]
     key_cache_stale_for: Option<String>,
@@ -598,13 +605,108 @@ impl ConfigFile {
         let text = fs::read_to_string(path)
             .with_context(|| format!("reading the configuration file {}", path.display()))?;
 
-        Self::parse(&text)
-            .with_context(|| format!("parsing the configuration file {}", path.display()))
+        let mut file = Self::parse(&text)
+            .with_context(|| format!("parsing the configuration file {}", path.display()))?;
+        file.gather_realms_from(path)?;
+
+        Ok(file)
     }
 
     /// Parses configuration-file text.
     pub fn parse(text: &str) -> Result<Self> {
         Ok(serde_norway::from_str(text)?)
+    }
+
+    /// Reads the one-realm files in the directory `realms_from` names, appending each to `realms`.
+    ///
+    /// Every file is one complete realm — the same shape as one `realms:` entry — and is named after
+    /// it, so the directory listing is the realm listing. Files load in name order, after the realms
+    /// declared inline. Anything surprising refuses to start naming the culprit: a directory that is
+    /// not there, a file that does not parse, a file named one thing declaring another, a name
+    /// already taken, or a visible entry that is not a realm file at all. Hidden entries are the one
+    /// exception — editors and file managers drop them everywhere — and are ignored.
+    fn gather_realms_from(&mut self, config_path: &Path) -> Result<()> {
+        let Some(named) = self.realms_from.clone() else {
+            return Ok(());
+        };
+
+        // Relative to the configuration file, not the working directory: realm files are
+        // configuration, and they travel with the file that names them.
+        let directory = match config_path.parent() {
+            Some(parent) if parent != Path::new("") => parent.join(&named),
+            _ => PathBuf::from(&named),
+        };
+
+        let entries = fs::read_dir(&directory)
+            .with_context(|| format!("reading the realms directory {}", directory.display()))?;
+
+        let mut files = Vec::new();
+        for entry in entries {
+            let entry = entry
+                .with_context(|| format!("reading the realms directory {}", directory.display()))?;
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+
+            if name.starts_with('.') {
+                continue;
+            }
+
+            let path = entry.path();
+            let is_realm_file = path.is_file()
+                && matches!(
+                    path.extension().and_then(|extension| extension.to_str()),
+                    Some("yml" | "yaml")
+                );
+            if !is_realm_file {
+                bail!(
+                    "the realms directory {} contains `{name}`, which is not a realm file: every \
+                     visible entry is one realm, `<name>.yml`",
+                    directory.display()
+                );
+            }
+
+            files.push(path);
+        }
+
+        // Name order, so the directory contributes realms the way its listing reads.
+        files.sort();
+
+        for path in files {
+            let text = fs::read_to_string(&path)
+                .with_context(|| format!("reading the realm file {}", path.display()))?;
+            let realm: RealmSection = serde_norway::from_str(&text)
+                .with_context(|| format!("parsing the realm file {}", path.display()))?;
+
+            let stem = path
+                .file_stem()
+                .map(|stem| stem.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            if realm.name != stem {
+                bail!(
+                    "the realm file {} declares a realm named `{}`: a realm file is named after its \
+                     realm, so the directory listing is the realm listing",
+                    path.display(),
+                    realm.name
+                );
+            }
+
+            if self
+                .realms
+                .iter()
+                .any(|existing| existing.name == realm.name)
+            {
+                bail!(
+                    "the realm file {} declares `{}` again: a realm name has to be unique, because \
+                     it is what decides whose keys sign and whose trail records",
+                    path.display(),
+                    realm.name
+                );
+            }
+
+            self.realms.push(realm);
+        }
+
+        Ok(())
     }
 
     /// The settings this file actually defines, as the configuration-file layer.
@@ -753,7 +855,7 @@ impl ConfigFile {
             .iter()
             .map(|realm| RealmInput {
                 token_lifetime: realm.token_lifetime.clone(),
-                initial_token_expiry_policy: realm.initial_token_expiry_policy.clone(),
+                token_initial_expiry_policy: realm.token_initial_expiry_policy.clone(),
                 key_cache_stale_for: realm.key_cache_stale_for.clone(),
                 token_signing_algorithm: realm.token_signing_algorithm.clone(),
                 name: realm.name.clone(),
@@ -878,12 +980,12 @@ mod tests {
     #[test]
     fn test_realm_key_cache_stale_window_is_read() {
         let file = ConfigFile::parse(
-            "realms:\n  - name: acme\n    tokenLifetime: 1h\n    initialTokenExpiryPolicy: oauth\n    keyCacheStaleFor: 10m\n",
+            "realms:\n  - name: acme\n    tokenLifetime: 1h\n    tokenInitialExpiryPolicy: oauth\n    keyCacheStaleFor: 10m\n",
         )
         .expect("the file parses");
 
         assert_eq!(
-            file.realms()[0].initial_token_expiry_policy.as_deref(),
+            file.realms()[0].token_initial_expiry_policy.as_deref(),
             Some("oauth")
         );
         assert_eq!(file.realms()[0].key_cache_stale_for.as_deref(), Some("10m"));
@@ -969,9 +1071,134 @@ mod tests {
 
     #[test]
     fn test_load_reports_a_missing_file_instead_of_falling_back() {
-        let error = ConfigFile::load(Path::new("/nonexistent/pic-x/config.yaml"))
+        let error = ConfigFile::load(Path::new("/nonexistent/pic-x/config.yml"))
             .expect_err("a missing file is an error");
 
-        assert!(format!("{error:#}").contains("/nonexistent/pic-x/config.yaml"));
+        assert!(format!("{error:#}").contains("/nonexistent/pic-x/config.yml"));
+    }
+
+    /// Writes a configuration naming `realms_from: realms.d`, plus one file per `(name, text)` in
+    /// that directory, in a scratch root of its own. Returns the configuration file's path.
+    fn realms_from_fixture(case: &str, realm_files: &[(&str, &str)], config_body: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("pic-x-realms-from-{case}"));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("realms.d")).expect("creating the realms directory");
+
+        for (name, text) in realm_files {
+            fs::write(root.join("realms.d").join(name), text).expect("writing a realm file");
+        }
+
+        let config = root.join("config.yml");
+        fs::write(&config, format!("realms_from: realms.d\n{config_body}"))
+            .expect("writing the configuration under test");
+
+        config
+    }
+
+    #[test]
+    fn test_realm_files_load_in_name_order_after_the_inline_realms() {
+        // Two spellings, one list: the inline realms first, then the directory's in name order —
+        // deterministic, so the catalogue never depends on what order a filesystem feels like.
+        let config = realms_from_fixture(
+            "order",
+            &[
+                ("beta.yml", "name: beta\n"),
+                ("alpha.yml", "name: alpha\ntoken_lifetime: 2h\n"),
+            ],
+            "realms:\n  - name: acme\n",
+        );
+
+        let realms = ConfigFile::load(&config).expect("the file loads").realms();
+
+        let names: Vec<&str> = realms.iter().map(|realm| realm.name.as_str()).collect();
+        assert_eq!(names, ["acme", "alpha", "beta"]);
+        assert_eq!(realms[1].token_lifetime.as_deref(), Some("2h"));
+    }
+
+    #[test]
+    fn test_a_realm_file_is_named_after_the_realm_it_declares() {
+        // The directory listing is the realm listing. A file named one thing declaring another
+        // makes the listing lie, so it is refused rather than trusted.
+        let config = realms_from_fixture("misnamed", &[("acme.yml", "name: globex\n")], "");
+
+        let error = ConfigFile::load(&config).expect_err("the mismatch is an error");
+
+        let message = format!("{error:#}");
+        assert!(message.contains("acme.yml"), "{message}");
+        assert!(message.contains("globex"), "{message}");
+    }
+
+    #[test]
+    fn test_a_realm_declared_inline_and_as_a_file_is_refused() {
+        let config = realms_from_fixture(
+            "duplicate",
+            &[("acme.yml", "name: acme\n")],
+            "realms:\n  - name: acme\n",
+        );
+
+        let error = ConfigFile::load(&config).expect_err("the duplicate is an error");
+
+        let message = format!("{error:#}");
+        assert!(message.contains("acme"), "{message}");
+        assert!(message.contains("unique"), "{message}");
+    }
+
+    #[test]
+    fn test_a_missing_realms_directory_is_an_error() {
+        // The file names a directory that is not there: the configuration lies about the
+        // deployment, and a lie is refused rather than quietly shrugged into zero realms.
+        let root = std::env::temp_dir().join("pic-x-realms-from-missing");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("creating the scratch root");
+        let config = root.join("config.yml");
+        fs::write(&config, "realms_from: realms.d\n").expect("writing the configuration");
+
+        let error = ConfigFile::load(&config).expect_err("the missing directory is an error");
+
+        assert!(format!("{error:#}").contains("realms.d"));
+    }
+
+    #[test]
+    fn test_a_realm_file_that_does_not_parse_is_named_in_the_error() {
+        let config = realms_from_fixture(
+            "unparsable",
+            &[("acme.yml", "name: acme\nno_such_field: 1\n")],
+            "",
+        );
+
+        let error = ConfigFile::load(&config).expect_err("the unknown field is an error");
+
+        assert!(format!("{error:#}").contains("acme.yml"));
+    }
+
+    #[test]
+    fn test_a_stray_file_in_the_realms_directory_is_refused() {
+        // A visible entry that is not a realm file would be a realm the listing shows and the
+        // server ignores — the silent kind of wrong. Refused, naming it.
+        let config = realms_from_fixture(
+            "stray",
+            &[("acme.yml", "name: acme\n"), ("notes.txt", "scratch\n")],
+            "",
+        );
+
+        let error = ConfigFile::load(&config).expect_err("the stray file is an error");
+
+        assert!(format!("{error:#}").contains("notes.txt"));
+    }
+
+    #[test]
+    fn test_hidden_entries_in_the_realms_directory_are_ignored() {
+        // Editors and file managers drop hidden files everywhere; a lab that refuses to start over
+        // a .DS_Store is not strict, it is broken.
+        let config = realms_from_fixture(
+            "hidden",
+            &[("acme.yml", "name: acme\n"), (".DS_Store", "junk")],
+            "",
+        );
+
+        let realms = ConfigFile::load(&config).expect("the file loads").realms();
+
+        assert_eq!(realms.len(), 1);
+        assert_eq!(realms[0].name, "acme");
     }
 }

@@ -27,14 +27,14 @@ fn serve_args(argv: &[&str]) -> ServeArgs {
 
 #[test]
 fn test_a_configuration_file_alone_resolves_to_serving() {
-    let args = serve_args(&["pic-x", "config.yaml"]);
+    let args = serve_args(&["pic-x", "config.yml"]);
 
-    assert_eq!(args.config_file(), Path::new("config.yaml"));
+    assert_eq!(args.config_file(), Path::new("config.yml"));
 }
 
 #[test]
 fn test_serving_takes_exactly_one_configuration_file() {
-    assert!(Cli::try_parse_from(["pic-x", "a.yaml", "b.yaml"]).is_err());
+    assert!(Cli::try_parse_from(["pic-x", "a.yml", "b.yml"]).is_err());
 }
 
 #[test]
@@ -45,23 +45,23 @@ fn test_serving_without_a_configuration_file_fails_to_parse() {
 #[test]
 fn test_serve_is_no_longer_a_command_name() {
     // `serve` now reads as a configuration file path, so naming it and a file is two positionals.
-    assert!(Cli::try_parse_from(["pic-x", "serve", "config.yaml"]).is_err());
+    assert!(Cli::try_parse_from(["pic-x", "serve", "config.yml"]).is_err());
 }
 
 #[test]
 fn test_no_config_flag_exists() {
-    assert!(Cli::try_parse_from(["pic-x", "--config", "config.yaml"]).is_err());
-    assert!(Cli::try_parse_from(["pic-x", "--config=config.yaml"]).is_err());
+    assert!(Cli::try_parse_from(["pic-x", "--config", "config.yml"]).is_err());
+    assert!(Cli::try_parse_from(["pic-x", "--config=config.yml"]).is_err());
 }
 
 #[test]
 fn test_address_flags_are_optional_overrides() {
-    let bare = serve_args(&["pic-x", "config.yaml"]);
+    let bare = serve_args(&["pic-x", "config.yml"]);
     assert!(bare.setting_inputs().is_empty());
 
     let overridden = serve_args(&[
         "pic-x",
-        "config.yaml",
+        "config.yml",
         "--public-http-addr",
         "127.0.0.1:1",
         "--telemetry-addr",
@@ -85,8 +85,8 @@ fn test_address_flags_are_optional_overrides() {
 
 #[test]
 fn test_address_flags_come_before_or_after_the_configuration_file() {
-    let before = serve_args(&["pic-x", "--admin-addr", "127.0.0.1:4", "config.yaml"]);
-    let after = serve_args(&["pic-x", "config.yaml", "--admin-addr", "127.0.0.1:4"]);
+    let before = serve_args(&["pic-x", "--admin-addr", "127.0.0.1:4", "config.yml"]);
+    let after = serve_args(&["pic-x", "config.yml", "--admin-addr", "127.0.0.1:4"]);
 
     assert_eq!(before, after);
 }
@@ -101,13 +101,13 @@ fn test_version_is_a_named_command_that_needs_no_configuration_file() {
 
 #[test]
 fn test_a_named_command_refuses_the_arguments_of_the_default_action() {
-    assert!(Cli::try_parse_from(["pic-x", "version", "config.yaml"]).is_err());
+    assert!(Cli::try_parse_from(["pic-x", "version", "config.yml"]).is_err());
     assert!(Cli::try_parse_from(["pic-x", "version", "--admin-addr", "127.0.0.1:4"]).is_err());
 }
 
 #[test]
 fn test_serving_contributes_its_flags_as_the_command_line_layer() {
-    let resolved = action(&["pic-x", "config.yaml", "--admin-addr", "127.0.0.1:4"]);
+    let resolved = action(&["pic-x", "config.yml", "--admin-addr", "127.0.0.1:4"]);
 
     assert_eq!(
         resolved.setting_inputs(),
@@ -132,7 +132,7 @@ fn test_an_invocation_that_asks_for_nothing_resolves_to_no_action() {
 
 #[test]
 fn test_an_unknown_flag_fails_to_parse() {
-    assert!(Cli::try_parse_from(["pic-x", "config.yaml", "--unknown"]).is_err());
+    assert!(Cli::try_parse_from(["pic-x", "config.yml", "--unknown"]).is_err());
 }
 
 /// The parser a downstream build writes when it adds a command of its own.
@@ -178,7 +178,7 @@ fn test_a_downstream_build_can_flatten_the_shared_commands() {
 #[test]
 fn test_a_downstream_build_keeps_the_default_action() {
     let parsed =
-        DownstreamCli::try_parse_from(["other-x", "config.yaml", "--admin-addr", "127.0.0.1:4"])
+        DownstreamCli::try_parse_from(["other-x", "config.yml", "--admin-addr", "127.0.0.1:4"])
             .expect("the default action parses");
 
     assert_eq!(parsed.command, None);

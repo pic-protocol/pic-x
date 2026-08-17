@@ -1,13 +1,13 @@
 # PIC-X — development, in the clear.
 #
-#   task run          starts the server against this file
-#   VS Code           "pic-x: serve (local)"
+#   task run-as-local   starts the server against this file
+#   VS Code             "pic-x: serve (local)"
 #
 # Everything the product does is on, so a local run exercises it. Nothing has to be set up first: the
 # volume is created on start and whatever is missing inside it is generated.
 #
-# For the same thing over TLS and mutual TLS, use config.local-tls.yaml.
-# For what a real deployment looks like, use config.prod.yaml. Every setting is in config.template.yaml.
+# For the same thing over TLS and mutual TLS, use config.local-tls.yml.
+# For what a real deployment looks like, copy from config.template.yml, which lists every setting.
 
 # This is somebody's laptop, and says so. It is what permits the two lines below, and the key windows
 # further down that are far shorter than any deployment would use.
@@ -67,7 +67,7 @@ operations:
       key_ref: audit-pseudonym
       key_version: "v1"
 
-# Two example realms — two issuers hosted by one server — so `task run` shows the multi-tenant shape.
+# Two example realms — two issuers hosted by one server — so `task run-as-local` shows the multi-tenant shape.
 # Both are listed, so both appear in /.well-known/server-configuration; each derives its issuer from
 # `public.url` above. Each gets its own token keys, operations keys, trail and pseudonymisation
 # key under .volume/realms/<name>/, generated on first start.

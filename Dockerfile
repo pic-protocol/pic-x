@@ -90,30 +90,28 @@ LABEL org.opencontainers.image.title="PIC-X" \
 COPY --from=builder /staged/passwd /staged/group /etc/
 COPY --from=builder /usr/local/bin/pic-x /usr/local/bin/pic-x
 COPY --from=builder --chown=65532:65532 /staged/var/lib/pic-x /var/lib/pic-x
-# Two configurations, one image — the image you try has to be the image you ship.
-#
-# `config.yaml` is the production one and is what `CMD` runs: it demands its TLS material and its
-# pseudonymisation secret, and refuses to start without them. `config.dev.yaml` is the one that starts
-# with nothing mounted, at the price of no transport security; it is named on the command line, so
-# choosing it is something written down rather than something a default did.
-COPY config.prod.yaml /etc/pic-x/config.yaml
-COPY config.dev.yaml /etc/pic-x/config.dev.yaml
+# No configuration ships in the image. A baked-in default is a posture somebody else chose, and the
+# first thing anybody does with an image is run it and the second is assume it is configured. The
+# deployment mounts its own file — written by copying from config.template.yml — at the path `CMD`
+# names below, and a container given nothing refuses to start, naming the file that is missing.
 COPY LICENSE /usr/share/doc/pic-x/
 
 USER 65532:65532
 
-# web HTTP, gRPC, telemetry — matching config.prod.yaml. Deliberately not Dex's 5556/5557/5558, so
-# both can run on the same host. Administration is on 7557 and the production file demands mutual TLS
-# and an allowlist before it will bind there, which is what makes exposing it a decision rather than
-# an accident.
+# web HTTP, gRPC, telemetry — matching the shipped configuration files. Deliberately not Dex's
+# 5556/5557/5558, so both can run on the same host. Administration is on 7557; a production
+# configuration demands mutual TLS and an allowlist before it will bind there, which is what makes
+# exposing it a decision rather than an accident.
 EXPOSE 7556 7557 7558
 
-# The container's default configuration path lives here and only here. Serving is the binary's default
-# action, so the command is the path and nothing else, and any other deployment passes its own:
+# The container's configuration path lives here and only here. Serving is the binary's default
+# action, so the command is the path and nothing else. A deployment mounts its file there:
 #
-#   docker run --rm pic-x /etc/pic-x/config.dev.yaml
+#   docker run --rm --volume ./my-config.yml:/etc/pic-x/config.yml:ro pic-x
+#
+# or mounts it elsewhere and passes that path as the command instead.
 #
 # An absolute path: there is no shell to resolve PATH, and relying on one that happens to be set is
 # how this breaks the day anything about the image changes.
 ENTRYPOINT ["/usr/local/bin/pic-x"]
-CMD ["/etc/pic-x/config.yaml"]
+CMD ["/etc/pic-x/config.yml"]

@@ -36,7 +36,7 @@ use tracing::{info, warn};
 use pic_x_core::audit::{AuditEvent, Subject};
 use pic_x_core::{
     ClaimMapping, EXCHANGE_ON_UNMATCHED_SCOPE_REJECT, EXCHANGE_SOURCE_OAUTH_ACCESS_TOKEN,
-    ExchangeProfileConfig, InitialTokenExpiryPolicy, KeyManager, OAUTH_ACCESS_TOKEN_TYPE, Realm,
+    ExchangeProfileConfig, KeyManager, OAUTH_ACCESS_TOKEN_TYPE, Realm, TokenInitialExpiryPolicy,
 };
 
 use crate::COMPONENT;
@@ -243,7 +243,7 @@ impl TokenEndpoint {
             jwt.claim_i64("exp"),
             now,
             self.realm.token_lifetime(),
-            self.realm.initial_token_expiry_policy(),
+            self.realm.token_initial_expiry_policy(),
         )?;
         let checkpoint = PicPcaPayload::new(0, authority, challenge)
             .with_lineage_id(lineage_id.clone())
@@ -1178,7 +1178,7 @@ fn initial_expiry(
     source_expiry: Option<i64>,
     now: i64,
     default_lifetime: Duration,
-    policy: InitialTokenExpiryPolicy,
+    policy: TokenInitialExpiryPolicy,
 ) -> Result<i64, ExchangeError> {
     if let Some(proposal_expiry) = proposal_expiry(encoded, now)? {
         return Ok(proposal_expiry);
@@ -1189,9 +1189,9 @@ fn initial_expiry(
         .ok_or_else(|| ExchangeError::invalid_request("realm token_lifetime overflows time"))?;
     let expiry = match source_expiry {
         Some(source_expiry) => match policy {
-            InitialTokenExpiryPolicy::Later => source_expiry.max(default_expiry),
-            InitialTokenExpiryPolicy::Pic => default_expiry,
-            InitialTokenExpiryPolicy::OAuth => source_expiry,
+            TokenInitialExpiryPolicy::Later => source_expiry.max(default_expiry),
+            TokenInitialExpiryPolicy::Pic => default_expiry,
+            TokenInitialExpiryPolicy::OAuth => source_expiry,
         },
         None => default_expiry,
     };
