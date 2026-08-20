@@ -5,9 +5,21 @@
 <h1 align="center">PIC-X</h1>
 
 <p align="center">
-  Provenance Identity Continuity Exchange.<br>
+  The official PIC Authority Broker and Exchange Server.<br>
   Verifiable Authority Continuity across execution boundaries.
 </p>
+
+## What PIC-X Is
+
+PIC-X is the official PIC Authority Broker and Exchange Server. It preserves verifiable authority
+continuity across execution boundaries: when work moves from an identity provider into a service,
+agent, tool or another runtime, PIC-X derives, verifies and advances the authority that is allowed
+to continue.
+
+As an Authority Broker, PIC-X maps upstream credentials into PIC Contexts of Authority while keeping
+provenance, constraints, privileges and audit material explicit. As an Exchange Server, it exposes
+the protocol surface where source tokens and continuity proposals are exchanged for PIC Tokens that
+downstream verifiers can check.
 
 ## Start Here
 
