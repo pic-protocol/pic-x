@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! Catching the one rotation mistake that quietly ruins an audit trail.
 //!
 //! Pseudonyms are keyed and versioned, and rotating means changing **both**: a new key, and a new

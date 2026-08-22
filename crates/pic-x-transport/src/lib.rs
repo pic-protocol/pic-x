@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! One listener for every PIC-X surface.
 //!
 //! The public surface, the administrative surface and telemetry all end up serving an `axum::Router`
@@ -41,6 +44,7 @@
 #![deny(clippy::all, clippy::unwrap_used, clippy::expect_used)]
 
 mod digest;
+mod gate;
 mod guard;
 mod identity;
 mod material;
@@ -50,10 +54,13 @@ mod request;
 mod surface;
 
 pub use digest::digest;
+pub use gate::PeerGateLayer;
 pub use guard::LimitedAcceptor;
 pub use identity::{PeerAcceptor, WithPeer, fingerprint, identity_of};
 pub use material::{load_certificates, load_key, load_revocations, server_config};
-pub use measure::{ACCEPTED, CERTIFICATE_EXPIRY, CONNECTIONS, LATENCY, REFUSED, REQUESTS};
+pub use measure::{
+    ACCEPTED, CERTIFICATE_EXPIRY, CONNECTIONS, CRL_EXPIRY, LATENCY, REFUSED, REQUESTS,
+};
 pub use reload::{Reloaded, reload_all};
 pub use request::RequestId;
 pub use surface::{Listener, Surface};

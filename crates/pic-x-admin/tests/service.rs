@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! What the administrative surface does when it is told to start and stop.
 //!
 //! Here rather than beside the code because these bind a real socket and take it down again. The two

@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! How much a build says, and in what shape it says it.
 //!
 //! Both are contracts rather than implementation: the types live here so configuration can carry

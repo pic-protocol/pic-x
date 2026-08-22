@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! Use-case tests driving the built `pic-x` binary.
 //!
 //! Serving is the default action, so an invocation that names a configuration file and nothing else

@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! Who is on the other end of a mutually authenticated connection.
 //!
 //! Mutual TLS answers one question — *was this certificate signed by an authority we trust* — and

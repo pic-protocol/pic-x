@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! One listener: bound before it serves, and drained before it stops.
 
 use std::net::SocketAddr;
@@ -24,6 +27,7 @@ use tower_http::timeout::TimeoutLayer;
 
 use pic_x_core::{Limits, Metrics, TlsSettings};
 
+use crate::gate::PeerGateLayer;
 use crate::guard::LimitedAcceptor;
 use crate::identity::PeerAcceptor;
 use crate::material::server_config;
@@ -125,6 +129,13 @@ impl<'a> Listener<'a> {
             None => None,
         };
 
+        // Who, of everybody the client authority signed, this surface answers. Carried out of the
+        // settings here because the router layers are built inside the serving task.
+        let allow = secured
+            .as_ref()
+            .map(|(settings, _)| settings.allow().to_vec())
+            .unwrap_or_default();
+
         let handle = Handle::new();
         let serving = handle.clone();
         let accepting = secured.as_ref().map(|(_, config)| config.clone());
@@ -146,6 +157,16 @@ impl<'a> Listener<'a> {
             // Innermost first: the body limit sits closest to the handler, the identity outermost so
             // even a request that is refused before reaching a handler is named in the log and in the
             // answer the client gets.
+            // Between the handlers and everything else: nothing below this line runs for a peer the
+            // list does not name. Applied conditionally because an empty list means the handshake is
+            // the whole decision — configurations where that is dangerous are refused by validation,
+            // not silently gated here.
+            let router = if allow.is_empty() {
+                router
+            } else {
+                router.layer(PeerGateLayer::new(allow))
+            };
+
             let service = router
                 // Innermost of all, so it is between the handlers and everything else: a panic there
                 // becomes an answer rather than a connection that closes with nothing on it. Without
@@ -166,7 +187,7 @@ impl<'a> Listener<'a> {
             let served = match accepting {
                 Some(config) => match axum_server::from_tcp(listener) {
                     Ok(mut server) => {
-                        bound_connections(&mut server, limits);
+                        bound_connections(&mut server, &limits);
 
                         server
                             .acceptor(
@@ -175,7 +196,7 @@ impl<'a> Listener<'a> {
                                         RustlsAcceptor::new(config)
                                             .handshake_timeout(limits.handshake_timeout()),
                                     ),
-                                    limits.connections(),
+                                    limits.clone(),
                                 )
                                 .measured(surface, measuring.clone()),
                             )
@@ -187,11 +208,11 @@ impl<'a> Listener<'a> {
                 },
                 None => match axum_server::from_tcp(listener) {
                     Ok(mut server) => {
-                        bound_connections(&mut server, limits);
+                        bound_connections(&mut server, &limits);
 
                         server
                             .acceptor(
-                                LimitedAcceptor::new(DefaultAcceptor::new(), limits.connections())
+                                LimitedAcceptor::new(DefaultAcceptor::new(), limits.clone())
                                     .measured(surface, measuring.clone()),
                             )
                             .handle(serving)
@@ -310,12 +331,18 @@ const KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(30);
 /// installed** — it warns and serves without one. Nothing between this and hyper installs one, so
 /// without these lines the default is a line in someone else's documentation and the surface has no
 /// defence against a slow header at all. Setting it and forgetting the timer is worse: hyper panics.
-fn bound_connections<A: axum_server::Address>(server: &mut axum_server::Server<A>, limits: Limits) {
+fn bound_connections<A: axum_server::Address>(
+    server: &mut axum_server::Server<A>,
+    limits: &Limits,
+) {
     server
         .http_builder()
         .http1()
         .timer(TokioTimer::new())
-        .header_read_timeout(limits.header_timeout());
+        .header_read_timeout(limits.header_timeout())
+        // The head, bounded in bytes as well as in time: a client that sends fast can otherwise
+        // make this buffer whatever hyper's default happens to be, per connection, repeatedly.
+        .max_buf_size(limits.header_bytes());
 
     server
         .http_builder()
@@ -325,6 +352,8 @@ fn bound_connections<A: axum_server::Address>(server: &mut axum_server::Server<A
         // stream is cheaper than a connection and therefore a cheaper way to spend the same budget:
         // without this, one socket can hold as much of the surface as a thousand.
         .max_concurrent_streams(limits.concurrent_requests())
+        // The same bound, in HTTP/2's vocabulary: what one request's header list may total.
+        .max_header_list_size(limits.header_bytes() as u32)
         // A peer whose TCP connection died without a FIN — a pulled cable, a NAT that forgot it —
         // keeps its streams and their buffers until something notices. A PING notices in seconds
         // where the OS would take hours. The interval is its own thing on purpose: it is how often to

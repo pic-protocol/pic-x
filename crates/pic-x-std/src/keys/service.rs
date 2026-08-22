@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! The part of the key ring that has to keep happening.
 //!
 //! Rotation is a schedule, and a schedule nobody runs is a comment. This is the thing that runs it:

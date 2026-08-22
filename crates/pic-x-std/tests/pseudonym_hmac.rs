@@ -1,4 +1,6 @@
 #![cfg(feature = "pseudonym")]
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
 
 //! What a pseudonym discloses, and what rotating the key does to it.
 //!

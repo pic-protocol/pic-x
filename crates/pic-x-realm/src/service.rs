@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! The surface itself: what it mounts, what may wrap it, and how it starts and stops.
 
 use std::collections::BTreeMap;
@@ -97,12 +100,21 @@ impl WellKnownService {
     /// a prefix the process never sees. Deriving one from the other — as some do — is what makes a
     /// working proxy configuration hard to arrive at.
     pub fn router(&self, identity: &ProductIdentity, config: &Config, realms: &Realms) -> Router {
+        // The build details follow `public.disclose_build`: a deployment that turned it off answers
+        // with the product name — enough to identify what answered — and nothing a fingerprinting
+        // pass can match an exploit against.
+        let version = if config.disclose_build() {
+            config.version().to_owned()
+        } else {
+            String::new()
+        };
+
         // The server surface: what this deployment is and which realms it lists. It issues nothing
         // and publishes no key set — the key that seals its system trail is internal, reached through
         // the administrative surface and never here. So there is no key route and no issuer discovery.
         let server = Server {
             product: identity.product_name().to_owned(),
-            version: config.version().to_owned(),
+            version: version.clone(),
             logo: identity.logo().to_owned(),
             tagline: identity.tagline().to_owned(),
             profiles: vec![ProfileEntry {
@@ -139,7 +151,7 @@ impl WellKnownService {
         for realm in realms.all() {
             let landing = RealmLanding {
                 product: identity.product_name().to_owned(),
-                version: config.version().to_owned(),
+                version: version.clone(),
                 tagline: identity.tagline().to_owned(),
                 logo: identity.logo().to_owned(),
                 name: realm.name().to_owned(),

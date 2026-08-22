@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! The PIC-X administrative surface.
 //!
 //! It is gRPC, it is on a port of its own, and it is the one that must never be reachable from

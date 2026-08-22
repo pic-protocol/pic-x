@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! Turning a Unix timestamp into a date, and back.
 //!
 //! An audit trail needs two things from a clock: a file name that groups records by day, and a

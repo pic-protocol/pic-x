@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! ConfigFile class: reads and parses the YAML configuration file named on the command line.
 //!
 //! The binary never looks for a configuration file on its own. The path always arrives as the
@@ -25,10 +28,12 @@ use crate::config::{
     SETTING_AUTOGENERATE, SETTING_DEVELOPMENT_MODE, SETTING_ISSUER, SETTING_KEYS_DIRECTORY,
     SETTING_KEYS_ENABLED, SETTING_KEYS_MAINTENANCE_INTERVAL, SETTING_KEYS_PUBLISH_AHEAD,
     SETTING_KEYS_RETAIN, SETTING_KEYS_ROTATE_EVERY, SETTING_LIMITS_BODY_BYTES,
-    SETTING_LIMITS_CONCURRENT_REQUESTS, SETTING_LIMITS_CONNECTIONS,
-    SETTING_LIMITS_HANDSHAKE_TIMEOUT, SETTING_LIMITS_HEADER_TIMEOUT,
-    SETTING_LIMITS_REQUEST_TIMEOUT, SETTING_LOG_FORMAT, SETTING_LOG_LEVEL,
-    SETTING_PUBLIC_HTTP_ADDR, SETTING_PUBLIC_PATH_PREFIX, SETTING_PUBLIC_TLS_CERT,
+    SETTING_LIMITS_CONCURRENT_REQUESTS, SETTING_LIMITS_CONNECTION_LIFETIME,
+    SETTING_LIMITS_CONNECTIONS, SETTING_LIMITS_CONNECTIONS_PER_PEER,
+    SETTING_LIMITS_HANDSHAKE_TIMEOUT, SETTING_LIMITS_HEADER_BYTES, SETTING_LIMITS_HEADER_TIMEOUT,
+    SETTING_LIMITS_PEER_EXEMPT, SETTING_LIMITS_REQUEST_TIMEOUT, SETTING_LIMITS_WRITE_STALL_TIMEOUT,
+    SETTING_LOG_FORMAT, SETTING_LOG_LEVEL, SETTING_PUBLIC_DISCLOSE_BUILD, SETTING_PUBLIC_HTTP_ADDR,
+    SETTING_PUBLIC_PATH_PREFIX, SETTING_PUBLIC_TLS_ALLOW, SETTING_PUBLIC_TLS_CERT,
     SETTING_PUBLIC_TLS_CLIENT_CA, SETTING_PUBLIC_TLS_CRL, SETTING_PUBLIC_TLS_KEY,
     SETTING_PUBLIC_TLS_MIN_VERSION, SETTING_SECRETS_DIRECTORY, SETTING_SECRETS_ENV_PREFIX,
     SETTING_SECRETS_PROVIDER, SETTING_SHUTDOWN_TIMEOUT, SETTING_TELEMETRY_ADDR,
@@ -390,6 +395,10 @@ struct RealmSecretsSection {
 struct PublicSection {
     #[serde(default)]
     http: Option<String>,
+    /// Whether the public surface says which build this is. On by default; a deployment that would
+    /// rather not hand fingerprinting material to whoever can open a socket says false.
+    #[serde(default)]
+    disclose_build: Option<String>,
     /// The public URL this deployment is reached at. Stated, never inferred from a proxy header. It
     /// is the base a realm's `issuer` defaults to (`{url}/realms/<name>`) and, when it carries
     /// a path, what the surface's mount prefix is derived from. The server issues nothing, so this is
@@ -413,6 +422,11 @@ struct PublicSection {
 struct TlsSection {
     #[serde(default)]
     cert: Option<String>,
+    /// Who, of everybody `client_ca` signed, this surface answers. One entry per line-item:
+    /// `cn:name`, `dn:subject`, or `sha256:<hex>`. Read on the public surface; the administrative
+    /// one has `admin.allow`, and telemetry cannot demand certificates at all.
+    #[serde(default)]
+    allow: Option<Vec<String>>,
     #[serde(default)]
     key: Option<String>,
     #[serde(default)]
@@ -448,6 +462,14 @@ struct LimitsSection {
     #[serde(default)]
     connections: Option<String>,
     #[serde(default)]
+    connections_per_peer: Option<String>,
+    #[serde(default)]
+    peer_exempt: Option<Vec<String>>,
+    #[serde(default)]
+    connection_lifetime: Option<String>,
+    #[serde(default)]
+    write_stall_timeout: Option<String>,
+    #[serde(default)]
     concurrent_requests: Option<String>,
     #[serde(default)]
     request_timeout: Option<String>,
@@ -457,6 +479,8 @@ struct LimitsSection {
     header_timeout: Option<String>,
     #[serde(default)]
     body_bytes: Option<String>,
+    #[serde(default)]
+    header_bytes: Option<String>,
 }
 
 /// The record-keeping subsystem: the ring that seals a trail, the trail, and the pseudonym secret.
@@ -706,6 +730,19 @@ impl ConfigFile {
             self.realms.push(realm);
         }
 
+        if self
+            .admin
+            .tls
+            .allow
+            .as_ref()
+            .is_some_and(|list| !list.is_empty())
+        {
+            anyhow::bail!(
+                "`admin.tls.allow` is not read: the administrative surface's peers are listed under \
+                 `admin.allow`"
+            );
+        }
+
         Ok(())
     }
 
@@ -716,6 +753,19 @@ impl ConfigFile {
         // A list is one setting whose value happens to have lines in it, so it travels through the
         // same precedence layers as everything else instead of needing a mechanism of its own.
         let allow = (!self.admin.allow.is_empty()).then(|| self.admin.allow.join("\n"));
+        let public_allow = self
+            .public
+            .tls
+            .allow
+            .as_ref()
+            .filter(|entries| !entries.is_empty())
+            .map(|entries| entries.join("\n"));
+        let exempt_peers = self
+            .limits
+            .peer_exempt
+            .as_ref()
+            .filter(|entries| !entries.is_empty())
+            .map(|entries| entries.join(","));
 
         let candidates = [
             (SETTING_WORKING_DIR, self.working_dir.as_ref()),
@@ -729,6 +779,19 @@ impl ConfigFile {
                 self.tls.reload_interval.as_ref(),
             ),
             (SETTING_LIMITS_CONNECTIONS, self.limits.connections.as_ref()),
+            (
+                SETTING_LIMITS_CONNECTIONS_PER_PEER,
+                self.limits.connections_per_peer.as_ref(),
+            ),
+            (SETTING_LIMITS_PEER_EXEMPT, exempt_peers.as_ref()),
+            (
+                SETTING_LIMITS_CONNECTION_LIFETIME,
+                self.limits.connection_lifetime.as_ref(),
+            ),
+            (
+                SETTING_LIMITS_WRITE_STALL_TIMEOUT,
+                self.limits.write_stall_timeout.as_ref(),
+            ),
             (
                 SETTING_LIMITS_CONCURRENT_REQUESTS,
                 self.limits.concurrent_requests.as_ref(),
@@ -745,8 +808,17 @@ impl ConfigFile {
                 SETTING_LIMITS_HEADER_TIMEOUT,
                 self.limits.header_timeout.as_ref(),
             ),
+            (
+                SETTING_LIMITS_HEADER_BYTES,
+                self.limits.header_bytes.as_ref(),
+            ),
             (SETTING_LIMITS_BODY_BYTES, self.limits.body_bytes.as_ref()),
             (SETTING_PUBLIC_TLS_CRL, self.public.tls.crl.as_ref()),
+            (SETTING_PUBLIC_TLS_ALLOW, public_allow.as_ref()),
+            (
+                SETTING_PUBLIC_DISCLOSE_BUILD,
+                self.public.disclose_build.as_ref(),
+            ),
             (SETTING_ADMIN_TLS_CRL, self.admin.tls.crl.as_ref()),
             (SETTING_AUDIT_SINK, self.operations.audit.sink.as_ref()),
             (

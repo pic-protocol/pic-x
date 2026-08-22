@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! What a process shutdown is, when nobody says otherwise — and what a reload is.
 //!
 //! The contracts take an opaque future, so the question "what counts as a shutdown" has exactly one

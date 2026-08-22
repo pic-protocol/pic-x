@@ -1196,6 +1196,7 @@ dependencies = [
  "ring",
  "serde_json",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

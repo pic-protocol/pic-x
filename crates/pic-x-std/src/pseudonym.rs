@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! Keyed, versioned pseudonyms for audit subjects.
 //!
 //! The token is `HMAC-SHA256(key, value)`, truncated to 128 bits, hex encoded, and prefixed with the

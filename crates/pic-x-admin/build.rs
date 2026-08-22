@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! Compiles the administrative protocol into Rust at build time.
 //!
 //! The generated code is never committed: a checked-in copy is a copy that can drift from the `.proto`

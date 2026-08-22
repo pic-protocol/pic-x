@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! Turning a snapshot into the text a scraper reads.
 //!
 //! Written out by hand rather than taken from a client library, and the reason is the same one the

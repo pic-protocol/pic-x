@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! An audit trail that survives the process, and notices when somebody edits it.
 //!
 //! One JSON object per line, one file per UTC day, appended and flushed to the disk before the write

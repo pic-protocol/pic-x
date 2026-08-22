@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! Configuration a build adds that this crate knows nothing about.
 //!
 //! The typed settings of [`Config`](crate::config::Config) are the ones every build has. Anything a

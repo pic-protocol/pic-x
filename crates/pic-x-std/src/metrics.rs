@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! An in-process registry: the numbers, held here, until something scrapes them.
 //!
 //! No dependency, no background task, no exporter. A `HashMap` behind a lock, read whole when

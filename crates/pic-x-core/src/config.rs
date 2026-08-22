@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! Config class: typed runtime settings assembled from layered inputs.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -10,7 +13,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use crate::audit::AuditDestination;
 use crate::config_section::{AnyConfigSection, ConfigSection};
 use crate::keys::KEY_SET_MAX_AGE;
-use crate::limits::Limits;
+use crate::limits::{Limits, PeerBlock};
 use crate::logging::{LogFormat, LogLevel};
 use crate::peer::AllowedPeer;
 use crate::realm::{
@@ -82,6 +85,18 @@ pub const SETTING_PUBLIC_TLS_CLIENT_CA: &str = "PIC_X_PUBLIC_TLS_CLIENT_CA";
 pub const SETTING_PUBLIC_TLS_CRL: &str = "PIC_X_PUBLIC_TLS_CRL";
 /// Lowest protocol version the public surface accepts.
 pub const SETTING_PUBLIC_TLS_MIN_VERSION: &str = "PIC_X_PUBLIC_TLS_MIN_VERSION";
+/// Which peers the public surface answers, of everybody the client authority signed.
+///
+/// Entries as `cn:name`, `dn:subject` or `sha256:<hex>`, one per line — a `dn:` contains commas,
+/// so a comma cannot separate entries. Setting it
+/// requires [`SETTING_PUBLIC_TLS_CLIENT_CA`]: without a demanded certificate there is no identity to
+/// check, and a list nothing can satisfy is a misconfiguration, not a policy.
+pub const SETTING_PUBLIC_TLS_ALLOW: &str = "PIC_X_PUBLIC_TLS_ALLOW";
+/// Whether the public surface discloses the build it is: the version in the server discovery
+/// document and the human landing. On by default — a client integrating against a deployment reads
+/// it there — and a deployment that would rather not hand fingerprinting material to whoever can
+/// open a socket turns it off; the product name stays, so what answered is still identified.
+pub const SETTING_PUBLIC_DISCLOSE_BUILD: &str = "PIC_X_PUBLIC_DISCLOSE_BUILD";
 
 /// Certificate chain the administrative surface presents.
 pub const SETTING_ADMIN_TLS_CERT: &str = "PIC_X_ADMIN_TLS_CERT";
@@ -122,6 +137,14 @@ pub const SETTING_TLS_RELOAD_INTERVAL: &str = "PIC_X_TLS_RELOAD_INTERVAL";
 ///
 /// One set for every surface — see [`Limits`] for why, and for what each of them stops.
 pub const SETTING_LIMITS_CONNECTIONS: &str = "PIC_X_LIMITS_CONNECTIONS";
+/// How many of one surface's sockets a single address may hold. Zero disables the bound.
+pub const SETTING_LIMITS_CONNECTIONS_PER_PEER: &str = "PIC_X_LIMITS_CONNECTIONS_PER_PEER";
+/// Addresses exempt from the per-address bound, comma-separated: `10.0.0.1, 192.168.0.0/16, ::1`.
+pub const SETTING_LIMITS_PEER_EXEMPT: &str = "PIC_X_LIMITS_PEER_EXEMPT";
+/// How long one connection may exist. Zero leaves it unbounded, which is the default.
+pub const SETTING_LIMITS_CONNECTION_LIFETIME: &str = "PIC_X_LIMITS_CONNECTION_LIFETIME";
+/// How long a response write may make no progress before the client is given up on.
+pub const SETTING_LIMITS_WRITE_STALL_TIMEOUT: &str = "PIC_X_LIMITS_WRITE_STALL_TIMEOUT";
 /// How many requests one surface has in flight at once.
 pub const SETTING_LIMITS_CONCURRENT_REQUESTS: &str = "PIC_X_LIMITS_CONCURRENT_REQUESTS";
 /// How long one request may take before it is given up on.
@@ -132,6 +155,8 @@ pub const SETTING_LIMITS_HANDSHAKE_TIMEOUT: &str = "PIC_X_LIMITS_HANDSHAKE_TIMEO
 pub const SETTING_LIMITS_HEADER_TIMEOUT: &str = "PIC_X_LIMITS_HEADER_TIMEOUT";
 /// How many bytes one request body may carry.
 pub const SETTING_LIMITS_BODY_BYTES: &str = "PIC_X_LIMITS_BODY_BYTES";
+/// How many bytes one request head may carry.
+pub const SETTING_LIMITS_HEADER_BYTES: &str = "PIC_X_LIMITS_HEADER_BYTES";
 
 /// Runtime setting key for how much the build says.
 pub const SETTING_LOG_LEVEL: &str = "PIC_X_LOG_LEVEL";
@@ -396,6 +421,8 @@ pub struct Config {
     working_dir: Option<String>,
     autogenerate: bool,
     development_mode: bool,
+    /// Whether the public surface says which build it is. See [`SETTING_PUBLIC_DISCLOSE_BUILD`].
+    disclose_build: bool,
     issuer: Option<String>,
     public_path_prefix: String,
     public_http_addr: Option<String>,
@@ -446,6 +473,7 @@ impl Default for Config {
             working_dir: None,
             autogenerate: false,
             development_mode: false,
+            disclose_build: true,
             issuer: None,
             public_path_prefix: String::new(),
             public_http_addr: None,
@@ -735,6 +763,19 @@ produce: use `EdDSA` or `ES256`"
     /// Validation runs after every layer has been applied, so a command-line override can satisfy a
     /// requirement the configuration file left out.
     pub fn validate(&self) -> Result<()> {
+        // Before anything that touches the filesystem: this is a mistake in the configuration's
+        // shape, and the message should name it rather than whichever file check fires first.
+        if let Some(tls) = self.public_tls.as_ref()
+            && !tls.allow().is_empty()
+            && tls.client_ca().is_none()
+        {
+            bail!(
+                "the public surface names peers it answers but demands no client certificate: an \
+                 allow list with no identity to check is a list nothing can satisfy — set \
+                 `public.tls.client_ca`, or remove `public.tls.allow`"
+            );
+        }
+
         if self.public_http_addr.is_none() {
             bail!(
                 "the configuration defines no public listen address: set `public.http`, or pass \
@@ -1315,6 +1356,11 @@ produce: use `EdDSA` or `ES256`"
         self.development_mode
     }
 
+    /// Returns whether the public surface says which build it is.
+    pub fn disclose_build(&self) -> bool {
+        self.disclose_build
+    }
+
     /// Returns the peers the administrative surface answers, in the order they were listed.
     ///
     /// Empty is a real answer and not a missing one: it means nobody is on the list, which
@@ -1336,7 +1382,7 @@ produce: use `EdDSA` or `ES256`"
 
     /// Returns what every surface refuses to spend on any one client.
     pub fn limits(&self) -> Limits {
-        self.limits
+        self.limits.clone()
     }
 
     /// Returns the public URL this deployment is reached at, when one is configured.
@@ -1703,13 +1749,21 @@ produce: use `EdDSA` or `ES256`"
                 .with_context(|| format!("reading {SETTING_LOG_FORMAT}"))?;
         }
 
+        if let Some(value) = settings.get(SETTING_PUBLIC_DISCLOSE_BUILD) {
+            self.disclose_build = parse_bool(value)
+                .with_context(|| format!("reading {SETTING_PUBLIC_DISCLOSE_BUILD}"))?;
+        }
+
         self.public_tls = tls_of(
             &settings,
             SETTING_PUBLIC_TLS_CERT,
             SETTING_PUBLIC_TLS_KEY,
-            Some(SETTING_PUBLIC_TLS_CLIENT_CA),
-            Some(SETTING_PUBLIC_TLS_CRL),
-            SETTING_PUBLIC_TLS_MIN_VERSION,
+            TlsKeys {
+                client_ca: Some(SETTING_PUBLIC_TLS_CLIENT_CA),
+                crl: Some(SETTING_PUBLIC_TLS_CRL),
+                allow: Some(SETTING_PUBLIC_TLS_ALLOW),
+                min_version: SETTING_PUBLIC_TLS_MIN_VERSION,
+            },
             self.public_tls.take(),
         )?;
 
@@ -1717,9 +1771,14 @@ produce: use `EdDSA` or `ES256`"
             &settings,
             SETTING_ADMIN_TLS_CERT,
             SETTING_ADMIN_TLS_KEY,
-            Some(SETTING_ADMIN_TLS_CLIENT_CA),
-            Some(SETTING_ADMIN_TLS_CRL),
-            SETTING_ADMIN_TLS_MIN_VERSION,
+            TlsKeys {
+                client_ca: Some(SETTING_ADMIN_TLS_CLIENT_CA),
+                crl: Some(SETTING_ADMIN_TLS_CRL),
+                // The administrative surface's peers are `admin.allow`, kept beside its address
+                // rather than inside its TLS block.
+                allow: None,
+                min_version: SETTING_ADMIN_TLS_MIN_VERSION,
+            },
             self.admin_tls.take(),
         )?;
 
@@ -1727,9 +1786,14 @@ produce: use `EdDSA` or `ES256`"
             &settings,
             SETTING_TELEMETRY_TLS_CERT,
             SETTING_TELEMETRY_TLS_KEY,
-            None,
-            None,
-            SETTING_TELEMETRY_TLS_MIN_VERSION,
+            TlsKeys {
+                // Telemetry never demands a certificate, so there is neither an authority to name
+                // nor a list to check against.
+                client_ca: None,
+                crl: None,
+                allow: None,
+                min_version: SETTING_TELEMETRY_TLS_MIN_VERSION,
+            },
             self.telemetry_tls.take(),
         )?;
 
@@ -1744,45 +1808,98 @@ produce: use `EdDSA` or `ES256`"
         }
 
         if let Some(value) = settings.get(SETTING_LIMITS_CONNECTIONS) {
-            self.limits = self.limits.with_connections(
+            self.limits = self.limits.clone().with_connections(
                 parse_count(value)
                     .with_context(|| format!("reading {SETTING_LIMITS_CONNECTIONS}"))?,
             );
         }
 
+        if let Some(value) = settings.get(SETTING_LIMITS_CONNECTIONS_PER_PEER) {
+            // `parse_count` refuses zero because a pool of zero accepts nothing; here zero is the
+            // documented way to switch the bound off, so it is read as a plain number.
+            let count: u32 = value.trim().parse().map_err(|_| {
+                anyhow!("reading {SETTING_LIMITS_CONNECTIONS_PER_PEER}: `{value}` is not a count")
+            })?;
+
+            self.limits = self.limits.clone().with_connections_per_peer(count);
+        }
+
+        if let Some(value) = settings.get(SETTING_LIMITS_PEER_EXEMPT) {
+            let exempt = value
+                .split(',')
+                .map(str::trim)
+                .filter(|entry| !entry.is_empty())
+                .map(|entry| {
+                    entry
+                        .parse::<PeerBlock>()
+                        .map_err(|error| anyhow!("reading {SETTING_LIMITS_PEER_EXEMPT}: {error}"))
+                })
+                .collect::<Result<Vec<_>>>()?;
+
+            self.limits = self.limits.clone().with_peer_exempt(exempt);
+        }
+
+        if let Some(value) = settings.get(SETTING_LIMITS_CONNECTION_LIFETIME) {
+            let lifetime = parse_duration_allow_zero(value)
+                .with_context(|| format!("reading {SETTING_LIMITS_CONNECTION_LIFETIME}"))?;
+
+            self.limits = self
+                .limits
+                .clone()
+                .with_connection_lifetime((!lifetime.is_zero()).then_some(lifetime));
+        }
+
+        if let Some(value) = settings.get(SETTING_LIMITS_WRITE_STALL_TIMEOUT) {
+            self.limits =
+                self.limits
+                    .clone()
+                    .with_write_stall_timeout(parse_duration(value).with_context(|| {
+                        format!("reading {SETTING_LIMITS_WRITE_STALL_TIMEOUT}")
+                    })?);
+        }
+
         if let Some(value) = settings.get(SETTING_LIMITS_CONCURRENT_REQUESTS) {
             self.limits =
                 self.limits
+                    .clone()
                     .with_concurrent_requests(parse_count(value).with_context(|| {
                         format!("reading {SETTING_LIMITS_CONCURRENT_REQUESTS}")
                     })?);
         }
 
         if let Some(value) = settings.get(SETTING_LIMITS_REQUEST_TIMEOUT) {
-            self.limits = self.limits.with_request_timeout(
+            self.limits = self.limits.clone().with_request_timeout(
                 parse_duration(value)
                     .with_context(|| format!("reading {SETTING_LIMITS_REQUEST_TIMEOUT}"))?,
             );
         }
 
         if let Some(value) = settings.get(SETTING_LIMITS_HANDSHAKE_TIMEOUT) {
-            self.limits = self.limits.with_handshake_timeout(
+            self.limits = self.limits.clone().with_handshake_timeout(
                 parse_duration(value)
                     .with_context(|| format!("reading {SETTING_LIMITS_HANDSHAKE_TIMEOUT}"))?,
             );
         }
 
         if let Some(value) = settings.get(SETTING_LIMITS_HEADER_TIMEOUT) {
-            self.limits = self.limits.with_header_timeout(
+            self.limits = self.limits.clone().with_header_timeout(
                 parse_duration(value)
                     .with_context(|| format!("reading {SETTING_LIMITS_HEADER_TIMEOUT}"))?,
             );
         }
 
         if let Some(value) = settings.get(SETTING_LIMITS_BODY_BYTES) {
-            self.limits = self.limits.with_body_bytes(
+            self.limits = self.limits.clone().with_body_bytes(
                 parse_bytes(value)
                     .with_context(|| format!("reading {SETTING_LIMITS_BODY_BYTES}"))?
+                    as usize,
+            );
+        }
+
+        if let Some(value) = settings.get(SETTING_LIMITS_HEADER_BYTES) {
+            self.limits = self.limits.clone().with_header_bytes(
+                parse_bytes(value)
+                    .with_context(|| format!("reading {SETTING_LIMITS_HEADER_BYTES}"))?
                     as usize,
             );
         }
@@ -1883,15 +2000,28 @@ produce: use `EdDSA` or `ES256`"
 /// A certificate without its key — or a key without its certificate — is refused rather than ignored:
 /// it is always a half-finished configuration change, and serving in the clear because one line was
 /// missing is the failure mode this check exists to prevent.
+/// The setting names one surface's TLS block reads, beyond the certificate and key every one has.
+struct TlsKeys<'a> {
+    client_ca: Option<&'a str>,
+    crl: Option<&'a str>,
+    allow: Option<&'a str>,
+    min_version: &'a str,
+}
+
 fn tls_of(
     settings: &BTreeMap<String, String>,
     cert_key: &str,
     key_key: &str,
-    client_ca_key: Option<&str>,
-    crl_key: Option<&str>,
-    min_version_key: &str,
+    keys: TlsKeys<'_>,
     previous: Option<TlsSettings>,
 ) -> Result<Option<TlsSettings>> {
+    let TlsKeys {
+        client_ca: client_ca_key,
+        crl: crl_key,
+        allow: allow_key,
+        min_version: min_version_key,
+    } = keys;
+
     let certificate = settings.get(cert_key);
     let key = settings.get(key_key);
 
@@ -1912,6 +2042,12 @@ fn tls_of(
         && let Some(crl) = settings.get(crl_key)
     {
         tls = tls.with_crl(crl);
+    }
+
+    if let Some(allow_key) = allow_key
+        && let Some(value) = settings.get(allow_key)
+    {
+        tls = tls.with_allow(parse_allowed(value).with_context(|| format!("reading {allow_key}"))?);
     }
 
     if let Some(value) = settings.get(min_version_key) {

@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! App class: the object a binary composes its edition of the product out of.
 //!
 //! The app owns nothing it could have resolved itself. Identity, build metadata, server host,

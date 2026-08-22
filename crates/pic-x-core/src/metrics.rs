@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! What the process counts about itself, and who is allowed to count it.
 //!
 //! Two hand-written gauges answer "is it up". They do not answer "is it slow", "is it refusing

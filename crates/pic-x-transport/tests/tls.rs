@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! What a listener does with certificates, driven from outside the crate.
 //!
 //! Here rather than beside the code because the interesting cases need a certificate authority, a

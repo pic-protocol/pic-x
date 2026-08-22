@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! A key ring on the local filesystem.
 //!
 //! Ed25519 signing keys, one PEM file each, described by a `ring.json` beside them. It is the

@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! Deciding whether the client that got through the handshake may administer this deployment.
 //!
 //! # Why the handshake is not the decision

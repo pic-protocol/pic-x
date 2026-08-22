@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! How an application composes, and what each command does with what it was composed from.
 //!
 //! Here rather than beside the code because these need a configuration file on disk, a fake service,

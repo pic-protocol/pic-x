@@ -1,3 +1,6 @@
+# Copyright (c) 2022 Nitro Agility S.r.l.
+# SPDX-License-Identifier: Apache-2.0
+
 [package]
 name = "pic-x-std"
 description = "The default implementations of the PIC-X contracts: storage, secrets, pseudonyms, audit, signing keys and provisioning."

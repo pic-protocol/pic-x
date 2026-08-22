@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! The verification keys of the identity providers a realm exchanges tokens from.
 //!
 //! An Exchange Profile names its identity provider by `issuer` and nothing else, so the key set is

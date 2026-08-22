@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! Implementations of [`pic_x_core::AuditSink`].
 //!
 //! Three of them, for three different answers to "where does this deployment keep its audit trail".

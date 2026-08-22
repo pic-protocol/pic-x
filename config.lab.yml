@@ -1,3 +1,6 @@
+# Copyright (c) 2022 Nitro Agility S.r.l.
+# SPDX-License-Identifier: Apache-2.0
+
 # PIC-X — the local Docker Compose lab.
 #
 #   task lab-up              builds the stack and starts it against this file

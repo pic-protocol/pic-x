@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! Every contract the PIC-X crates agree on, and nothing else.
 //!
 //! This crate holds traits and the types they exchange: layered configuration, the configuration-file
@@ -42,7 +45,7 @@ pub use error::{AuditError, KeyError, SecretError, ServiceError, StorageError};
 pub use future::{BoxFuture, ready};
 pub use identity::ProductIdentity;
 pub use keys::{Jwk, JwkSet, KEY_SET_MAX_AGE, KeyId, KeyManager, KeyState, Maintenance, Signature};
-pub use limits::Limits;
+pub use limits::{Limits, PeerBlock};
 pub use logging::{LogFormat, LogLevel};
 pub use metrics::{Kind, Label, Metric, Metrics, Reading, Recorder, Sample};
 pub use peer::{AllowedPeer, PeerIdentity};

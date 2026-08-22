@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! What an audit subject is, and what may be done with it.
 //!
 //! Here rather than beside the code because the taxonomy is the part worth reading as a whole: five

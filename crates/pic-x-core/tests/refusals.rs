@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! The configurations the server refuses to start with.
 //!
 //! Every case here is a deployment that would have worked — served requests, answered probes, looked

@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! What can go wrong, said in a way a caller can act on.
 //!
 //! Every contract in this crate reports a typed error rather than an opaque one, and the reason is

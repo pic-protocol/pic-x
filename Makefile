@@ -1,3 +1,6 @@
+# Copyright (c) 2022 Nitro Agility S.r.l.
+# SPDX-License-Identifier: Apache-2.0
+
 # PIC-X — Makefile
 #
 # The same entry points as Taskfile.yml, for people who would rather type `make`. Both files drive

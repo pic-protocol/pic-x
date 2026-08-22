@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! What the telemetry surface answers a probe and a scrape.
 //!
 //! Here rather than beside the code because liveness and readiness are two questions with four

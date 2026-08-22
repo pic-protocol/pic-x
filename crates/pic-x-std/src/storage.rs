@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! Implementations of [`pic_x_core::Storage`].
 //!
 //! [`MemoryStorage`] is one implementation of the contract, not the implementation: a build that

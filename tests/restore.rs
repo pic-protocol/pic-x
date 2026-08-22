@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! Restoring the volume from a copy of it, against the real binary.
 //!
 //! A backup nobody has restored is not a backup, and a seal nobody has checked after a restore is

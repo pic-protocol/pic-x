@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! The PIC-X binary: the composition root of this build.
 //!
 //! This file is the only place in the workspace that names a concrete implementation. Every crate it
@@ -405,8 +408,22 @@ fn secret_store_for(config: &Config) -> anyhow::Result<Option<Box<dyn SecretStor
         SecretProvider::Directory => Some(Box::new(DirectorySecretStore::new(
             config.secrets_directory(),
         ))),
-        SecretProvider::Environment => Some(Box::new(EnvironmentSecretStore::new(
-            config.secrets_env_prefix(),
-        ))),
+        SecretProvider::Environment => {
+            if !config.development_mode() {
+                // Allowed — the deployment decides — and said out loud: a process's environment is
+                // readable through /proc by anything sharing the user, and inherited by every child.
+                // A production posture normally mounts secrets as files or brings a real store.
+                tracing::warn!(
+                    event.name = "secrets.environment_outside_development",
+                    component = "server",
+                    "secrets are resolved from the environment and development_mode is off: \
+                     the environment is readable via /proc and inherited by child processes"
+                );
+            }
+
+            Some(Box::new(EnvironmentSecretStore::new(
+                config.secrets_env_prefix(),
+            )))
+        }
     })
 }

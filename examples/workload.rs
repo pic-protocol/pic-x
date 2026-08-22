@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! The workload side of a Profile 0.2 advancement, for the local lab walkthrough.
 //!
 //! A workload does three things PIC-X cannot do for it: it holds a key, it obtains a Proof of

@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! The documents this deployment publishes, and what serving them costs it.
 //!
 //! Two surfaces, one file, because they answer the same shape of question at two scopes:
@@ -289,7 +292,8 @@ pub(crate) async fn root(State(server): State<Server>) -> impl IntoResponse {
         &server.product,
         &server.logo,
         &server.product,
-        &format!("v{}", server.version),
+        // Empty when the deployment keeps its build to itself (`public.disclose_build: false`).
+        &version_label(&server.version),
         &server.tagline,
         &links,
     )
@@ -325,13 +329,26 @@ pub(crate) async fn realm_root(State(realm): State<RealmLanding>) -> impl IntoRe
         &format!("{} \u{2014} {}", realm.product, realm.name),
         &realm.logo,
         &realm.product,
-        &format!(
-            "realm \u{201c}{}\u{201d} \u{00b7} v{}",
-            realm.name, realm.version
-        ),
+        &if realm.version.is_empty() {
+            format!("realm \u{201c}{}\u{201d}", realm.name)
+        } else {
+            format!(
+                "realm \u{201c}{}\u{201d} \u{00b7} v{}",
+                realm.name, realm.version
+            )
+        },
         &realm.tagline,
         &links,
     )
+}
+
+/// Renders a version for a human landing, or nothing when the deployment does not disclose one.
+fn version_label(version: &str) -> String {
+    if version.is_empty() {
+        String::new()
+    } else {
+        format!("v{version}")
+    }
 }
 
 /// Says what this deployment is and which issuers it hosts.

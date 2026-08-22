@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright (c) 2022 Nitro Agility S.r.l.
+# SPDX-License-Identifier: Apache-2.0
+
 """Run the local PIC-X trust lab walkthrough."""
 
 from __future__ import annotations

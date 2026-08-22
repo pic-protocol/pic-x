@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! What the surface answers: liveness, readiness, and the exposition a scraper reads.
 //!
 //! Free functions rather than methods, because a build that assembles its own HTTP surface should be

@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! Two realms, one server, against the real binary.
 //!
 //! The whole multi-tenant claim in one run: a deployment hosts two issuers; each serves its own

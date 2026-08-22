@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! The configuration files that ship with this repository, checked against the binary.
 //!
 //! A configuration file is documentation that is also executable, which means it can be wrong in two

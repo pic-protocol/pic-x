@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! The surface itself: one [`Service`] that binds, serves the probes, and stops with everything else.
 
 use std::sync::Mutex;

@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! What a realm is at runtime, and the registry that holds them.
 //!
 //! A realm is one issuer: its own signing keys, its own audit trail, its own pseudonymisation. The

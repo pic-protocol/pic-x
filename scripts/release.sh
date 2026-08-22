@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) 2022 Nitro Agility S.r.l.
+# SPDX-License-Identifier: Apache-2.0
+
 #
 # Cuts a release: reads the latest `v<major>.<minor>.<patch>` tag, bumps the patch, and — after a
 # `y` at the prompt — creates the annotated tag, pushes it to origin, and publishes the GitHub

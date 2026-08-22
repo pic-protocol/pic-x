@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! Rendering a value unreadable when it has to appear at all.
 //!
 //! This is the second line. The first is [`Secret`](crate::secrets::Secret), which has no `Display`

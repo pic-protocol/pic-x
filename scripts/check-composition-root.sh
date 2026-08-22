@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) 2022 Nitro Agility S.r.l.
+# SPDX-License-Identifier: Apache-2.0
+
 #
 # Fails when a library crate constructs one of the swappable collaborators.
 #

@@ -1,3 +1,6 @@
+# Copyright (c) 2022 Nitro Agility S.r.l.
+# SPDX-License-Identifier: Apache-2.0
+
 [package]
 name = "pic-x-core"
 description = "The contracts every PIC-X crate agrees on: storage, secrets, signing keys, audit, services, and the server host."

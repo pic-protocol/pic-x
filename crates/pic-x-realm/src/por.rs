@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! Profile 0.2 Proof-of-Relationship validation: issuer-signed SD-JWT presentations.
 //!
 //! The protocol crate leaves this deployment-specific and takes it through the [`PorValidator`]

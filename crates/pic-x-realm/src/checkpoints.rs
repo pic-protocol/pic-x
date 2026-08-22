@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! Which PCA checkpoints a realm accepts as the basis for advancement.
 //!
 //! Settlement asks one question — *are these exact signed PIC PCA COSE bytes a checkpoint I

@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! The server host PIC-X starts when a binary does not supply one of its own.
 //!
 //! The host says what it is doing through the log, not through the command's output stream: a server

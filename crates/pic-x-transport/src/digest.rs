@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! The one implementation of "the fingerprint of these bytes".
 //!
 //! It is its own module because three things need it — a certificate's fingerprint, the value a

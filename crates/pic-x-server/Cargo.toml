@@ -1,3 +1,6 @@
+# Copyright (c) 2022 Nitro Agility S.r.l.
+# SPDX-License-Identifier: Apache-2.0
+
 [package]
 name = "pic-x-server"
 description = "The PIC-X server host, its service registry, and the command line that drives them."

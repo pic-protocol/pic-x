@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! Taking a client certificate back before it expires.
 //!
 //! A revocation is something a deployment finds out it needs at the worst possible moment, so it is
@@ -110,6 +113,25 @@ impl Authority {
                     invalidity_date: None,
                 })
                 .collect(),
+            key_identifier_method: rcgen::KeyIdMethod::Sha256,
+        };
+
+        let list = params
+            .signed_by(&self.issuer())
+            .expect("the authority signs the list");
+
+        self.write(stem, &list.pem().expect("the list writes as PEM"))
+    }
+
+    /// Publishes a list whose `next_update` has already passed.
+    fn revoke_expired(&self, stem: &str) -> PathBuf {
+        let params = rcgen::CertificateRevocationListParams {
+            this_update: rcgen::date_time_ymd(2020, 1, 1),
+            // Long gone. An expired list is revocation data nobody is maintaining.
+            next_update: rcgen::date_time_ymd(2021, 1, 1),
+            crl_number: rcgen::SerialNumber::from(1_u64),
+            issuing_distribution_point: None,
+            revoked_certs: Vec::new(),
             key_identifier_method: rcgen::KeyIdMethod::Sha256,
         };
 
@@ -347,6 +369,121 @@ async fn test_a_surface_without_mutual_tls_produces_no_identity_at_all() {
         .expect("an anonymous client is served");
 
     assert!(said.contains("who=nobody"), "{said}");
+
+    surface
+        .stop(Duration::from_secs(5))
+        .await
+        .expect("the listener stops");
+}
+
+/// An expired list refuses everybody, and that is the deliberate reading: a list past its
+/// `nextUpdate` is revocation data nobody is maintaining, and the alternative — trusting it forever —
+/// is a revoked client that stays admitted for months. The CRL expiry gauge exists so this moment is
+/// predicted by an alert instead of discovered by an outage.
+#[tokio::test]
+async fn test_an_expired_revocation_list_refuses_rather_than_trusts() {
+    let authority = Authority::new("expired-list");
+    let authority_pem = authority.authority_pem();
+    let (server_cert, server_key) = authority.issue("server", "localhost", 1);
+    let (client_cert, client_key) = authority.issue("client", "an-untouched-client", 7);
+    let crl = authority.revoke_expired("expired.crl");
+
+    let settings = TlsSettings::new(&server_cert, &server_key)
+        .with_client_ca(&authority_pem)
+        .with_crl(&crl);
+    let surface = Surface::listener("test", "127.0.0.1:0", router())
+        .tls(Some(&settings))
+        .start()
+        .await
+        .expect("the listener binds");
+
+    let outcome = speak_tls(
+        surface.address(),
+        client(&authority_pem, &client_cert, &client_key),
+    )
+    .await;
+
+    assert!(
+        outcome.is_err(),
+        "a client was admitted against an expired revocation list: {outcome:?}"
+    );
+
+    surface
+        .stop(Duration::from_secs(5))
+        .await
+        .expect("the listener stops");
+}
+
+/// The handshake settles who a client *is*; the allow list settles whether this surface is *for*
+/// them. Both clients below carry genuine certificates from the same authority — and only the named
+/// one is served, because an authority signs every client it was ever asked to.
+#[tokio::test]
+async fn test_an_authenticated_peer_off_the_allow_list_is_refused() {
+    let authority = Authority::new("allow-list");
+    let authority_pem = authority.authority_pem();
+    let (server_cert, server_key) = authority.issue("server", "localhost", 1);
+    let (named_cert, named_key) = authority.issue("named", "the-billing-service", 21);
+    let (other_cert, other_key) = authority.issue("other", "some-other-workload", 22);
+
+    let settings = TlsSettings::new(&server_cert, &server_key)
+        .with_client_ca(&authority_pem)
+        .with_allow(vec![
+            "cn:the-billing-service"
+                .parse()
+                .expect("a valid allow entry"),
+        ]);
+    let surface = Surface::listener("test", "127.0.0.1:0", router())
+        .tls(Some(&settings))
+        .start()
+        .await
+        .expect("the listener binds");
+    let address = surface.address();
+
+    let served = speak_tls(address, client(&authority_pem, &named_cert, &named_key))
+        .await
+        .expect("the named peer is served");
+    assert!(served.contains("served"), "{served}");
+
+    // Authenticated perfectly well — that is how the refusal can name it — and turned away: 403,
+    // not a handshake failure, so the operator on the other end fixes the list, not their cert.
+    let refused = speak_tls(address, client(&authority_pem, &other_cert, &other_key))
+        .await
+        .expect("the connection itself completes: the refusal is an answer, not a hangup");
+    assert!(
+        refused.contains("403") && !refused.contains("served"),
+        "an authenticated peer off the list was served: {refused}"
+    );
+
+    surface
+        .stop(Duration::from_secs(5))
+        .await
+        .expect("the listener stops");
+}
+
+/// No list means the handshake is the whole decision — the behaviour every deployment had before
+/// allow lists existed, and the correct one for a data plane that answers any workload the mesh
+/// signed.
+#[tokio::test]
+async fn test_without_a_list_every_authenticated_peer_is_served() {
+    let authority = Authority::new("no-list");
+    let authority_pem = authority.authority_pem();
+    let (server_cert, server_key) = authority.issue("server", "localhost", 1);
+    let (client_cert, client_key) = authority.issue("client", "any-workload", 31);
+
+    let settings = TlsSettings::new(&server_cert, &server_key).with_client_ca(&authority_pem);
+    let surface = Surface::listener("test", "127.0.0.1:0", router())
+        .tls(Some(&settings))
+        .start()
+        .await
+        .expect("the listener binds");
+
+    let served = speak_tls(
+        surface.address(),
+        client(&authority_pem, &client_cert, &client_key),
+    )
+    .await
+    .expect("an authenticated peer is served");
+    assert!(served.contains("served"), "{served}");
 
     surface
         .stop(Duration::from_secs(5))

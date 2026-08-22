@@ -1,3 +1,6 @@
+# Copyright (c) 2022 Nitro Agility S.r.l.
+# SPDX-License-Identifier: Apache-2.0
+
 # PIC-X — development, in the clear.
 #
 #   task run-as-local   starts the server against this file

@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! What every surface counts about itself.
 //!
 //! Declared and recorded here rather than by each surface, for the same reason the limits are applied
@@ -82,6 +85,19 @@ pub const CERTIFICATE_EXPIRY: Metric = Metric::gauge(
     "When the certificate a surface presents stops being valid, in seconds since the epoch.",
 );
 
+/// When the revocation list a surface checks clients against stops being usable.
+///
+/// Expiry is enforced — an expired list refuses every mutual-TLS handshake — so this is the number
+/// that turns that moment from a discovery into a prediction:
+///
+/// ```promql
+/// (picx_tls_crl_expiry_timestamp_seconds - time()) / 86400 < 7
+/// ```
+pub const CRL_EXPIRY: Metric = Metric::gauge(
+    "picx_tls_crl_expiry_timestamp_seconds",
+    "When the revocation list stops being usable, in seconds since the epoch.",
+);
+
 /// How close to expiry a certificate has to be before starting is worth a warning.
 ///
 /// Thirty days is roughly what a renewal process needs to have gone wrong for: a 90-day certificate
@@ -127,6 +143,8 @@ pub fn record_certificate_expiry(surface: &'static str, metrics: &Metrics, setti
 
     metrics.set(&CERTIFICATE_EXPIRY, &[("surface", surface)], expiry as f64);
 
+    record_crl_expiry(surface, metrics, settings);
+
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|since| since.as_secs() as i64)
@@ -157,6 +175,47 @@ pub fn record_certificate_expiry(surface: &'static str, metrics: &Metrics, setti
 /// The leaf, which is the first: it is the one this surface presents and therefore the one that ends
 /// the handshake when it expires. An authority further up the chain outliving it is the normal case
 /// and not the one worth watching.
+/// Records when the revocation list stops being usable, when this surface checks one.
+///
+/// Expiry is enforced at the handshake, so this number is the difference between "the renewal
+/// process died and we found out when every client was refused" and "the renewal process died and
+/// an alert said so a week early".
+fn record_crl_expiry(surface: &'static str, metrics: &Metrics, settings: &TlsSettings) {
+    let Some(path) = settings.crl() else {
+        return;
+    };
+    let expiry = crate::material::load_revocations(path)
+        .ok()
+        .and_then(|lists| {
+            lists
+                .iter()
+                .filter_map(|der| {
+                    let (_, parsed) =
+                        x509_parser::revocation_list::CertificateRevocationList::from_der(
+                            der.as_ref(),
+                        )
+                        .ok()?;
+
+                    parsed.next_update().map(|at| at.timestamp())
+                })
+                // Several lists in one bundle: the first to expire is the one that starts refusing.
+                .min()
+        });
+    let Some(expiry) = expiry else {
+        tracing::warn!(
+            event.name = "transport.crl_unreadable",
+            component = "transport",
+            surface = surface,
+            path = %path.display(),
+            "the revocation list has no next-update this build could read: its expiry cannot be watched"
+        );
+
+        return;
+    };
+
+    metrics.set(&CRL_EXPIRY, &[("surface", surface)], expiry as f64);
+}
+
 fn expiry_of(chain: &[CertificateDer<'_>]) -> Option<i64> {
     let leaf = chain.first()?;
     let (_, parsed) = X509Certificate::from_der(leaf.as_ref()).ok()?;

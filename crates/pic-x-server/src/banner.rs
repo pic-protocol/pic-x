@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! Banner class: banner text assembled from a product identity and the effective config.
 
 use pic_x_core::{Config, ProductIdentity};

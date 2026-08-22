@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! Benchmarks one full lifecycle of the default server host against in-process collaborators.
 
 use std::hint::black_box;

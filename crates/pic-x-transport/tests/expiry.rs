@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! When the certificate a surface presents stops being valid, as a number somebody can alert on.
 //!
 //! # Why this is a test and not an assertion about a getter

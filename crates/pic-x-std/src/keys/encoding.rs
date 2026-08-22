@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! The two base64 alphabets this crate has to write, and nothing else.
 //!
 //! A JWK carries the key in base64url without padding, because a key ends up in URLs and in JSON

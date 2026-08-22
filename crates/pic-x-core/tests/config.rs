@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! How the configuration layers resolve, driven from outside the crate.
 //!
 //! Here rather than beside the code because precedence is the kind of thing that needs a table of
@@ -1136,4 +1139,126 @@ fn test_listed_defaults_to_closed_and_is_opt_in() {
 
     assert!(!config.realms()[0].listed());
     assert!(config.realms()[1].listed());
+}
+
+#[test]
+fn test_the_peer_bounds_are_read_from_settings() {
+    let bounded = config(
+        &[
+            (SETTING_LIMITS_CONNECTIONS_PER_PEER, "8"),
+            (SETTING_LIMITS_PEER_EXEMPT, "10.0.0.0/8, ::1"),
+            (SETTING_LIMITS_CONNECTION_LIFETIME, "1h"),
+            (SETTING_LIMITS_WRITE_STALL_TIMEOUT, "15s"),
+        ],
+        &[],
+        &[],
+    );
+    let limits = bounded.limits();
+
+    assert_eq!(limits.connections_per_peer(), 8);
+    assert!(limits.is_peer_exempt("10.9.8.7".parse().expect("an address")));
+    assert!(limits.is_peer_exempt("::1".parse().expect("an address")));
+    assert!(!limits.is_peer_exempt("203.0.113.7".parse().expect("an address")));
+    assert_eq!(
+        limits.connection_lifetime(),
+        Some(std::time::Duration::from_secs(3600))
+    );
+    assert_eq!(
+        limits.write_stall_timeout(),
+        std::time::Duration::from_secs(15)
+    );
+}
+
+#[test]
+fn test_zero_switches_the_per_peer_bound_and_the_lifetime_off() {
+    // Zero is the documented "off" for both: a per-peer bound of zero admits everything, and a
+    // lifetime of zero is no lifetime — unlike the pool limit, where zero would accept nothing and
+    // is refused.
+    let off = config(
+        &[
+            (SETTING_LIMITS_CONNECTIONS_PER_PEER, "0"),
+            (SETTING_LIMITS_CONNECTION_LIFETIME, "0s"),
+        ],
+        &[],
+        &[],
+    );
+
+    assert_eq!(off.limits().connections_per_peer(), 0);
+    assert_eq!(off.limits().connection_lifetime(), None);
+}
+
+#[test]
+fn test_an_exempt_entry_that_is_not_an_address_is_refused() {
+    let refused = Config::from_layers(
+        BuildSettings::new("1.2.3", "2022", "Testing Co."),
+        Vec::<String>::new(),
+        Layers {
+            file: vec![(
+                SETTING_LIMITS_PEER_EXEMPT.to_owned(),
+                "10.0.0.0/8, not-an-address".to_owned(),
+            )],
+            environment: Vec::new(),
+            command_line: Vec::new(),
+        },
+    );
+
+    assert!(refused.is_err(), "an unreadable exemption was accepted");
+}
+
+/// A list with no identity to check it against is a list nothing can satisfy — a misconfiguration,
+/// refused at startup rather than discovered as every client getting 403.
+#[test]
+fn test_an_allow_list_without_a_client_authority_is_refused() {
+    let config = config(
+        &[
+            (SETTING_PUBLIC_TLS_CERT, "tls/server.pem"),
+            (SETTING_PUBLIC_TLS_KEY, "tls/server.key"),
+            (SETTING_PUBLIC_TLS_ALLOW, "cn:the-billing-service"),
+            (SETTING_PUBLIC_HTTP_ADDR, "127.0.0.1:7556"),
+        ],
+        &[],
+        &[],
+    );
+
+    let refused = config.validate();
+
+    assert!(
+        refused.is_err(),
+        "an allow list with no client_ca was accepted"
+    );
+    assert!(
+        format!("{:#}", refused.expect_err("refused")).contains("client certificate"),
+        "the refusal does not say what is missing"
+    );
+}
+
+#[test]
+fn test_the_allow_list_reads_every_entry_form() {
+    let config = config(
+        &[
+            (SETTING_PUBLIC_TLS_CERT, "tls/server.pem"),
+            (SETTING_PUBLIC_TLS_KEY, "tls/server.key"),
+            (SETTING_PUBLIC_TLS_CLIENT_CA, "tls/clients.pem"),
+            (
+                SETTING_PUBLIC_TLS_ALLOW,
+                "cn:the-billing-service\ndn:CN=batch,O=Example\nsha256:0000000000000000000000000000000000000000000000000000000000000000",
+            ),
+        ],
+        &[],
+        &[],
+    );
+    let tls = config.public_tls().expect("the public surface has TLS");
+
+    assert_eq!(tls.allow().len(), 3);
+}
+
+#[test]
+fn test_build_disclosure_is_on_unless_switched_off() {
+    let default = config(&[], &[], &[]);
+
+    assert!(default.disclose_build());
+
+    let hidden = config(&[(SETTING_PUBLIC_DISCLOSE_BUILD, "false")], &[], &[]);
+
+    assert!(!hidden.disclose_build());
 }

@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! What a listener refuses, proved against a running one.
 //!
 //! Each of these is a way to take a server down without sending it a single valid request, so each is
@@ -410,4 +413,215 @@ async fn test_a_name_a_client_could_forge_a_log_line_with_is_replaced() {
         .stop(Duration::from_secs(5))
         .await
         .expect("the listener stops");
+}
+
+/// One address may not hold the pool. The pool has room for ten; a single address gets two, and its
+/// third socket is refused while the pool's numbers still read as healthy — which is exactly the
+/// attack the bound exists for.
+#[tokio::test]
+async fn test_one_address_cannot_hold_the_pool() {
+    let surface = Surface::listener("test", "127.0.0.1:0", router())
+        .limits(
+            Limits::new()
+                .with_connections(10)
+                .with_connections_per_peer(2),
+        )
+        .start()
+        .await
+        .expect("the surface starts");
+    let address = surface.address();
+
+    // Two held open — everything this address is entitled to. Nothing is sent on either, because an
+    // attacker would not bother.
+    let _first = TcpStream::connect(address).await.expect("the first socket");
+    let _second = TcpStream::connect(address)
+        .await
+        .expect("the second socket");
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // The third is over this address's share. The refusal arrives as an immediate close: connect
+    // itself may succeed (the backlog accepts), so what proves the refusal is the read.
+    let mut third = TcpStream::connect(address).await.expect("the socket opens");
+    let mut buffer = Vec::new();
+    let outcome =
+        tokio::time::timeout(Duration::from_secs(5), third.read_to_end(&mut buffer)).await;
+
+    assert!(
+        matches!(outcome, Ok(Ok(0)) | Ok(Err(_))),
+        "the third connection from one address was served: {outcome:?}"
+    );
+
+    surface
+        .stop(Duration::from_secs(1))
+        .await
+        .expect("the surface stops");
+}
+
+/// An exempt address — a load balancer, a health checker — skips the per-address bound. It still
+/// occupies pool slots: exemption means "not suspicious", never "unlimited".
+#[tokio::test]
+async fn test_an_exempt_address_is_not_bounded_per_peer() {
+    let surface = Surface::listener("test", "127.0.0.1:0", router())
+        .limits(
+            Limits::new()
+                .with_connections(10)
+                .with_connections_per_peer(1)
+                .with_peer_exempt(vec!["127.0.0.0/8".parse().expect("a valid block")]),
+        )
+        .start()
+        .await
+        .expect("the surface starts");
+    let address = surface.address();
+
+    let _first = TcpStream::connect(address).await.expect("the first socket");
+    let _second = TcpStream::connect(address)
+        .await
+        .expect("the second socket");
+
+    // Well past a per-peer bound of one, and still served.
+    let answer = exchange(
+        address,
+        b"GET / HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n",
+    )
+    .await;
+
+    assert_eq!(status(&answer), "HTTP/1.1 200 OK", "{answer}");
+
+    surface
+        .stop(Duration::from_secs(1))
+        .await
+        .expect("the surface stops");
+}
+
+/// A share released by one connection ending is a share the same address can use again: the bound is
+/// on what is held, not a strike count.
+#[tokio::test]
+async fn test_a_released_peer_share_is_usable_again() {
+    let surface = Surface::listener("test", "127.0.0.1:0", router())
+        .limits(
+            Limits::new()
+                .with_connections(10)
+                .with_connections_per_peer(1),
+        )
+        .start()
+        .await
+        .expect("the surface starts");
+    let address = surface.address();
+
+    // The share is taken and released by a completed exchange...
+    let first = exchange(
+        address,
+        b"GET / HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n",
+    )
+    .await;
+
+    assert_eq!(status(&first), "HTTP/1.1 200 OK", "{first}");
+
+    // ...so the next connection from the same address gets it.
+    let second = exchange(
+        address,
+        b"GET / HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n",
+    )
+    .await;
+
+    assert_eq!(status(&second), "HTTP/1.1 200 OK", "{second}");
+
+    surface
+        .stop(Duration::from_secs(1))
+        .await
+        .expect("the surface stops");
+}
+
+/// A connection past its configured lifetime is ended, however politely it has behaved. The bound is
+/// what lets a deployment rotate connections instead of watching one live for a week.
+#[tokio::test]
+async fn test_a_connection_past_its_lifetime_is_ended() {
+    let surface = Surface::listener("test", "127.0.0.1:0", router())
+        .limits(Limits::new().with_connection_lifetime(Some(Duration::from_millis(300))))
+        .start()
+        .await
+        .expect("the surface starts");
+    let address = surface.address();
+
+    let mut stream = TcpStream::connect(address).await.expect("the socket opens");
+
+    // Young: served.
+    stream
+        .write_all(b"GET / HTTP/1.1\r\nHost: test\r\n\r\n")
+        .await
+        .expect("the first request is sent");
+
+    let mut buffer = [0_u8; 512];
+    let read = tokio::time::timeout(Duration::from_secs(5), stream.read(&mut buffer))
+        .await
+        .expect("an answer arrives in time")
+        .expect("the answer is readable");
+
+    assert!(
+        String::from_utf8_lossy(&buffer[..read]).starts_with("HTTP/1.1 200 OK"),
+        "the first request on a young connection was not served"
+    );
+
+    // Old: the next request on the same connection finds it ended.
+    tokio::time::sleep(Duration::from_millis(400)).await;
+
+    stream
+        .write_all(b"GET / HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n")
+        .await
+        .ok();
+
+    let mut rest = Vec::new();
+    let outcome = tokio::time::timeout(Duration::from_secs(5), stream.read_to_end(&mut rest)).await;
+    let answered = String::from_utf8_lossy(&rest);
+
+    assert!(
+        matches!(outcome, Ok(Ok(_)) | Ok(Err(_))) && !answered.contains("200 OK"),
+        "a request past the connection's lifetime was served: {answered}"
+    );
+
+    surface
+        .stop(Duration::from_secs(1))
+        .await
+        .expect("the surface stops");
+}
+
+/// A head larger than the bound is refused, however fast it arrives. The header *timeout* answers
+/// the slow sender; this answers the fast one, who would otherwise choose how much memory one
+/// connection's head may buffer.
+#[tokio::test]
+async fn test_a_request_head_over_the_byte_bound_is_refused() {
+    let surface = Surface::listener("test", "127.0.0.1:0", router())
+        .limits(Limits::new().with_header_bytes(16 * 1024))
+        .start()
+        .await
+        .expect("the surface starts");
+
+    // A single 64KiB header, sent in one piece.
+    let stuffing = "x".repeat(64 * 1024);
+    let request = format!(
+        "GET / HTTP/1.1\r\nHost: test\r\nX-Stuffing: {stuffing}\r\nConnection: close\r\n\r\n"
+    );
+    let answer = exchange(surface.address(), request.as_bytes()).await;
+
+    assert!(
+        !answer.contains("200 OK"),
+        "an oversized head was served: {}",
+        status(&answer)
+    );
+
+    // And a normal head on a fresh connection is still served: the bound refused a request, not
+    // the surface.
+    let normal = exchange(
+        surface.address(),
+        b"GET / HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n",
+    )
+    .await;
+
+    assert_eq!(status(&normal), "HTTP/1.1 200 OK", "{normal}");
+
+    surface
+        .stop(Duration::from_secs(1))
+        .await
+        .expect("the surface stops");
 }

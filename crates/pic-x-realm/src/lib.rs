@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! The public PIC-X surface: what a client is meant to find on its own.
 //!
 //! This is the only surface that faces the world, which is what makes it the one with the least on

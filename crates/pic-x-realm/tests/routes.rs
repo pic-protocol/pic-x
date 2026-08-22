@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! What the public surface answers, and what a build that extends it can change.
 //!
 //! Two scopes are exercised here because the surface has two: the **server** (the control plane —

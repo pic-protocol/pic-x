@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! What the administrative surface does when it cannot write the trail.
 //!
 //! Here rather than beside the code because it needs the middleware assembled the way the surface

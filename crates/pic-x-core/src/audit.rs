@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! The audit contract PIC-X records against.
 //!
 //! An audit trail is the one place in this workspace where personal data may legitimately appear, and

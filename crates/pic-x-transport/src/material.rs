@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! Reading transport material off the disk, and building a listener configuration out of it.
 //!
 //! # What revocation is checked against
@@ -66,9 +69,17 @@ pub(crate) fn build(settings: &TlsSettings) -> Result<(Arc<ServerConfig>, String
 
                 // See the crate documentation: the client certificate is checked, the authority
                 // above it is trusted by configuration rather than by a list.
+                //
+                // Expiry is enforced, and that is a deliberate fail-closed: a list past its
+                // `nextUpdate` is revocation data nobody is maintaining, and trusting it forever is
+                // how a revoked client stays admitted for months. rustls's default is to ignore
+                // expiry; with enforcement, an expired list refuses handshakes — loud, immediate,
+                // and pointing at the renewal process that died. The CRL expiry gauge and its alert
+                // exist so that moment is predicted instead of discovered.
                 verifier = verifier
                     .with_crls(revoked)
-                    .only_check_end_entity_revocation();
+                    .only_check_end_entity_revocation()
+                    .enforce_revocation_expiration();
             }
 
             let verifier = verifier.build().with_context(|| {

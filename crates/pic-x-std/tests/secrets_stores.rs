@@ -1,4 +1,6 @@
 #![cfg(feature = "secrets")]
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
 
 //! What each store answers, and — more importantly — how it distinguishes the ways it can fail.
 //!

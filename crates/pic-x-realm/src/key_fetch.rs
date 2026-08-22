@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! The transport behind an attester's `jwks_uri`.
 //!
 //! A small HTTP(S) GET, deliberately not a general-purpose HTTP client: it fetches one JSON document

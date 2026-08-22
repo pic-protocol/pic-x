@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! The signing keys PIC-X publishes, and the lifecycle that lets them change without an outage.
 //!
 //! # Why a key cannot simply be replaced

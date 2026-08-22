@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! The command set every PIC-X build understands.
 //!
 //! Serving is what the binary does. It is not a command you name, it is what happens when you do not

@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! Does the workload that proposes this transition satisfy the checkpoint's execution contract?
 //!
 //! Proof of Relationship establishes *who* the workload is and *which key* it controls. On its own

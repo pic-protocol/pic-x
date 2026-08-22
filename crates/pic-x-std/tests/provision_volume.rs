@@ -1,4 +1,6 @@
 #![cfg(feature = "provision")]
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
 
 //! What a run creates, what it refuses to touch, and what it refuses to do without permission.
 

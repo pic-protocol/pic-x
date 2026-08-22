@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! Realm token exchange for PIC Profile 0.2.
 //!
 //! This module is intentionally the boundary between HTTP/OAuth integration and the pure PIC

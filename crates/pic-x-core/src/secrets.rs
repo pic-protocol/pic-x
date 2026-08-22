@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! The secret-material contract, deliberately separate from [`Storage`](crate::storage::Storage).
 //!
 //! Records and secrets look alike — both are bytes under a name — and that resemblance is exactly

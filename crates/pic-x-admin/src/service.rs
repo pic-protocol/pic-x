@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! The surface itself: what it serves, who may reach it, and how it starts and stops.
 
 use std::sync::{Arc, Mutex};

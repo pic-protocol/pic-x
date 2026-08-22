@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 // The PIC-X administrative API.
 //
 // The package is versioned from the first day it exists, because a package name is the one thing a

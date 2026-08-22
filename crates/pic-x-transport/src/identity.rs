@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! Carrying who the client is from the handshake to the handler.
 //!
 //! `rustls` finishes a mutual handshake knowing exactly which certificate the client presented, and

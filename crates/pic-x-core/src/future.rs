@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! The shape asynchronous contract methods take.
 //!
 //! Every collaborator in this workspace is reached through `Box<dyn Trait>`, and `async fn` in a trait

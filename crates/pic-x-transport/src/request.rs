@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! Giving every request a name, so the lines it produced can be found together.
 //!
 //! Without one, a surface under investigation offers a pile of records that happened at about the

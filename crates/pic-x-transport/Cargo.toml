@@ -1,3 +1,6 @@
+# Copyright (c) 2022 Nitro Agility S.r.l.
+# SPDX-License-Identifier: Apache-2.0
+
 [package]
 name = "pic-x-transport"
 description = "One listener for every PIC-X surface: TCP, TLS, mTLS, and a shutdown that drains."
@@ -30,6 +33,9 @@ x509-parser.workspace = true
 
 [dev-dependencies]
 axum.workspace = true
+# `test-util` is what makes paused-time tests possible: thirty seconds of write stall pass in a
+# microsecond of wall clock, so the stall bound is tested at its real value instead of a token one.
+tokio = { workspace = true, features = ["test-util"] }
 rustls.workspace = true
 rcgen.workspace = true
 tokio-rustls.workspace = true

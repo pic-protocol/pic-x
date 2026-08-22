@@ -1,3 +1,6 @@
+# Copyright (c) 2022 Nitro Agility S.r.l.
+# SPDX-License-Identifier: Apache-2.0
+
 # Supply-chain gates for the PIC-X workspace.
 #
 # This file exists before the HTTP and gRPC stacks land on purpose. Turning `cargo deny` on after

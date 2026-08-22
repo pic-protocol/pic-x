@@ -1,3 +1,6 @@
+# Copyright (c) 2022 Nitro Agility S.r.l.
+# SPDX-License-Identifier: Apache-2.0
+
 [env]
 PIC_X_COPYRIGHT_YEAR = "2026"
 PIC_X_COPYRIGHT_HOLDER = "Nitro Agility Srl"

@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! Re-reading transport material without dropping a connection.
 //!
 //! # Why this is one test

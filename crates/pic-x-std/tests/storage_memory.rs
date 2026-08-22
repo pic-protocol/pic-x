@@ -1,4 +1,6 @@
 #![cfg(feature = "storage")]
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
 
 //! What the in-process store does with a record, and what it releases on shutdown.
 

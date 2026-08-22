@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! ProductIdentity class: the branding a binary stamps on the surfaces its users see.
 //!
 //! No crate in this workspace hardcodes a product name, tagline, or ASCII art. The binary supplies

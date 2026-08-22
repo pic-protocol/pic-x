@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! What a build needs to know to serve over TLS, and to demand a certificate back.
 //!
 //! Types only: reading a file, parsing a certificate and building a server configuration all belong
@@ -23,6 +26,8 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use anyhow::{Result, bail};
+
+use crate::peer::AllowedPeer;
 
 /// The lowest protocol version a listener will accept.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
@@ -79,6 +84,16 @@ pub struct TlsSettings {
     key: PathBuf,
     client_ca: Option<PathBuf>,
     crl: Option<PathBuf>,
+    /// Who, of everybody the authority signed, this surface actually answers.
+    ///
+    /// This is the difference between authentication and authorisation, and it lives here because it
+    /// travels with the rest of the posture: `client_ca` says which certificates are *genuine*, and
+    /// an authority signs every client it was ever asked to — the SDK in another team's service, the
+    /// batch job from last year. This list says which of them this surface is *for*. Empty means the
+    /// handshake is the whole decision, which is the correct reading for a data plane that answers
+    /// any workload the mesh signed — and the wrong one for anything administrative, which is why
+    /// validation refuses an admin surface without it.
+    allow: Vec<AllowedPeer>,
     min_version: TlsVersion,
     reload: Option<Duration>,
 }
@@ -91,6 +106,7 @@ impl TlsSettings {
             key: key.into(),
             client_ca: None,
             crl: None,
+            allow: Vec::new(),
             min_version: TlsVersion::default(),
             reload: None,
         }
@@ -111,6 +127,18 @@ impl TlsSettings {
         self.crl = Some(crl.into());
 
         self
+    }
+
+    /// Answers only the peers this list names, of everybody the client authority signed.
+    pub fn with_allow(mut self, allow: Vec<AllowedPeer>) -> Self {
+        self.allow = allow;
+
+        self
+    }
+
+    /// Returns who this surface answers, empty meaning everybody the handshake admits.
+    pub fn allow(&self) -> &[AllowedPeer] {
+        &self.allow
     }
 
     /// Lowers the accepted protocol floor from the default.
@@ -208,6 +236,7 @@ impl TlsSettings {
             key: resolve(&self.key),
             client_ca: self.client_ca.as_deref().map(resolve),
             crl: self.crl.as_deref().map(resolve),
+            allow: self.allow.clone(),
             min_version: self.min_version,
             reload: self.reload,
         }

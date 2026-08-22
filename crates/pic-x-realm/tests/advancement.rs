@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! Profile 0.2 centralized advancement, end to end through the realm token endpoint.
 //!
 //! OAuth access token → PIC Token JWT 0 → a workload-signed candidate carrying an issuer-signed

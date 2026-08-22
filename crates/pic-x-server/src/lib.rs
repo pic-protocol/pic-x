@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! The PIC-X server host, its service registry, and the command line that drives them.
 //!
 //! The crate carries no branding and picks no implementation. [`App`] is handed a

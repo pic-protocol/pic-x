@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! Where a realm gets the verification keys of the attesters it trusts.
 //!
 //! Configuration names the attesters and their `jwks_uri`; this keeps their published key sets in

@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! Where secret material actually comes from.
 //!
 //! Two implementations, both deliberately humble, because the point of the contract is that neither

@@ -1,3 +1,6 @@
+# Copyright (c) 2022 Nitro Agility S.r.l.
+# SPDX-License-Identifier: Apache-2.0
+
 name: pic-x-compose-lab
 
 # Every service keeps its state under `.volume-docker-compose/<service>/`, so the lab can be

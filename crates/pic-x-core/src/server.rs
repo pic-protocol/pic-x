@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! The server-side contracts: what a host is, what a service is, and what either one may reach.
 //!
 //! These live here rather than next to the default host on purpose. A build that replaces the host —

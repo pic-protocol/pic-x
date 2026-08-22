@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! The check that catches a pseudonymisation key changing without its version changing.
 //!
 //! This is the mistake worth a test: it produces no error, no warning and no visible symptom, and it

@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! Turning an identifier into something you can correlate but not read.
 //!
 //! Masking hides a person and loses the trail with them: two masked records are indistinguishable, so

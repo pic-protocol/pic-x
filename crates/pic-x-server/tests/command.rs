@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! What each invocation resolves to.
 //!
 //! Here rather than beside the code because the table of cases is the point: which spellings parse,

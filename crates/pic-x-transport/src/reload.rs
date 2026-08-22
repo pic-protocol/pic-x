@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! Re-reading transport material without dropping a connection.
 //!
 //! A certificate is renewed on a schedule nobody controls from inside this process. The alternatives
@@ -16,11 +19,17 @@
 //! configuration is untouched and the surface keeps serving with what it had. A reload that failed
 //! is a warning, never an outage.
 //!
-//! # Why modification times are compared before reloading, not after
+//! # Why the watcher reads the bytes, not the clock
+//!
+//! What is compared between ticks is a digest of each file's contents. Modification times would be
+//! cheaper, and wrong twice: a filesystem with one-second granularity can absorb a rewrite into the
+//! same stamp, and a `cp` that preserves times changes the material without changing the time. The
+//! files are a few kilobytes read every thirty seconds — the digest costs nothing and answers the
+//! actual question, which is whether the *material* changed.
 //!
 //! Certificate and key are two files, written one after the other. A watcher that reloaded the
 //! instant it saw the first change would regularly read a new certificate beside an old key. So a
-//! change is noticed, allowed to settle, and only then acted on — and the times are recorded whether
+//! change is noticed, allowed to settle, and only then acted on — and the state is recorded whether
 //! the reload succeeded or not, so a genuinely broken file warns once instead of every tick.
 //!
 //! # A registry, and why it is process-wide
@@ -32,7 +41,7 @@
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock, Weak};
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use axum_server::tls_rustls::RustlsConfig;
 use tracing::{debug, info, warn};
@@ -50,7 +59,7 @@ pub struct Reloadable {
     address: SocketAddr,
     settings: TlsSettings,
     config: RustlsConfig,
-    seen: Mutex<Vec<Option<SystemTime>>>,
+    seen: Mutex<Vec<Option<String>>>,
     surface: &'static str,
     metrics: Metrics,
 }
@@ -58,7 +67,7 @@ pub struct Reloadable {
 impl Reloadable {
     /// Records a surface that is serving `settings` through `config`.
     pub fn new(address: SocketAddr, settings: TlsSettings, config: RustlsConfig) -> Self {
-        let seen = modified(&settings);
+        let seen = fingerprints(&settings);
 
         Self {
             address,
@@ -225,26 +234,26 @@ fn changed(surface: &Reloadable) -> bool {
         return false;
     };
 
-    modified(&surface.settings) != *seen
+    fingerprints(&surface.settings) != *seen
 }
 
-/// Records the current modification times as the ones that have been accounted for.
+/// Records the current material as the state that has been accounted for.
 fn remember(surface: &Reloadable) {
     if let Ok(mut seen) = surface.seen.lock() {
-        *seen = modified(&surface.settings);
+        *seen = fingerprints(&surface.settings);
     }
 }
 
-/// Returns the modification time of every file the material is made of.
+/// Returns the digest of every file the material is made of.
 ///
 /// A file that cannot be read yields `None` rather than an error: mid-renewal a file is briefly
 /// absent, and that *is* a change — it belongs in the comparison, not in a failure.
-fn modified(settings: &TlsSettings) -> Vec<Option<SystemTime>> {
-    settings.files().map(modified_at).collect()
+fn fingerprints(settings: &TlsSettings) -> Vec<Option<String>> {
+    settings.files().map(fingerprint_of).collect()
 }
 
-fn modified_at(path: &Path) -> Option<SystemTime> {
-    std::fs::metadata(path)
-        .and_then(|metadata| metadata.modified())
+fn fingerprint_of(path: &Path) -> Option<String> {
+    std::fs::read(path)
+        .map(|bytes| crate::digest::digest(&bytes))
         .ok()
 }

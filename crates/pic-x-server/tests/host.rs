@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! What the default host does between starting and stopping, and in what order.
 //!
 //! Here rather than beside the code because the interesting cases are services that misbehave — one

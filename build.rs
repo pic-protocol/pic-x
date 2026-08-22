@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! Validates the build-time banner metadata and prepares the assets the binary compiles in.
 
 use std::env;

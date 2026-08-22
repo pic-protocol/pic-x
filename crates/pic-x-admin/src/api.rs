@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! The administrative RPCs PIC-X itself defines.
 //!
 //! Two of them, and deliberately dull: what this build is, and whether it is willing to be sent work.

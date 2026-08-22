@@ -1,3 +1,6 @@
+# Copyright (c) 2022 Nitro Agility S.r.l.
+# SPDX-License-Identifier: Apache-2.0
+
 version: '3'
 
 # Tasks are kept in alphabetical order, so a reader scanning the file finds them in series.

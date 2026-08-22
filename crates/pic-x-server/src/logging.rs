@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! Installs the process-wide subscriber the lifecycle records go to.
 //!
 //! Records go to standard output, which is where a container runtime collects them, and their shape

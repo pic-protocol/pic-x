@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! The implementations of [`pic_x_core`] a deployment gets unless it brings its own.
 //!
 //! The name is the relationship: `pic-x-core` is the foundation everyone agrees on, and this is the

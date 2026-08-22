@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! The telemetry surface: liveness, readiness and metrics.
 //!
 //! It is HTTP and it is on a port of its own, and both of those are deliberate.

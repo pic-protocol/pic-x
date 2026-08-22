@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Nitro Agility S.r.l.
+// SPDX-License-Identifier: Apache-2.0
+
 //! The protocol this surface speaks, compiled from `proto/picx/admin/v1/admin.proto`.
 //!
 //! A file of its own so the generated code — which nobody here writes and nobody here reviews —

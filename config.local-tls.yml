@@ -1,3 +1,6 @@
+# Copyright (c) 2022 Nitro Agility S.r.l.
+# SPDX-License-Identifier: Apache-2.0
+
 # PIC-X — development, over TLS and mutual TLS.
 #
 #   task run-as-local-tls   starts the server against this file
