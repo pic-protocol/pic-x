@@ -243,6 +243,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
+name = "base64"
+version = "0.23.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ac07cdecf99051d9a5238b80f35af32cdeba5b336e55d957b318b50137e18da5"
+
+[[package]]
 name = "base64ct"
 version = "1.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1119,7 +1125,7 @@ version = "3.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d30c53c26bc5b31a98cd02d20f25a7c8567146caf63ed593a9d87b2775291be"
 dependencies = [
- "base64",
+ "base64 0.22.1",
  "serde_core",
 ]
 
@@ -1155,7 +1161,7 @@ version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "95da673fdf829cc8e651470fd7bd4a19074e833de41179e44c7539e0c0880e5e"
 dependencies = [
- "base64",
+ "base64 0.22.1",
  "ciborium",
  "coset",
  "ed25519-dalek",
@@ -1183,7 +1189,7 @@ name = "pic-x"
 version = "0.2.2"
 dependencies = [
  "anyhow",
- "base64",
+ "base64 0.23.1",
  "ed25519-dalek",
  "pic-protocol",
  "pic-x-admin",
@@ -1236,7 +1242,7 @@ version = "0.2.2"
 dependencies = [
  "anyhow",
  "axum",
- "base64",
+ "base64 0.23.1",
  "bytes",
  "ed25519-dalek",
  "http-body-util",
@@ -1277,7 +1283,7 @@ name = "pic-x-std"
 version = "0.2.2"
 dependencies = [
  "anyhow",
- "base64",
+ "base64 0.23.1",
  "hmac",
  "pic-x-core",
  "rcgen",
@@ -2082,7 +2088,7 @@ checksum = "ac2a5518c70fa84342385732db33fb3f44bc4cc748936eb5833d2df34d6445ef"
 dependencies = [
  "async-trait",
  "axum",
- "base64",
+ "base64 0.22.1",
  "bytes",
  "h2",
  "http",
