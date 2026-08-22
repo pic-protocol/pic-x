@@ -127,7 +127,7 @@ tonic-prost-build = "0.14"
 tower = "0.5"
 # The timeout, body-size and panic layers. `default-features = false` because the crate's default
 # set pulls in tracing, compression and a good deal else that nothing here asks for.
-tower-http = { version = "0.6", default-features = false, features = ["catch-panic", "limit", "timeout"] }
+tower-http = { version = "0.7", default-features = false, features = ["catch-panic", "limit", "timeout"] }
 tower-layer = "0.3"
 tower-service = "0.3"
 tracing = "0.1"
