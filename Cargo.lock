@@ -1180,7 +1180,7 @@ dependencies = [
 
 [[package]]
 name = "pic-x"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "base64",
@@ -1201,7 +1201,7 @@ dependencies = [
 
 [[package]]
 name = "pic-x-admin"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1221,7 +1221,7 @@ dependencies = [
 
 [[package]]
 name = "pic-x-core"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "serde",
@@ -1232,7 +1232,7 @@ dependencies = [
 
 [[package]]
 name = "pic-x-realm"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "axum",
@@ -1260,7 +1260,7 @@ dependencies = [
 
 [[package]]
 name = "pic-x-server"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "clap",
@@ -1274,7 +1274,7 @@ dependencies = [
 
 [[package]]
 name = "pic-x-std"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "base64",
@@ -1292,7 +1292,7 @@ dependencies = [
 
 [[package]]
 name = "pic-x-telemetry"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "axum",
@@ -1306,7 +1306,7 @@ dependencies = [
 
 [[package]]
 name = "pic-x-transport"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "axum",
