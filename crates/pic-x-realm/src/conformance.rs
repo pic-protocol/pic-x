@@ -3,11 +3,10 @@
 
 //! Does the workload that proposes this transition satisfy the checkpoint's execution contract?
 //!
-//! Proof of Relationship establishes *who* the workload is and *which key* it controls. On its own
-//! that is a weaker statement than it looks: it says an accepted issuer vouched for a workload, not
-//! that the workload is one this lineage may run on. The articles are explicit that the two are
-//! separate — "PoR alone does not prove runtime behavior or execution-contract conformance" — and
-//! leave the conformance check to the deployment.
+//! Profile evidence establishes which claims an accepted issuer made about a workload and which key
+//! the workload controls. It does not establish that a handoff occurrence was observed, nor that a
+//! request travelled through a particular channel. Execution-contract conformance is a separate
+//! deployment check.
 //!
 //! This realm requires it. The claims the Holder disclosed are matched against the
 //! `execution_contract` of the checkpoint being advanced:
@@ -18,19 +17,19 @@
 //!
 //! A credential that proves only one constrained attribute does not prove conformance to the whole
 //! execution contract. If a checkpoint constrains `corporation` and `department`, the Proof of
-//! Relationship has to materialize both.
+//! Profile 0.2's legacy `proof_of_relationship` field has to materialize both.
 
 use pic::continuity::artifacts::{PicPcaPayload, PicTransitionPayload};
 use pic::continuity::authority::indexed::{IndexedAuthorityMap, TupleValue};
 use pic::continuity::trust::SettlementPolicy;
 use serde_json::Value;
 
-use crate::por::SdJwtPorValidator;
+use crate::por::SdJwtProfileValidator;
 
-/// Matches the claims of the accepted Proof of Relationship against the checkpoint's contract.
+/// Matches accepted executor-profile claims against the checkpoint's contract.
 pub(crate) struct ContractConformance<'a> {
     /// The validator that accepted the presentation; it holds what was disclosed.
-    pub(crate) por: &'a SdJwtPorValidator<'a>,
+    pub(crate) profile: &'a SdJwtProfileValidator<'a>,
 }
 
 /// Why a transition failed conformance, for the record and the caller.
@@ -102,13 +101,19 @@ impl SettlementPolicy for ContractConformance<'_> {
     fn conformance(&self, checkpoint: &PicPcaPayload, _transition: &PicTransitionPayload) -> bool {
         self.reason(checkpoint).is_ok()
     }
+
+    fn request_binding(&self, _transition: &PicTransitionPayload) -> bool {
+        // Deliberate Profile 0.2 artifact-linked mode: no transport or request occurrence is
+        // available at this boundary. A future trusted Execution Context must implement this check.
+        true
+    }
 }
 
 impl ContractConformance<'_> {
     /// The conformance outcome, with the reason a rejection can be recorded and returned.
     pub(crate) fn reason(&self, checkpoint: &PicPcaPayload) -> Result<(), Mismatch> {
         // No accepted presentation means nothing was proven about this workload.
-        let Some(accepted) = self.por.accepted() else {
+        let Some(accepted) = self.profile.accepted() else {
             return Err(Mismatch::SaysNothing);
         };
 
@@ -145,8 +150,8 @@ impl std::fmt::Display for Mismatch {
         match self {
             Mismatch::Missing { key, required } => write!(
                 formatter,
-                "the execution contract requires `{key}` = `{required}`, but the Proof of \
-                 Relationship did not disclose `{key}`"
+                "the execution contract requires `{key}` = `{required}`, but the executor-profile \
+                 evidence did not disclose `{key}`"
             ),
             Mismatch::Contradicts {
                 key,
@@ -154,12 +159,12 @@ impl std::fmt::Display for Mismatch {
                 disclosed,
             } => write!(
                 formatter,
-                "the execution contract requires `{key}` = `{required}`, the Proof of Relationship \
-                 disclosed `{disclosed}`"
+                "the execution contract requires `{key}` = `{required}`, the executor-profile \
+                 evidence disclosed `{disclosed}`"
             ),
             Mismatch::SaysNothing => write!(
                 formatter,
-                "the Proof of Relationship discloses nothing the execution contract constrains"
+                "the executor-profile evidence discloses nothing the execution contract constrains"
             ),
         }
     }

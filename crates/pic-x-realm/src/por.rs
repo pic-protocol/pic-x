@@ -1,11 +1,12 @@
 // Copyright (c) 2022 Nitro Agility S.r.l.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Profile 0.2 Proof-of-Relationship validation: issuer-signed SD-JWT presentations.
+//! Profile 0.2 executor-profile validation: issuer-signed SD-JWT presentations.
 //!
 //! The protocol crate leaves this deployment-specific and takes it through the [`PorValidator`]
-//! boundary. This is the PIC-X realization for `proof_of_relationship.type = "sd-jwt"`, following
-//! the validation order the Profile 0.2 articles state:
+//! boundary. The wire field is named `proof_of_relationship` for Profile 0.2 compatibility, but the
+//! SD-JWT available to PIC-X proves only executor profile claims and possession of the bound key.
+//! It is not evidence that a handoff occurrence was observed. Validation follows this order:
 //!
 //! ```text
 //! validate proof_of_relationship.type = "sd-jwt"
@@ -25,8 +26,9 @@
 //! published key set. An issuer nobody configured is rejected without a signature check.
 //!
 //! The workload key this yields is what the settlement procedure uses to verify the three
-//! workload-signed candidate artifacts. PoR establishes the relationship and the key binding; it is
-//! not, by itself, Proof of Continuity.
+//! workload-signed candidate artifacts. This establishes profile and key evidence. Semantic PoR,
+//! request binding, transport continuity and causal attribution require an observation boundary
+//! that this Profile 0.2 deployment does not yet provide.
 
 use std::collections::BTreeSet;
 use std::sync::Mutex;
@@ -64,8 +66,8 @@ const MAX_DISCLOSURES: usize = 128;
 /// Tolerance for clock skew between the attester and this realm, in seconds.
 const CLOCK_SKEW_SECONDS: i64 = 60;
 
-/// Validates Profile 0.2 SD-JWT Proof-of-Relationship evidence for one realm.
-pub(crate) struct SdJwtPorValidator<'a> {
+/// Validates SD-JWT executor-profile evidence carried in Profile 0.2's legacy PoR field.
+pub(crate) struct SdJwtProfileValidator<'a> {
     /// The attesters this realm accepts. An `iss` outside this list is never trusted.
     pub(crate) attesters: &'a [TrustedAttesterConfig],
     /// Where the attesters' published verification keys come from.
@@ -94,12 +96,12 @@ pub(crate) struct Accepted {
     /// The key the credential bound, kept as a JWK so the verifier can be rebuilt cheaply.
     jwk: Value,
     /// What the presentation disclosed.
-    pub(crate) processed: ProcessedPor,
+    pub(crate) processed: ProcessedProfileEvidence,
 }
 
 /// What a validated presentation disclosed, kept for policy and audit.
 #[derive(Debug, Clone, Default)]
-pub(crate) struct ProcessedPor {
+pub(crate) struct ProcessedProfileEvidence {
     /// The attester id from the realm configuration that accepted this evidence.
     pub(crate) attester_id: String,
     /// The credential issuer.
@@ -108,7 +110,9 @@ pub(crate) struct ProcessedPor {
     pub(crate) claims: serde_json::Map<String, Value>,
 }
 
-impl PorValidator for SdJwtPorValidator<'_> {
+// `PorValidator` is the protocol crate's Profile 0.2 compatibility boundary. Implementing it does
+// not upgrade this SD-JWT into observed-handoff evidence.
+impl PorValidator for SdJwtProfileValidator<'_> {
     fn validate(
         &self,
         por: &ProofOfRelationship,
@@ -134,9 +138,9 @@ impl PorValidator for SdJwtPorValidator<'_> {
     }
 }
 
-impl SdJwtPorValidator<'_> {
+impl SdJwtProfileValidator<'_> {
     /// What this validator last accepted, if anything.
-    pub(crate) fn accepted(&self) -> Option<ProcessedPor> {
+    pub(crate) fn accepted(&self) -> Option<ProcessedProfileEvidence> {
         self.accepted
             .lock()
             .ok()
@@ -156,7 +160,7 @@ impl SdJwtPorValidator<'_> {
     pub(crate) fn validate_and_remember(
         &self,
         por: &ProofOfRelationship,
-    ) -> Result<ProcessedPor, RejectReason> {
+    ) -> Result<ProcessedProfileEvidence, RejectReason> {
         if let Some(cached) = self.cached_for(&por.evidence) {
             return Ok(cached.processed);
         }
@@ -181,7 +185,7 @@ impl SdJwtPorValidator<'_> {
     pub(crate) fn validate_evidence(
         &self,
         por: &ProofOfRelationship,
-    ) -> Result<(Box<dyn ArtifactVerifier>, ProcessedPor), RejectReason> {
+    ) -> Result<(Box<dyn ArtifactVerifier>, ProcessedProfileEvidence), RejectReason> {
         let (verifier, processed, _) = self.validate_evidence_with_key(por)?;
 
         Ok((verifier, processed))
@@ -191,7 +195,7 @@ impl SdJwtPorValidator<'_> {
     fn validate_evidence_with_key(
         &self,
         por: &ProofOfRelationship,
-    ) -> Result<(Box<dyn ArtifactVerifier>, ProcessedPor, Value), RejectReason> {
+    ) -> Result<(Box<dyn ArtifactVerifier>, ProcessedProfileEvidence, Value), RejectReason> {
         if por.evidence.len() > MAX_EVIDENCE_BYTES {
             return Err(reject("proof_of_relationship.evidence is too large"));
         }
@@ -248,7 +252,7 @@ impl SdJwtPorValidator<'_> {
 
         Ok((
             workload_key,
-            ProcessedPor {
+            ProcessedProfileEvidence {
                 attester_id: attester.id.clone(),
                 issuer: issuer.to_owned(),
                 claims,
@@ -444,7 +448,7 @@ fn process_disclosures(
 fn validate_validity_claims(payload: &Value, now: i64) -> Result<(), RejectReason> {
     if let Some(expiry) = payload.get("exp").and_then(Value::as_i64) {
         if now - CLOCK_SKEW_SECONDS >= expiry {
-            return Err(reject("the SD-JWT Proof of Relationship is expired"));
+            return Err(reject("the SD-JWT executor-profile evidence is expired"));
         }
     } else {
         return Err(reject("the SD-JWT has no numeric `exp` claim"));
@@ -453,13 +457,15 @@ fn validate_validity_claims(payload: &Value, now: i64) -> Result<(), RejectReaso
     if let Some(not_before) = payload.get("nbf").and_then(Value::as_i64)
         && now + CLOCK_SKEW_SECONDS < not_before
     {
-        return Err(reject("the SD-JWT Proof of Relationship is not yet valid"));
+        return Err(reject(
+            "the SD-JWT executor-profile evidence is not yet valid",
+        ));
     }
     if let Some(issued_at) = payload.get("iat").and_then(Value::as_i64)
         && now + CLOCK_SKEW_SECONDS < issued_at
     {
         return Err(reject(
-            "the SD-JWT Proof of Relationship is issued in the future",
+            "the SD-JWT executor-profile evidence is issued in the future",
         ));
     }
 
@@ -780,7 +786,7 @@ mod tests {
     /// `Box<dyn ArtifactVerifier>` is not `Debug`, so `expect_err` cannot be used: this states
     /// the same expectation and yields the message to assert on.
     fn expect_rejection(
-        result: Result<(Box<dyn ArtifactVerifier>, ProcessedPor), RejectReason>,
+        result: Result<(Box<dyn ArtifactVerifier>, ProcessedProfileEvidence), RejectReason>,
     ) -> String {
         match result {
             Err(reason) => reason.to_string(),
@@ -788,8 +794,8 @@ mod tests {
         }
     }
 
-    fn validator<'a>(attester: &'a Attester, keys: &'a Keys) -> SdJwtPorValidator<'a> {
-        SdJwtPorValidator {
+    fn validator<'a>(attester: &'a Attester, keys: &'a Keys) -> SdJwtProfileValidator<'a> {
+        SdJwtProfileValidator {
             attesters: std::slice::from_ref(&attester.config),
             keys,
             now: NOW,

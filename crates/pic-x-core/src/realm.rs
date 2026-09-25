@@ -168,7 +168,7 @@ pub struct PrivilegeEmit {
     pub resource_id: String,
 }
 
-/// A trusted Proof-of-Relationship attestation issuer configured for one realm.
+/// An issuer trusted for executor-profile evidence in one realm.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TrustedAttesterConfig {
     pub id: String,

@@ -298,7 +298,7 @@ impl WellKnownService {
 
     /// Keeps every realm's attester key sets fresh, so an attester can rotate its signing key
     /// without a restart. The first sweep runs immediately, because a realm that has fetched
-    /// nothing yet cannot validate any Proof of Relationship.
+    /// nothing yet cannot validate executor-profile evidence carried in the Profile 0.2 PoR field.
     fn start_key_refresh(&self) {
         let attesters: Vec<Arc<AttesterKeyCache>> = match self.attester_keys.lock() {
             Ok(caches) => caches.values().cloned().collect(),

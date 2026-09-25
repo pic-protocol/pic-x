@@ -6,15 +6,16 @@
 
 <p align="center">
   The official PIC Authority Broker and Exchange Server.<br>
-  Verifiable Authority Continuity across execution boundaries.
+  Verifiable artifact-linked Authority Continuity across execution boundaries.
 </p>
 
 ## What PIC-X Is
 
-PIC-X is the official PIC Authority Broker and Exchange Server. It preserves verifiable authority
-continuity across execution boundaries: when work moves from an identity provider into a service,
-agent, tool or another runtime, PIC-X derives, verifies and advances the authority that is allowed
-to continue.
+PIC-X is the official PIC Authority Broker and Exchange Server. Its current Profile 0.2 path
+preserves verifiable, artifact-linked authority continuity: PIC-X derives, verifies and advances the
+authority represented by signed lineage artifacts and executor-profile evidence. It does not yet
+claim that those artifacts prove an observed runtime handoff, request/channel continuity, complete
+mediation or causal attribution; those require the planned trusted Execution Context boundary.
 
 As an Authority Broker, PIC-X maps upstream credentials into PIC Contexts of Authority while keeping
 provenance, constraints, privileges and audit material explicit. As an Exchange Server, it exposes
@@ -157,7 +158,7 @@ Flow map
   target flow
   Keycloak token -> pic_context_of_authority exchange
      -> node A -> node B -> node C
-     each node emits Proof of Relationship + Proof of Continuity
+     each node emits profile/key evidence + an artifact-linked continuity candidate
 
 [1] Checking lab services (up to 30s)
     OK  Keycloak IdP: http://localhost:18080/realms/acme-idp
@@ -197,6 +198,7 @@ The ports are separate so administration is not accidentally exposed through the
 | Run the image and understand the volume | [docs/docker.md](docs/docker.md) |
 | Run the local Keycloak and public REST lab | [docs/keycloak.md](docs/keycloak.md) |
 | Verify and operate the audit trail | [docs/audit.md](docs/audit.md) |
+| Understand current continuity guarantees and the Execution Context roadmap | [docs/continuity-design.md](docs/continuity-design.md) |
 | Back up and restore the volume | [docs/backup-and-restore.md](docs/backup-and-restore.md) |
 | Use the workflow shortcuts | [docs/tasks.md](docs/tasks.md) |
 

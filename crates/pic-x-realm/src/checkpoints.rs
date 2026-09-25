@@ -17,12 +17,11 @@
 //!
 //! # What bounds a checkpoint's life
 //!
-//! A PIC PCA COSE payload carries no expiry: Profile 0.2 defines `profile`, `position`,
-//! `context_of_authority` and `challenge`, and the articles state a PCA has no mandatory
-//! independent expiration. What bounds it here is **key retention** — a checkpoint stays advanceable
-//! for as long as the realm key that signed it is still published, which is the realm's `retain`
-//! window. Ending one lineage sooner is a revocation decision, and revocation is a separate
-//! mechanism.
+//! PIC-X fixes an absolute `expires_at` into the initial checkpoint and preserves it across every
+//! advancement. A checkpoint is advanceable only while that lineage expiry is in the future and the
+//! realm still publishes the key that signed it. Key retention can therefore shorten acceptance,
+//! but cannot extend the lineage beyond its absolute expiry. Ending one lineage sooner is a
+//! revocation decision, and revocation is a separate mechanism.
 //!
 //! Sibling branches remain a property of the profile: nothing here retires a predecessor when its
 //! successor is issued, so fan-out and worker pools work, and no branch can import authority from

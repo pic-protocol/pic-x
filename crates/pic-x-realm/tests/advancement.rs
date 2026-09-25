@@ -4,7 +4,7 @@
 //! Profile 0.2 centralized advancement, end to end through the realm token endpoint.
 //!
 //! OAuth access token → PIC Token JWT 0 → a workload-signed candidate carrying an issuer-signed
-//! SD-JWT Proof of Relationship → PIC Token JWT 1, with the read authority attenuated away.
+//! SD-JWT profile/key evidence → PIC Token JWT 1, with the read authority attenuated away.
 //!
 //! Nothing here is stubbed at the trust boundary: a real attester signs a real SD-JWT presentation,
 //! served from a real key-set endpoint the realm fetches over HTTP, and the workload signs the three
@@ -28,6 +28,7 @@ use pic::continuity::artifacts::{
 };
 use pic::continuity::authority::attenuation::Attenuations;
 use pic::continuity::authority::bitmap::RemoveBitmap;
+use pic::continuity::authority::indexed::TupleValue;
 use pic::continuity::prover::{CandidateRequest, build_candidate};
 use pic::continuity::trust::Ed25519Signer;
 use pic_x_core::audit::{AuditEvent, Result as AuditResult};
@@ -188,6 +189,36 @@ impl Attester {
     /// An SD-JWT presentation binding `workload_public_key`, disclosing corporation and department.
     fn presentation(&self, workload_public_key: &[u8]) -> String {
         self.presentation_for(workload_public_key, "ACME", "sensitive-documents")
+    }
+
+    /// The walkthrough profile plus the constraint introduced by a refining transition.
+    fn presentation_with_region(&self, workload_public_key: &[u8], region: &str) -> String {
+        let disclosures = [
+            ("f0UUCvMSycSUXaVfuiDWAA", "corporation", "ACME"),
+            (
+                "E54m03bpDTSeWfZOQ-1wVw",
+                "department",
+                "sensitive-documents",
+            ),
+            ("o9QzK5Dq7sVn2mL4bH8cAw", "region", region),
+        ]
+        .map(|(salt, name, value)| {
+            b64(serde_json::json!([salt, name, value])
+                .to_string()
+                .as_bytes())
+        });
+        let digests: Vec<String> = disclosures
+            .iter()
+            .map(|value| b64(digest(&SHA256, value.as_bytes()).as_ref()))
+            .collect();
+        let mut presentation = self.sign_credential(workload_public_key, &digests);
+        for disclosure in &disclosures {
+            presentation.push('~');
+            presentation.push_str(disclosure);
+        }
+        presentation.push('~');
+
+        presentation
     }
 
     /// A presentation that discloses only a claim the execution contract says nothing about.
@@ -691,7 +722,7 @@ async fn a_workload_advances_the_lineage_and_the_removed_authority_is_gone() {
         "documents:read:document-42"
     );
 
-    // The workload holds a key, and the attester binds it in a Proof of Relationship.
+    // The workload holds a key, and the attester binds it to executor-profile claims.
     let pkcs8 = Ed25519KeyPair::generate_pkcs8(&SystemRandom::new()).expect("key generates");
     let workload_pair =
         ed25519_dalek::SigningKey::from_bytes(&pkcs8.as_ref()[16..48].try_into().expect("seed"));
@@ -770,6 +801,157 @@ async fn a_workload_advances_the_lineage_and_the_removed_authority_is_gone() {
         Some(advanced.subject.as_str())
     );
     assert_eq!(advanced.continuity_position, Some(1));
+}
+
+#[tokio::test]
+async fn one_checkpoint_can_fan_out_to_multiple_unknown_successors() {
+    let lab = lab().await;
+    let (status, body) = post_token(
+        &lab.router,
+        initialization_body(&lab.provider.access_token()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "initialization failed: {body}");
+    let token0 = body["access_token"].as_str().expect("token 0");
+    let (pca0_bytes, pca0) = checkpoint_of(token0);
+
+    // The publisher did not know either successor when checkpoint 0 was issued. Two independent
+    // workers later consume the same predecessor and create sibling branches with their own keys.
+    let mut settled = Vec::new();
+    for (seed, kid, challenge) in [
+        (0x31, "spiffe://acme/worker-a", 0xa1),
+        (0x32, "spiffe://acme/worker-b", 0xb2),
+    ] {
+        let key = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
+        let presentation = lab.attester.presentation(key.verifying_key().as_bytes());
+        let candidate = build_candidate(
+            &pca0_bytes,
+            CandidateRequest {
+                next_challenge: vec![challenge; 32],
+                proof_of_relationship: Some(ProofOfRelationship::sd_jwt(&presentation)),
+                ..Default::default()
+            },
+            &Ed25519Signer::new(key, kid),
+            None,
+        )
+        .expect("the sibling candidate builds");
+
+        let (status, body) = post_token(&lab.router, advancement_body(&candidate.token)).await;
+        assert_eq!(status, StatusCode::OK, "sibling rejected: {body}");
+        settled.push(checkpoint_of(body["access_token"].as_str().expect("token")).1);
+    }
+
+    assert_eq!(settled[0].position, 1);
+    assert_eq!(settled[1].position, 1);
+    assert_eq!(settled[0].lineage_id, pca0.lineage_id);
+    assert_eq!(settled[1].lineage_id, pca0.lineage_id);
+    assert_eq!(
+        settled[0].context_of_authority,
+        settled[1].context_of_authority
+    );
+    assert_ne!(
+        settled[0].challenge.next_challenge,
+        settled[1].challenge.next_challenge
+    );
+}
+
+#[tokio::test]
+async fn contract_refinement_is_additive_and_governs_the_following_hop() {
+    let lab = lab().await;
+    let (status, body) = post_token(
+        &lab.router,
+        initialization_body(&lab.provider.access_token()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "initialization failed: {body}");
+    let (pca0_bytes, _) = checkpoint_of(body["access_token"].as_str().expect("token 0"));
+
+    // This executor must satisfy checkpoint 0's two constraints. Its proposed `region` constraint
+    // is materialized into checkpoint 1 and therefore applies to the next executor, not itself.
+    let first_key = ed25519_dalek::SigningKey::from_bytes(&[0x41; 32]);
+    let first_profile = lab
+        .attester
+        .presentation(first_key.verifying_key().as_bytes());
+    let first = build_candidate(
+        &pca0_bytes,
+        CandidateRequest {
+            attenuations: Attenuations {
+                execution_contract_additions: vec![(
+                    "region".to_owned(),
+                    TupleValue::Text("EU".to_owned()),
+                )],
+                ..Default::default()
+            },
+            next_challenge: vec![0x61; 32],
+            proof_of_relationship: Some(ProofOfRelationship::sd_jwt(&first_profile)),
+            ..Default::default()
+        },
+        &Ed25519Signer::new(first_key, "spiffe://acme/refiner"),
+        None,
+    )
+    .expect("the refining candidate builds");
+    let (status, body) = post_token(&lab.router, advancement_body(&first.token)).await;
+    assert_eq!(status, StatusCode::OK, "refinement rejected: {body}");
+    let (pca1_bytes, pca1) = checkpoint_of(body["access_token"].as_str().expect("token 1"));
+    assert_eq!(pca1.context_of_authority.execution_contract.len(), 3);
+    assert!(
+        pca1.context_of_authority
+            .execution_contract
+            .values()
+            .any(|entry| entry == &("region".to_owned(), TupleValue::Text("EU".to_owned())))
+    );
+
+    // A successor omitting the newly accumulated constraint is rejected.
+    let missing_key = ed25519_dalek::SigningKey::from_bytes(&[0x42; 32]);
+    let missing_profile = lab
+        .attester
+        .presentation(missing_key.verifying_key().as_bytes());
+    let missing = build_candidate(
+        &pca1_bytes,
+        CandidateRequest {
+            next_challenge: vec![0x62; 32],
+            proof_of_relationship: Some(ProofOfRelationship::sd_jwt(&missing_profile)),
+            ..Default::default()
+        },
+        &Ed25519Signer::new(missing_key, "spiffe://acme/missing-region"),
+        None,
+    )
+    .expect("the incomplete successor builds");
+    let (status, body) = post_token(&lab.router, advancement_body(&missing.token)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error_description"]
+            .as_str()
+            .expect("a description")
+            .contains("conformance"),
+        "unexpected rejection: {body}"
+    );
+
+    // A different, not pre-bound successor that discloses all three constraints can advance it.
+    let matching_key = ed25519_dalek::SigningKey::from_bytes(&[0x43; 32]);
+    let matching_profile = lab
+        .attester
+        .presentation_with_region(matching_key.verifying_key().as_bytes(), "EU");
+    let matching = build_candidate(
+        &pca1_bytes,
+        CandidateRequest {
+            next_challenge: vec![0x63; 32],
+            proof_of_relationship: Some(ProofOfRelationship::sd_jwt(&matching_profile)),
+            ..Default::default()
+        },
+        &Ed25519Signer::new(matching_key, "spiffe://acme/region-eu"),
+        None,
+    )
+    .expect("the conforming successor builds");
+    let (status, body) = post_token(&lab.router, advancement_body(&matching.token)).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "conforming successor rejected: {body}"
+    );
+    let (_, pca2) = checkpoint_of(body["access_token"].as_str().expect("token 2"));
+    assert_eq!(pca2.position, 2);
+    assert_eq!(pca2.context_of_authority.execution_contract.len(), 3);
 }
 
 #[tokio::test]

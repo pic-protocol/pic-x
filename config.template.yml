@@ -88,9 +88,10 @@
 ##                    this realm accepts, how they are validated, and how their claims become PIC
 ##                    execution invariants. There is deliberately no common profile block: two realms
 ##                    that integrate the same IdP still declare their own policy.
-##   - `attesters`   realm-scoped Proof-of-Relationship attestation issuers. The realm document lists
-##                    them at `attestations_endpoint`; advancement validation later fetches/checks
-##                    their key material and accepted schemas from this trust source.
+##   - `attesters`   realm-scoped executor-profile attestation issuers. Profile 0.2 carries this
+##                    evidence in the legacy `proof_of_relationship` wire field. It binds disclosed
+##                    profile claims to a workload key; it does not prove an observed handoff.
+##                    The realm document lists these issuers at `attestations_endpoint`.
 ##   - `operations`   its override of the shared `operations` block below — the keys that seal its
 ##                    trail, the trail itself, and its pseudonymisation. Same shape as the top level.
 ##   - `issuer`       defaults to `{public.url}/realms/<name>`; set it only when the realm lives on
@@ -188,13 +189,16 @@
 #                 resource_id: '*'
 #         on_unmatched_scope: reject
 #     attesters:
-#       - id: corporate-por-attester
+#       - id: corporate-profile-attester
 #         issuer: https://attestation.example.com
 #         jwks_uri: https://attestation.example.com/jwks.json
 #         proof_types:
 #           - sd-jwt
 #         formats:
 #           - sd-jwt
+#         # Current trust is issuer-wide: this issuer is trusted for every disclosed claim used by
+#         # an execution contract. Per-claim trust constraints are planned hardening; see
+#         # docs/continuity-design.md.
 #     operations:
 #       audit:
 #         retention: 365d

@@ -580,7 +580,7 @@ fn presentation_for(
         presentation: artifact.presentation.clone(),
         processed_payload: artifact.processed_payload.clone(),
         artifact: artifact.manifest.clone(),
-        note: "The presentation string is the exact UTF-8 value a future PIC transition would carry as proof_of_relationship.evidence.",
+        note: "The presentation is executor-profile and key evidence. Profile 0.2 carries its exact UTF-8 value in the legacy proof_of_relationship.evidence field; it does not by itself prove an observed handoff.",
     }))
 }
 

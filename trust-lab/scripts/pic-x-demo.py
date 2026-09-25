@@ -264,14 +264,14 @@ def main() -> int:
             "Correlation",
             "JWT jti and PCA lineage_id are the same stable audit correlation id.",
         )
-        interactive_pause("review size tables and continue to Proof of Relationship material")
+        interactive_pause("review size tables and continue to executor-profile evidence")
         print()
 
         print_step("6", "Payload weight")
         print_size_table(token, proposal_json, proposal_wire, pic_token)
         print()
 
-        print_step("7", "Proof-of-Relationship fixtures from disk")
+        print_step("7", "Executor-profile evidence fixtures from disk")
         print_kv("artifact dir", str(TRUST_LAB_ARTIFACT_DIR))
         worker_1, worker_2 = timed(
             "Trust Lab PoR fixtures read from disk",
@@ -755,7 +755,7 @@ def workload(*arguments: str) -> dict:
 
 
 def request_credential(jwk: dict, claims: dict, selected_claims: set[str]) -> dict:
-    """Asks the lab attester for a Proof of Relationship bound to this workload's key."""
+    """Asks the lab attester for profile evidence bound to this workload's key."""
     payload = {"cnf_jwk": jwk, "claims": claims, "validity_seconds": 900}
     body = json.dumps(payload).encode()
     request = urllib.request.Request(

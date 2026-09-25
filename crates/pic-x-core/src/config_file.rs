@@ -141,7 +141,7 @@ struct RealmSection {
     /// Realm-scoped OAuth/PIC Exchange Profiles. Each realm owns its own mappings.
     #[serde(default)]
     exchange_profiles: Vec<ExchangeProfileSection>,
-    /// Realm-scoped trusted Proof-of-Relationship attestation issuers.
+    /// Realm-scoped issuers trusted for executor-profile evidence.
     #[serde(default)]
     attesters: Vec<TrustedAttesterSection>,
 }

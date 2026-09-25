@@ -8,9 +8,10 @@
 //!
 //! # Why reads never fetch
 //!
-//! Proof-of-Relationship validation happens inside the synchronous `PorValidator` boundary of the
-//! protocol crate, on the request path. Fetching there would put a network round trip — and another
-//! service's availability — in the middle of a token exchange. So [`AttesterKeyCache::keys_for`]
+//! Executor-profile validation happens inside the synchronous `PorValidator` compatibility boundary
+//! of the protocol crate, on the request path. Fetching there would put a network round trip — and
+//! another service's availability — in the middle of a token exchange. So
+//! [`AttesterKeyCache::keys_for`]
 //! only reads memory, and [`AttesterKeyCache::refresh`] is what talks to the network, driven by a
 //! background task.
 //!
@@ -18,7 +19,7 @@
 //!
 //! * **a stale set beats no set** — when a refresh fails, the last fetched keys stay in use until
 //!   they age out, because answering "no keys" would turn an attester's transient outage into every
-//!   Proof of Relationship being rejected as a forgery;
+//!   executor-profile evidence being rejected as a forgery;
 //! * **a published removal is authoritative** — when a refresh succeeds with an empty key set, or
 //!   with no public signature-verification keys, the cache is replaced with that empty set so keys
 //!   the attester removed are no longer accepted.

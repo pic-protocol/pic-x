@@ -110,7 +110,7 @@ pub(crate) struct RealmMeta {
     pub(crate) workload_algorithms: Vec<String>,
 }
 
-/// The attestation issuers a realm accepts for Profile 0.2 Proof-of-Relationship evidence.
+/// The issuers accepted for executor-profile evidence carried in Profile 0.2's legacy PoR field.
 #[derive(Clone, Serialize)]
 pub(crate) struct Attestations {
     pub(crate) issuers: Vec<AttestationIssuer>,
@@ -192,6 +192,8 @@ struct PicContinuity {
     formats_supported: &'static [&'static str],
     signing_alg_values_supported: Vec<String>,
     continuity_modes_supported: &'static [&'static str],
+    /// PIC-X extension: the strongest evidence semantics this implementation currently claims.
+    continuity_evidence_levels_supported: &'static [&'static str],
 }
 
 /// The PIC Token JWT capabilities block of the discovery document.
@@ -438,6 +440,7 @@ pub(crate) async fn realm_configuration(State(realm): State<RealmMeta>) -> impl 
             formats_supported: &[pic::continuity::FORMAT_PIC_CONTINUITY_COSE],
             signing_alg_values_supported: either.clone(),
             continuity_modes_supported: &["centralized-continuity"],
+            continuity_evidence_levels_supported: &["artifact-linked"],
         },
 
         pic_token: PicToken {
@@ -448,7 +451,7 @@ pub(crate) async fn realm_configuration(State(realm): State<RealmMeta>) -> impl 
     })
 }
 
-/// Lists the attestation issuers this realm is configured to trust for PoR evidence.
+/// Lists the issuers trusted for executor-profile evidence in the legacy Profile 0.2 PoR field.
 pub(crate) async fn attestations(State(attestations): State<Attestations>) -> impl IntoResponse {
     Json(attestations)
 }

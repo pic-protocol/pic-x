@@ -751,4 +751,9 @@ async fn a_realm_publishes_the_algorithms_of_each_signer() {
             "{both}: {document}"
         );
     }
+    assert_eq!(
+        published["pic_continuity"]["continuity_evidence_levels_supported"],
+        serde_json::json!(["artifact-linked"]),
+        "{document}"
+    );
 }

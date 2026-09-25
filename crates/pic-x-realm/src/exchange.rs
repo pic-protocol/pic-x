@@ -47,7 +47,7 @@ use crate::attester_keys::AttesterKeyCache;
 use crate::checkpoints::{NoRevocationConfigured, RealmSignedCheckpoints};
 use crate::conformance::ContractConformance;
 use crate::idp_keys::IdpKeyCache;
-use crate::por::{SdJwtPorValidator, verification_key_from_jwk};
+use crate::por::{SdJwtProfileValidator, verification_key_from_jwk};
 use pic::continuity::jwk::expected_algorithms_for_jwk;
 
 const GRANT_TOKEN_EXCHANGE: &str = "urn:ietf:params:oauth:grant-type:token-exchange";
@@ -60,7 +60,7 @@ const MAX_REQUESTED_LIFETIME: i64 = 365 * 24 * 3_600;
 #[derive(Clone)]
 pub(crate) struct TokenEndpoint {
     pub(crate) realm: Realm,
-    /// The attester key sets backing Proof-of-Relationship validation.
+    /// The attester key sets backing executor-profile evidence validation.
     pub(crate) attester_keys: Arc<AttesterKeyCache>,
     /// The identity-provider key sets backing access-token verification.
     pub(crate) idp_keys: Arc<IdpKeyCache>,
@@ -313,19 +313,20 @@ impl TokenEndpoint {
         let signer =
             RealmTokenSigner::new(Arc::clone(&keys), self.realm.token_signing_algorithm())?;
 
-        let por = SdJwtPorValidator {
+        let profile_evidence = SdJwtProfileValidator {
             attesters: self.realm.trusted_attesters(),
             keys: self.attester_keys.as_ref(),
             now,
             accepted: Default::default(),
         };
-        let candidate_metadata = match preflight_candidate_key_metadata(candidate_token, &por) {
-            Ok(metadata) => metadata,
-            Err(error) => {
-                self.record_advancement_rejected(None, None).await?;
-                return Err(error);
-            }
-        };
+        let candidate_metadata =
+            match preflight_candidate_key_metadata(candidate_token, &profile_evidence) {
+                Ok(metadata) => metadata,
+                Err(error) => {
+                    self.record_advancement_rejected(None, None).await?;
+                    return Err(error);
+                }
+            };
         let Some(lineage_id) = candidate_metadata.lineage_id.clone() else {
             self.record_advancement_rejected(None, Some(candidate_metadata.proposed_position))
                 .await?;
@@ -365,12 +366,16 @@ impl TokenEndpoint {
                 keys: Arc::clone(&keys),
             };
             // The conformance check needs the claims the presentation disclosed, which exist only
-            // after the PoR has been validated. The policy therefore reads them back from the
-            // validator, which records what it accepted during the same settlement pass.
-            let policy = ContractConformance { por: &por };
+            // after the profile evidence has been validated. The policy therefore reads them from
+            // the validator, which records what it accepted during the same settlement pass.
+            let policy = ContractConformance {
+                profile: &profile_evidence,
+            };
             let authority = SettlementAuthority {
                 trusted: &trusted,
-                por: &por,
+                // Profile 0.2 names this compatibility hook `por`; PIC-X supplies profile/key
+                // evidence here and does not claim that it proves an observed handoff.
+                por: &profile_evidence,
                 revocation: &NoRevocationConfigured,
                 policy: &policy,
                 order: &ReferenceProfile,
@@ -405,13 +410,13 @@ impl TokenEndpoint {
         // An accepted advancement has to be attributable: which attester vouched for the workload,
         // and how many claims it disclosed to do so. The values themselves stay out of the record —
         // a disclosure is minimized on purpose, and re-emitting it here would undo that.
-        if let Some(accepted) = por.accepted() {
+        if let Some(accepted) = profile_evidence.accepted() {
             info!(
                 event.name = "token_exchange.advancement_settled",
                 component = COMPONENT,
                 realm = self.realm.name(),
                 attester = accepted.attester_id,
-                por_issuer = accepted.issuer,
+                profile_issuer = accepted.issuer,
                 disclosed_claims = accepted.claims.len(),
                 position = issued.checkpoint.position,
                 "a candidate PIC Token JWT was settled into the next checkpoint"
@@ -622,7 +627,7 @@ struct CandidateMetadata {
 
 fn preflight_candidate_key_metadata(
     candidate_token: &str,
-    por: &SdJwtPorValidator<'_>,
+    profile_evidence: &SdJwtProfileValidator<'_>,
 ) -> Result<CandidateMetadata, ExchangeError> {
     let decoded = decode_token(candidate_token).map_err(|error| {
         ExchangeError::invalid_grant(format!(
@@ -670,17 +675,19 @@ fn preflight_candidate_key_metadata(
         ))
     })?;
 
-    if transition.proof_of_relationship.por_type != por.accepted_type() {
+    if transition.proof_of_relationship.por_type != profile_evidence.accepted_type() {
         return Err(ExchangeError::invalid_grant(format!(
             "proof_of_relationship.type must be `{}`",
-            por.accepted_type()
+            profile_evidence.accepted_type()
         )));
     }
 
-    let processed = por
+    let processed = profile_evidence
         .validate_and_remember(&transition.proof_of_relationship)
         .map_err(|error| {
-            ExchangeError::invalid_grant(format!("the Proof of Relationship was rejected: {error}"))
+            ExchangeError::invalid_grant(format!(
+                "the executor-profile evidence was rejected: {error}"
+            ))
         })?;
     let jwk = processed
         .claims
@@ -688,25 +695,25 @@ fn preflight_candidate_key_metadata(
         .and_then(|cnf| cnf.get("jwk"))
         .ok_or_else(|| {
             ExchangeError::invalid_grant(
-                "the accepted Proof of Relationship did not expose `cnf.jwk`",
+                "the accepted executor-profile evidence did not expose `cnf.jwk`",
             )
         })?;
     let expected = expected_algorithms_for_jwk(jwk).map_err(|error| {
         ExchangeError::invalid_grant(format!(
-            "the Proof of Relationship `cnf.jwk` is unusable: {error}"
+            "the executor-profile evidence `cnf.jwk` is unusable: {error}"
         ))
     })?;
 
     if decoded.alg != expected.jose {
         return Err(ExchangeError::invalid_grant(format!(
-            "candidate PIC Token JWT algorithm `{}` does not match Proof of Relationship key \
+            "candidate PIC Token JWT algorithm `{}` does not match executor-profile key \
              algorithm `{}`",
             decoded.alg, expected.jose
         )));
     }
     let Some(cose_algorithm) = expected.cose else {
         return Err(ExchangeError::invalid_grant(
-            "the Proof of Relationship workload key cannot verify PIC COSE signatures",
+            "the executor-profile workload key cannot verify PIC COSE signatures",
         ));
     };
 
@@ -782,7 +789,7 @@ fn require_cose_algorithm(
     match actual {
         Some(actual) if actual == expected => Ok(()),
         Some(actual) => Err(ExchangeError::invalid_grant(format!(
-            "{label} COSE algorithm `{actual}` does not match Proof of Relationship key algorithm \
+            "{label} COSE algorithm `{actual}` does not match executor-profile key algorithm \
              `{expected}`"
         ))),
         None => Err(ExchangeError::invalid_grant(format!(
