@@ -1,13 +1,16 @@
 <p align="center">
-  <img src="assets/pic-x-logo.png" alt="PIC-X logo" width="100%">
+  <img src="assets/readme/hero.png" alt="PIC-X, the PIC Authority Broker and Exchange Server. Exchange existing authority, advance it as verifiable continuity. PIC-X turns an OAuth access token into a PIC Context of Authority, then settles every advancement a workload proposes. Profile 0.2, artifact-linked, Rust, Apache-2.0." width="860">
 </p>
-
-<h1 align="center">PIC-X</h1>
 
 <p align="center">
-  The official PIC Authority Broker and Exchange Server.<br>
-  Verifiable artifact-linked Authority Continuity across execution boundaries.
+  <a href="https://www.pic-protocol.org/pic-x"><b>Website</b></a> ·
+  <a href="#run-pic-x"><b>Run it</b></a> ·
+  <a href="#run-the-lab"><b>Lab</b></a> ·
+  <a href="docs/continuity-design.md"><b>Continuity design</b></a> ·
+  <a href="https://github.com/pic-protocol/pic-spec"><b>PIC Specification</b></a>
 </p>
+
+# PIC-X
 
 ## What PIC-X Is
 
@@ -21,6 +24,47 @@ As an Authority Broker, PIC-X maps upstream credentials into PIC Contexts of Aut
 provenance, constraints, privileges and audit material explicit. As an Exchange Server, it exposes
 the protocol surface where source tokens and continuity proposals are exchanged for PIC Tokens that
 downstream verifiers can check.
+
+## How It Works
+
+<p align="center">
+  <img src="assets/readme/flow.png" alt="How PIC-X settles continuity, Profile 0.2. One, authenticate: a user or service signs in with an identity provider and holds an OAuth access token. Two, exchange: the realm validates it and returns the first settled PIC Token, the root PIC Context of Authority, through RFC 8693 token exchange. Three, propose: a workload signs one candidate transition and presents executor-profile and key evidence as an SD-JWT. Four, settle: authority only attenuates, the execution contract only accumulates, and the new checkpoint is signed and audited, PIC Token N to N+1. Unknown successors: workers that do not exist yet each advance the same checkpoint as an independent branch. Not yet: observed handoff, request binding and complete mediation need a trusted Execution Context." width="860">
+</p>
+
+A realm is an issuer with its own signing keys, audit trail and pseudonymisation.
+Its token endpoint takes an OAuth access token through [RFC 8693](https://www.rfc-editor.org/rfc/rfc8693) token exchange, maps it into the origin PIC Context of Authority, and returns the first settled PIC Token JWT.
+From then on, a workload that continues the execution signs exactly one candidate transition and presents issuer-signed executor-profile evidence bound to its key.
+At settlement, PIC-X verifies that:
+
+1. the predecessor checkpoint was signed by the realm and has not reached its absolute expiry;
+2. the candidate token, Continuity COSE and Transition COSE are structurally consistent;
+3. the SD-JWT comes from a configured attester and binds the candidate signing key;
+4. the disclosed executor-profile claims satisfy every constraint of the predecessor execution contract;
+5. authority only attenuates, while execution-contract constraints only accumulate;
+
+and then signs the new checkpoint and audits it synchronously before releasing the next PIC Token.
+The successor is never named in advance: a publisher may write to a queue without knowing which worker will consume, so several independently keyed workers may each advance the same checkpoint as separate branches.
+The PIC artifacts are built and signed with the [`pic-protocol`](https://crates.io/crates/pic-protocol) crate from [pic-rust](https://github.com/pic-protocol/pic-rust).
+
+## What It Guarantees Today
+
+PIC-X advertises its assurance level in discovery, as `pic_continuity.continuity_evidence_levels_supported = ["artifact-linked"]`.
+That level is a partial implementation class defined by the PIC Specification; it is not full PIC continuity.
+
+| Property | Status |
+| --- | --- |
+| Signed artifact lineage, exactly one predecessor reference | Implemented |
+| Authority attenuation; removed entries cannot be reintroduced | Implemented |
+| Additive execution-contract refinement and executor-profile conformance | Implemented |
+| Trusted-issuer executor-profile evidence bound to the workload key | Implemented |
+| Unknown successor and sibling fan-out | Implemented, intentionally |
+| Semantic `PoR(s_i, s_{i+1})` for an observed handoff | Partial: no trusted observation of the handoff yet |
+| Request binding and transport or channel continuity | Not implemented |
+| Complete mediation and causal attribution of protected actions | Not implemented by PIC-X |
+| Per-lineage early revocation | Deferred: absolute expiry and key retention are the current bounds |
+
+In one sentence: PIC-X excludes authority mixing by construction within a validated artifact lineage, and enforces executor-profile conformance at each settled advancement.
+It does not prove an observed causal handoff, bind the transport request, or provide complete mediation; those need the trusted Execution Context described in [docs/continuity-design.md](docs/continuity-design.md).
 
 ## Start Here
 
