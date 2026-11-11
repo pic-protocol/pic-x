@@ -29,7 +29,13 @@ targets = [
 # A crate with a known advisory stops the build. A deliberate exception goes in `ignore` with the
 # advisory id and a reason, so the exception is reviewable instead of invisible.
 yanked = "deny"
-ignore = []
+ignore = [
+    # crypto-bigint 0.5.5 reaches the tree only through `pic-protocol` -> `pic-continuity` ->
+    # p256/p384 0.13 -> elliptic-curve 0.13. The fix exists only in crypto-bigint 0.7.6, which no
+    # 0.13 curve crate can use: closing it means moving `pic-continuity` to the RustCrypto 0.14
+    # line and releasing `pic-protocol`. Remove this entry when that release lands here.
+    { id = "RUSTSEC-2026-0387", reason = "crypto-bigint 0.5 via pic-continuity's p256/p384 0.13; patched only in 0.7.6, needs the RustCrypto 0.14 migration upstream" },
+]
 
 [licenses]
 # Permissive licences only. Anything copyleft reaching a binary a customer runs is a legal question,
